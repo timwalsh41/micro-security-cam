@@ -1,0 +1,5 @@
+{
+    "name": "embedded_mocks",
+    "version": "1.0.0",
+    "frameworks": ["arduino"]
+}

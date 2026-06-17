@@ -8,10 +8,11 @@
 
 - We use PlatformIO for environment management (BSP, libraries, build, test).
     - Refer to `platformio.ini` for details on the environment setup and included libraries
-- We define two PlatformIO environments:
-    - `seeed_xiao_esp32s3` for the embedded target; this is used both for deploying the application code, as well as running certain unit tests
+- We define three PlatformIO environments:
+    - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
+    - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests
     - `native` for the host dev machine; this is used for running certain unit tests
-    - New unit tests should be segregated in the appropriate subfolder under `test/` so that they run in the appropriate environment given the `test_filter` setting for each environment in PlatformIO
+    - New unit tests should be segregated in the appropriate subfolder under `test/` so that they run in the appropriate environment given the `test_filter` setting for each environment in `platformio.ini`
 - Unit testing
     - Leverage the unity framework
 
