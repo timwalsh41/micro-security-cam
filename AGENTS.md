@@ -15,6 +15,9 @@
     - New unit tests should be segregated in the appropriate subfolder under `test/` so that they run in the appropriate environment given the `test_filter` setting for each environment in `platformio.ini`
 - Unit testing
     - Leverage the unity framework
+    - Unit tests should be segregated into subfolders under the appropriate test folder (`native` or `hardware`), and named with a `test_` prefix
+        - Each subfolder represents a single test suite, typically a single implementation file with a set of tests defined and then gathered within one `main()` function
+        - If there is reason to do so, the tests could be broken out across multiple implementation files, but still need to be gathered and executed in a single `main()`
 
 # Development guidelines
 
@@ -34,3 +37,5 @@
 - Variable names use `snake_case`
     - Member variables are prefixed with `m_`
 - Constants use `CAPITAL_SNAKE_CASE`
+- File names are in `snake_case.cpp`
+- Use Allman-style braces
