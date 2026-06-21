@@ -8,6 +8,7 @@
 
 - We use PlatformIO for environment management (BSP, libraries, build, test).
     - Refer to `platformio.ini` for details on the environment setup and included libraries
+- To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source ~/.platformio/penv/bin/activate`
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
     - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests
@@ -23,7 +24,9 @@
 
 - C++11 standard
 - Include unit test coverage for all new code
-    - Logical/control level components should be tested in the 
+    - Logical/control level components should be tested in the `native` environment
+    - Components that interface directly with hardware should be tested in the `seeed_xiao_esp32s3_test` environment
+    - Mocks and other utilities shared across test suites should be placed in the appropriate subfolder in `lib/`
 - Use namespaces liberally to group like functionality
 - Follow the single responsibility principle when designing classes
 - Use interface classes where appropriate to make dependencies injectable for testing purposes
