@@ -112,8 +112,12 @@ public:
     virtual ~SdCardHal() = default;
     virtual SdInitResult init() = 0;
 
-protected:
-    // File ops — only callable when CS is asserted by controller
+    // File ops — contract: must only be called when CS is asserted by the
+    // SdWriteController.  This is a runtime protocol enforced by the
+    // controller's state machine, not a compile-time constraint.
+    virtual bool open(const char *path) = 0;
+    virtual bool write(const uint8_t *data, size_t len) = 0;
+    virtual void close() = 0;
 };
 
 class SdWriteController {
@@ -289,7 +293,7 @@ build_flags = -I include -I test
 |----------|-----------|
 | `TimeService` injected by reference, not owned | Enables mock injection for testing; real impl owns HAL call |
 | `elapsed_ms` is static on `TimeService`, not instance method | Pure math with no HAL dependency — maximally testable anywhere |
-| `SdCardHal` is abstract with protected file ops | Controller owns CS state; HAL can only write when controller asserts CS |
+| `SdCardHal` file ops are public (not protected) | CS assertion is a runtime protocol enforced by `SdWriteController`'s state machine, not a compile-time constraint. `protected` + `friend` would couple the interface to its consumer without solving the real problem |
 | `PinArbitrator` is static/pure, not a class with state | No internal state needed; OR logic over two booleans is trivially pure |
 | HAL layer in separate `hal/` subfolder | Clear visual and namespace boundary between logic and hardware code |
 | Keep `PeripheralManager` as public facade | Main app still has a single entry point; internal structure is opaque |
