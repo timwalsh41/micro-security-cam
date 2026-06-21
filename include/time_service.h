@@ -29,8 +29,8 @@ public:
  * @brief Concrete implementation of TimeService that delegates to the hardware HAL.
  */
 class RealTimeService : public TimeService {
-public:
-    hal::time_t now() override;
+    public:
+        hal::time_t now() override;
 };
 
 #endif // TIME_SERVICE_H

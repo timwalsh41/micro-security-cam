@@ -30,6 +30,7 @@
 - Use namespaces liberally to group like functionality
 - Follow the single responsibility principle when designing classes
 - Use interface classes where appropriate to make dependencies injectable for testing purposes
+- Use `#ifdef` guards on all headers
 - Create Javadoc style docstrings for classes and functions
 
 # Style

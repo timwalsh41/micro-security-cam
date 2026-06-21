@@ -3,7 +3,8 @@
 
 #include <stdint.h>
 
-namespace hal {
+namespace hal 
+{
 
 /**
  * @brief Type alias for time representation in milliseconds.

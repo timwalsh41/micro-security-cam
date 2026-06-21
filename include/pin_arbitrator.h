@@ -40,19 +40,19 @@ namespace peripherals
      */
     class PinArbitrator
     {
-    public:
-        /**
-         * @brief Determines if the shared pin should be driven LOW.
-         *
-         * @param led_wants_on True if the LED wants to be ON (active LOW).
-         * @param sd_signal The SD card's current CS signal request.
-         * @return true  Pin should be driven LOW (active).
-         * @return false Pin should be driven HIGH (inactive).
-         */
-        static bool resolve(bool led_wants_on, SdSignal sd_signal);
+        public:
+            /**
+             * @brief Determines if the shared pin should be driven LOW.
+             *
+             * @param led_wants_on True if the LED wants to be ON (active LOW).
+             * @param sd_signal The SD card's current CS signal request.
+             * @return true  Pin should be driven LOW (active).
+             * @return false Pin should be driven HIGH (inactive).
+             */
+            static bool resolve(bool led_wants_on, SdSignal sd_signal);
 
-    private:
-        PinArbitrator() = delete;
+        private:
+            PinArbitrator() = delete;
     };
 }
 
