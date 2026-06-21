@@ -105,6 +105,11 @@ private:
 **Responsibility**: Manages SD write lifecycle with proper CS timing protocol. Owns the state machine:
 `IDLE → START_WRITE → PRE_DEACTIVATE_CS → ACTIVATE_CS → WRITING → STOP_WRITE → POST_DEACTIVATE_CS → IDLE`
 
+The controller **produces** a `SdSignal` (defined in `pin_arbitrator.h`) that is fed directly
+into the `PinArbitrator`. When IDLE, the signal is `SdSignal::IDLE`, telling the arbitrator
+to yield to the LED. When actively sequencing a transaction, the signal is either
+`CS_ACTIVE` or `CS_INACTIVE`, overriding the LED.
+
 ```cpp
 // Abstract interface for SD hardware operations (mockable)
 class SdCardHal {
@@ -124,8 +129,12 @@ class SdWriteController {
 public:
     explicit SdWriteController(TimeService &time, SdCardHal &sd_hal);
 
-    // Returns desired CS pin state (true=asserted/LOW, false=de-asserted/HIGH)
-    bool tick();
+    // Returns the SD card's current request for the shared CS pin.
+    //
+    //  IDLE        → SD doesn't care; LED's request wins
+    //  CS_ACTIVE   → SD needs CS LOW (during activation/writing)
+    //  CS_INACTIVE → SD needs CS HIGH (during deactivation timing)
+    peripherals::SdSignal tick();
 
     void start_write(const char *path, uint8_t *data, size_t len);
     SdWriteResult write_synchronous(const char *path, uint8_t *data, size_t len,
@@ -200,6 +209,18 @@ private:
 };
 ```
 
+The `tick()` method wires the components together as follows:
+
+```cpp
+void PeripheralManager::tick()
+{
+    bool led_wants_on = m_led.tick();
+    peripherals::SdSignal sd_signal = m_sd.tick();
+    bool pin_low = PinArbitrator::resolve(led_wants_on, sd_signal);
+    apply_led_state(pin_low);
+}
+```
+
 ---
 
 ## Unit Test Plan (All Native — Unity)
@@ -225,14 +246,14 @@ private:
 ### `test/test_sd_write_controller.cpp`
 | Test | Description |
 |------|-------------|
-| `idle_returns_cs_inactive` | IDLE state returns false (CS de-asserted) |
-| `start_write_transitions_to_pre_deactivate` | start_write() moves to PRE_DEACTIVATE_CS, returns false |
-| `pre_deactivate_to_activate_after_delay` | After DEACTIVATE_TIME_MS, transitions to ACTIVATE_CS (returns true) |
-| `activate_to_writing_after_delay` | After ACTIVATE_TIME_MS, transitions to WRITING (returns true) |
-| `writing_performs_io_and_moves_to_stop` | WRITING calls HAL write, then transitions to STOP_WRITE (returns true) |
-| `stop_write_transitions_to_post_deactivate` | STOP_WRITE moves to POST_DEACTIVATE_CS (returns false) |
-| `post_deactivate_to_idle_after_delay` | After DEACTIVATE_TIME_MS, returns to IDLE (returns false) |
-| `full_write_cycle_state_sequence` | Full tick sequence produces correct state progression and CS values |
+| `idle_returns_cs_inactive` | IDLE state returns `SdSignal::IDLE` (SD doesn't care about pin) |
+| `start_write_transitions_to_pre_deactivate` | start_write() moves to PRE_DEACTIVATE_CS, returns `CS_INACTIVE` |
+| `pre_deactivate_to_activate_after_delay` | After DEACTIVATE_TIME_MS, transitions to ACTIVATE_CS (returns `CS_ACTIVE`) |
+| `activate_to_writing_after_delay` | After ACTIVATE_TIME_MS, transitions to WRITING (returns `CS_ACTIVE`) |
+| `writing_performs_io_and_moves_to_stop` | WRITING calls HAL write, then transitions to STOP_WRITE (returns `CS_ACTIVE`) |
+| `stop_write_transitions_to_post_deactivate` | STOP_WRITE moves to POST_DEACTIVATE_CS (returns `CS_INACTIVE`) |
+| `post_deactivate_to_idle_after_delay` | After DEACTIVATE_TIME_MS, returns to IDLE (returns `IDLE`) |
+| `full_write_cycle_state_sequence` | Full tick sequence produces correct SdSignal at each stage |
 | `synchronous_write_returns_success` | write_synchronous() completes with SUCCESS on mock HAL success |
 | `synchronous_write_returns_timeout` | write_synchronous() returns TIMEOUT when tick loop exceeds timeout_ms |
 
@@ -281,7 +302,7 @@ build_flags = -I include -I test
 3. **`LedStateMachine`** — moderate complexity; depends on `TimeService`
 4. **`SdCardHal` interface + mock** — define contract before implementation
 5. **`SdWriteController`** — most complex; depends on `TimeService`, `SdCardHal`
-6. **HAL implementations** — thin wrappers, ESP32-only; no native tests needed
+6. **HAL implementations** — thin wrappers, ESP32-only; `seeed_xiao_esp32s3_test` tests (no native tests needed)
 7. **Refactored `PeripheralManager`** — composition root, wires everything together
 8. **Update `main.cpp`** — adapt to new API surface
 
@@ -293,7 +314,9 @@ build_flags = -I include -I test
 |----------|-----------|
 | `TimeService` injected by reference, not owned | Enables mock injection for testing; real impl owns HAL call |
 | `elapsed_ms` is static on `TimeService`, not instance method | Pure math with no HAL dependency — maximally testable anywhere |
+| `SdWriteController::tick()` returns `SdSignal`, not `bool` | The controller already knows whether it's IDLE or actively sequencing a transaction. Returning `SdSignal` directly gives the `PinArbitrator` the tri-state input it needs (`IDLE` / `CS_ACTIVE` / `CS_INACTIVE`) without lossy translation in the composition root. A `bool` conflates "I don't care" (IDLE) with "force HIGH" (CS_INACTIVE), which are semantically distinct. |
 | `SdCardHal` file ops are public (not protected) | CS assertion is a runtime protocol enforced by `SdWriteController`'s state machine, not a compile-time constraint. `protected` + `friend` would couple the interface to its consumer without solving the real problem |
+| `SdSignal` defined in `pin_arbitrator.h`, used by `SdWriteController` | Couples the producer and consumer of the signal at the type level, ensuring they stay in sync. The dependency flows from `sd_write_controller.h` → `pin_arbitrator.h`, which is appropriate since the controller exists to produce this signal for the arbitrator |
 | `PinArbitrator` is static/pure, not a class with state | No internal state needed; OR logic over two booleans is trivially pure |
 | HAL layer in separate `hal/` subfolder | Clear visual and namespace boundary between logic and hardware code |
 | Keep `PeripheralManager` as public facade | Main app still has a single entry point; internal structure is opaque |
