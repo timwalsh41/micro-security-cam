@@ -223,7 +223,7 @@ void PeripheralManager::tick()
 
 ---
 
-## Unit Test Plan (All Native — Unity)
+## Unit Test Plan
 
 ### `test/test_time_service.cpp`
 | Test | Description |
@@ -266,6 +266,29 @@ void PeripheralManager::tick()
 | `cs_active_overrides_led_on` | LED on, SD CS_ACTIVE → LOW (true, SD overrides) |
 | `cs_inactive_overrides_led_off` | LED off, SD CS_INACTIVE → HIGH (false, SD overrides) |
 | `both_active_returns_true` | Both want pin active → LOW (true, no conflict) |
+
+### HAL Testing Rationale
+
+The HAL layer (`gpio_hal`, `time_hal`, `sd_card_hal`) has **no dedicated unit tests**.
+This is intentional, not an oversight:
+
+- **`gpio_hal` and `time_hal`** are pure forwarding wrappers with zero logic
+  (`pinMode()` → `pinMode()`, `millis()` → `millis()`). Testing them would only
+  verify that Arduino's own functions work, which adds no value.
+- **`SdCardHalImpl`** contains trivial state tracking (`m_initialized`, `m_file_open`)
+  around SD library calls. Its correctness is guaranteed by the SD library contract,
+  not by additional test wrappers.
+- The **abstract `SdCardHal` interface** is already thoroughly tested via
+  `MockSdCardHal` in the native `test_sd_write_controller` suite, which exercises
+  every state transition and I/O path. That is where the real value lies — the mock
+  proves the protocol is correct, regardless of which concrete implementation backs it.
+- A future **hardware integration test** (`seeed_xiao_esp32s3_test` environment) could
+  perform a full `init_sd_card()` + `write_file()` cycle on real hardware, serving as
+  an end-to-end wiring check. But that is a different class of test (integration
+  verification), not a unit test of the HAL's logic.
+
+In short: the test budget is spent on the logic that *consumes* the HAL, not on the
+thin, boring boundary code itself.
 
 ---
 
