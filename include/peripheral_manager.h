@@ -1,10 +1,8 @@
 #ifndef PERIPHERALS_H
 #define PERIPHERALS_H
 
-#include <Arduino.h>
 #include "led_state_machine.h"
 #include "sd_write_controller.h"
-#include "pin_arbitrator.h"
 #include "time_service.h"
 #include "hal/sd_card_hal_impl.h"
 #include "hal/gpio_hal.h"
@@ -19,9 +17,6 @@
  * implementations. It contains no state machine logic of its own —
  * all behavior is delegated to the sub-components.
  */
-
-#define LED_ON_CS_ACTIVE  LOW
-#define LED_OFF_CS_DEACTIVE HIGH
 
 // See project notes - pin 21 is shared between LED and SD chip select
 // GPIO21 is the builtin LED according to the documentation

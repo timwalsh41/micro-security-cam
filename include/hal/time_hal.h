@@ -9,12 +9,12 @@ namespace hal
 /**
  * @brief Type alias for time representation in milliseconds.
  */
-using time_t = uint32_t;
+using millis_t = uint32_t;
 
 /**
  * @brief Returns the number of milliseconds since the program started.
  */
-time_t get_millis();
+millis_t get_millis();
 
 } // namespace hal
 

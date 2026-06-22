@@ -11,12 +11,12 @@
 class MockTimeService : public TimeService
 {
     public:
-        explicit MockTimeService(hal::time_t initial = 0)
+        explicit MockTimeService(hal::millis_t initial = 0)
             : m_current(initial)
         {
         }
 
-        hal::time_t now() override
+        hal::millis_t now() override
         {
             return m_current;
         }
@@ -24,7 +24,7 @@ class MockTimeService : public TimeService
         /**
          * @brief Advances the mock clock by the given number of milliseconds.
          */
-        void advance(hal::time_t ms)
+        void advance(hal::millis_t ms)
         {
             m_current += ms;
         }
@@ -32,13 +32,13 @@ class MockTimeService : public TimeService
         /**
          * @brief Sets the mock clock to an absolute value.
          */
-        void set(hal::time_t ms)
+        void set(hal::millis_t ms)
         {
             m_current = ms;
         }
 
     private:
-        hal::time_t m_current;
+        hal::millis_t m_current;
 };
 
 #endif // MOCK_TIME_SERVICE_H

@@ -1,4 +1,5 @@
 #include "peripheral_manager.h"
+#include "pin_arbitrator.h"
 #include "hal/gpio_hal.h"
 
 void PeripheralManager::init()
@@ -17,7 +18,7 @@ void PeripheralManager::tick()
 {
     bool led_wants_on = m_led.tick();
     peripherals::SdSignal sd_signal = m_sd.tick();
-    bool pin_low = PinArbitrator::resolve(led_wants_on, sd_signal);
+    bool pin_low = peripherals::PinArbitrator::resolve(led_wants_on, sd_signal);
     apply_led_state(pin_low);
 }
 
@@ -49,5 +50,5 @@ SdWriteResult PeripheralManager::write_file(const char *path, uint8_t *data,
 
 void PeripheralManager::apply_led_state(bool pin_low)
 {
-    hal::digital_write(LED_BUILTIN, pin_low ? LED_ON_CS_ACTIVE : LED_OFF_CS_DEACTIVE);
+    hal::digital_write(LED_BUILTIN, pin_low ? LOW : HIGH);
 }

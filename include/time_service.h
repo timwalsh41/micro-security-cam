@@ -13,16 +13,16 @@ public:
     /**
      * @brief Returns current time in milliseconds.
      */
-    virtual hal::time_t now() = 0;
+    virtual hal::millis_t now() = 0;
 
     /**
      * @brief Calculates elapsed time between two timestamps, handling rollover correctly.
      * 
      * @param since The starting timestamp in milliseconds.
      * @param now The current timestamp in milliseconds.
-     * @return hal::time_t Elapsed time in milliseconds.
+     * @return hal::millis_t Elapsed time in milliseconds.
      */
-    static hal::time_t elapsed_ms(hal::time_t since, hal::time_t now);
+    static hal::millis_t elapsed_ms(hal::millis_t since, hal::millis_t now);
 };
 
 /**
@@ -30,7 +30,7 @@ public:
  */
 class RealTimeService : public TimeService {
     public:
-        hal::time_t now() override;
+        hal::millis_t now() override;
 };
 
 #endif // TIME_SERVICE_H

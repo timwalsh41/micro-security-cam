@@ -3,32 +3,32 @@
 
 void test_elapsed_ms_normal_subtraction() 
 {
-    hal::time_t since = 100;
-    hal::time_t now = 150;
+    hal::millis_t since = 100;
+    hal::millis_t now = 150;
     
     TEST_ASSERT_EQUAL_UINT32(50, TimeService::elapsed_ms(since, now));
 } 
     
 void test_elapsed_ms_zero_elapsed()
 {
-    hal::time_t since = 100;
-    hal::time_t now = 100;
+    hal::millis_t since = 100;
+    hal::millis_t now = 100;
     
     TEST_ASSERT_EQUAL_UINT32(0, TimeService::elapsed_ms(since, now));
 }
 
 void test_elapsed_ms_rollover_near_max()
 {
-    hal::time_t since = 0xFFFFFFF0;
-    hal::time_t now = 0x00000010;
+    hal::millis_t since = 0xFFFFFFF0;
+    hal::millis_t now = 0x00000010;
 
     TEST_ASSERT_EQUAL_UINT32(32, TimeService::elapsed_ms(since, now));
 }
 
 void test_elapsed_ms_rollover_exact_wrap()
 {
-    hal::time_t since = 0xFFFFFFFF;
-    hal::time_t now = 0x00000000;
+    hal::millis_t since = 0xFFFFFFFF;
+    hal::millis_t now = 0x00000000;
     
     TEST_ASSERT_EQUAL_UINT32(1, TimeService::elapsed_ms(since, now));
 }

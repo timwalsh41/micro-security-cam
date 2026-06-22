@@ -4,7 +4,7 @@
 namespace hal
 {
 
-time_t get_millis() 
+millis_t get_millis() 
 {
     return millis();
 }
