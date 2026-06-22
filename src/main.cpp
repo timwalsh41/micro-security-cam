@@ -6,7 +6,7 @@
 #define CAMERA_MODEL_XIAO_ESP32S3 // Has PSRAM
 
 #include "camera_pins.h"
-#include "peripherals.h"
+#include "peripheral_manager.h"
 #include "utility.h"
 
 namespace constants
@@ -23,7 +23,7 @@ int imageCount = 1;                   // File Counter
 bool camera_available = false;        // Check camera status
 bool sd_available = false;            // Check sd status
 
-peripherals::PeripheralManager peripheral_manager;
+PeripheralManager peripheral_manager;
 utility::time_t last_peripheral_tick_time_ms = 0;
 
 // Save pictures to SD card
@@ -36,7 +36,7 @@ void photo_save(const char * fileName) {
   }
 
   // Save photo to file
-  peripheral_manager.write_file_to_sd_synchronous(fileName, fb->buf, fb->len, 1000u);
+  peripheral_manager.write_file(fileName, fb->buf, fb->len, 1000u);
   
   // Release image buffer
   esp_camera_fb_return(fb);
@@ -81,7 +81,7 @@ void setup() {
 
   print_with_timestamp("Starting initialization");
 
-  peripheral_manager.init_led();
+  peripheral_manager.init();
 
   camera_config_t config;
   camera_pin_setup(config);
@@ -116,7 +116,7 @@ void setup() {
   print_with_timestamp("Camera initialized");
   camera_available = true; // Camera initialization check passes
 
-  sd_available = (peripheral_manager.init_sd_card() == peripherals::SdInitResult::SUCCESS);
+  sd_available = (peripheral_manager.init_sd_card() == hal::SdInitResult::SUCCESS);
 
   if (sd_available)
     // SD initialization check passes
@@ -124,7 +124,7 @@ void setup() {
   else
     print_with_timestamp("SD initialization failed");
 
-  peripheral_manager.blink_led(250, 750);
+  peripheral_manager.blink(250, 750);
 }
 
 void loop() {
@@ -141,7 +141,7 @@ void loop() {
   
     /*
     if ((now - lastCaptureTime) >= constants::CAMERA_CAPTURE_INTERVAL_MS) {
-      peripheral_manager.pulse_led_on(constants::LED_ON_TIME_MS);
+      peripheral_manager.pulse_led(constants::LED_ON_TIME_MS);
       lastCaptureTime = now;
 
       char filename[32];
