@@ -19,14 +19,14 @@ SdInitResult SdCardHalImpl::init()
         return SdInitResult::HW_INIT_FAILURE;
     }
 
-    m_initialized = true;
-
     // Verify a card is actually present
     if (SD.cardType() == CARD_NONE)
     {
         return SdInitResult::NO_SD_CARD;
     }
 
+    m_initialized = true;
+    
     return SdInitResult::SUCCESS;
 }
 

@@ -79,7 +79,8 @@ public:
     virtual void close() = 0;
 
     /**
-     * @brief Checks whether the SD card has been successfully initialized.
+     * @brief Checks whether the SD card has been successfully initialized, e.g. hardware
+     *        configured and SD card present.
      *
      * @return true if the SD card is initialized and ready, false otherwise.
      */

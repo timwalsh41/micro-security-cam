@@ -14,6 +14,11 @@ hal::SdInitResult PeripheralManager::init_sd_card()
     return m_sd.init_card();
 }
 
+bool PeripheralManager::is_sd_card_initialized() const
+{
+    return m_sd_hal.is_initialized();
+}
+
 void PeripheralManager::tick()
 {
     bool led_wants_on = m_led.tick();

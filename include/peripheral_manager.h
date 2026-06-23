@@ -50,6 +50,12 @@ class PeripheralManager
         hal::SdInitResult init_sd_card();
 
         /**
+         * @brief Checks if the SD card has been successfully initialized
+         * @return bool true if successfully initialized
+         */
+        bool is_sd_card_initialized() const;
+
+        /**
          * @brief Ticks both state machines and applies the resolved pin state.
          *
          * Call this periodically from the main loop.

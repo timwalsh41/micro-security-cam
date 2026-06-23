@@ -44,3 +44,7 @@
 - Constants use `CAPITAL_SNAKE_CASE`
 - File names are in `snake_case.cpp`
 - Use Allman-style braces
+
+# Other
+
+- Do not modify `TODO.md` - that is user only

@@ -21,7 +21,6 @@ namespace constants
 millis_t last_capture_time = 0;         // Last image time
 int image_count = 1;                    // File counter
 bool camera_available = false;          // Check camera status
-bool sd_available = false;              // Check sd status
 
 RealTimeService real_time;
 PeripheralManager peripheral_manager;
@@ -128,9 +127,7 @@ void setup()
   print_with_timestamp("Camera initialized");
   camera_available = true; // Camera initialization check passes
 
-  sd_available = (peripheral_manager.init_sd_card() == hal::SdInitResult::SUCCESS);
-
-  if (sd_available)
+  if (peripheral_manager.init_sd_card() == hal::SdInitResult::SUCCESS)
   {
     // SD initialization check passes
     print_with_timestamp("SD initialization succeeded");
@@ -144,7 +141,7 @@ void setup()
 }
 
 void loop() {
-  if(camera_available && sd_available)
+  if(camera_available && peripheral_manager.is_sd_card_initialized())
   {
     unsigned long now = real_time.now();
 
