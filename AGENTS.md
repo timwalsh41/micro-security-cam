@@ -44,6 +44,18 @@
 - Constants use `CAPITAL_SNAKE_CASE`
 - File names are in `snake_case.cpp`
 - Use Allman-style braces
+- In classes and structs, indent the access specifier relative to the outer braces for the class definition, and
+  then indent the member variables and methods relative to the access specifier, e.g.
+  ```c++
+  class MyClass
+  {
+      public:
+          void my_method();
+
+      private:
+          int m_my_variable;  
+  };
+  ``
 
 # Other
 

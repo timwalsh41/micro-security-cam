@@ -47,7 +47,7 @@ void PeripheralManager::blink(uint32_t on_ms, uint32_t off_ms)
     m_led.set_mode(LedMode::BLINK, on_ms, off_ms);
 }
 
-SdWriteResult PeripheralManager::write_file(const char *path, uint8_t *data,
+SdWriteResult PeripheralManager::write_file(const char *path, const uint8_t *data,
                                              size_t len, uint32_t timeout_ms)
 {
     return m_sd.write_synchronous(path, data, len, timeout_ms);

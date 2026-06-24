@@ -85,7 +85,7 @@ class SdWriteController
          * @param data Pointer to the data buffer to write.
          * @param len  Number of bytes to write.
          */
-        void start_write(const char *path, uint8_t *data, size_t len);
+        void start_write(const char *path, const uint8_t *data, size_t len);
 
         /**
          * @brief Performs a synchronous write with a timeout.
@@ -99,7 +99,7 @@ class SdWriteController
          * @param timeout_ms Maximum time in milliseconds for the full operation.
          * @return SdWriteResult indicating success, failure reason, or timeout.
          */
-        SdWriteResult write_synchronous(const char *path, uint8_t *data,
+        SdWriteResult write_synchronous(const char *path, const uint8_t *data,
                                          size_t len, uint32_t timeout_ms);
 
         /**
@@ -143,7 +143,7 @@ class SdWriteController
 
         // Buffered write parameters (valid until state returns to IDLE)
         const char *m_write_path{nullptr};
-        uint8_t *m_write_data{nullptr};
+        const uint8_t *m_write_data{nullptr};
         size_t m_write_len{0};
 
         // Result tracking

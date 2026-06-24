@@ -93,7 +93,7 @@ class PeripheralManager
          * @param timeout_ms Maximum time in milliseconds.
          * @return SdWriteResult indicating success or failure.
          */
-        SdWriteResult write_file(const char *path, uint8_t *data,
+        SdWriteResult write_file(const char *path, const uint8_t *data,
                                   size_t len, uint32_t timeout_ms);
 
     private:

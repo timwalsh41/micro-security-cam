@@ -93,7 +93,7 @@ peripherals::SdSignal SdWriteController::tick()
     }
 }
 
-void SdWriteController::start_write(const char *path, uint8_t *data, size_t len)
+void SdWriteController::start_write(const char *path, const uint8_t *data, size_t len)
 {
     m_write_path = path;
     m_write_data = data;
@@ -103,7 +103,7 @@ void SdWriteController::start_write(const char *path, uint8_t *data, size_t len)
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
 
-SdWriteResult SdWriteController::write_synchronous(const char *path, uint8_t *data,
+SdWriteResult SdWriteController::write_synchronous(const char *path, const uint8_t *data,
                                                      size_t len, uint32_t timeout_ms)
 {
     start_write(path, data, len);
