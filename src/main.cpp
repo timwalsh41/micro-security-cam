@@ -44,7 +44,9 @@ void take_photo(const char * file_name)
 void setup()
 {
   Serial.begin(115200);
+#ifndef DEBUG
   while(!Serial); // When the serial monitor is turned on, the program starts to execute
+#endif
 
   // add delay for PlatformIO terminal to connect
   delay(5000);
