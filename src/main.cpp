@@ -49,7 +49,7 @@ void setup()
 #endif
 
   // add delay for PlatformIO terminal to connect
-  delay(5000);
+  real_time.delay_ms(5000);
 
   print_with_timestamp("Starting initialization");
 
@@ -62,7 +62,7 @@ void setup()
     while (real_time.now() < (now + 3000))
     {
       peripheral_manager.tick();
-      delay(constants::PERIPHERAL_MANAGER_TICK_TIME_MS);
+      real_time.delay_ms(constants::PERIPHERAL_MANAGER_TICK_TIME_MS);
     }
   }
   peripheral_manager.turn_led_off();
@@ -115,7 +115,7 @@ void loop() {
     else if (now % 5000 == 0)
     {
       print_with_timestamp("Looping...");
-      delay(2);
+      real_time.delay_ms(2);
     }
   }
 }

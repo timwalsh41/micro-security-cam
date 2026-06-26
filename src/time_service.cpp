@@ -11,3 +11,13 @@ hal::millis_t RealTimeService::now()
 {
     return hal::get_millis();
 }
+
+void RealTimeService::delay_ms(uint32_t ms)
+{
+    hal::delay_ms(ms);
+}
+
+void RealTimeService::delay_us(uint32_t us)
+{
+    hal::delay_us(us);
+}

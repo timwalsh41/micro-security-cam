@@ -1,6 +1,6 @@
 #include <unity.h>
 #include "led_state_machine.h"
-#include "mock_time_service.h"
+#include <Arduino.h>
 
 // ============================================================
 // OFF mode
@@ -11,13 +11,14 @@
  */
 void test_mode_off_returns_false_always()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::OFF);
     TEST_ASSERT_FALSE(led.tick());
 
-    time.advance(10000);
+    set_mock_millis(millis() + 10000);
     TEST_ASSERT_FALSE(led.tick());
 }
 
@@ -30,13 +31,14 @@ void test_mode_off_returns_false_always()
  */
 void test_mode_on_returns_true_always()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::ON);
     TEST_ASSERT_TRUE(led.tick());
 
-    time.advance(10000);
+    set_mock_millis(millis() + 10000);
     TEST_ASSERT_TRUE(led.tick());
 }
 
@@ -50,7 +52,8 @@ void test_mode_on_returns_true_always()
  */
 void test_pulse_stays_on_before_duration()
 {
-    MockTimeService time(100);
+    RealTimeService time;
+    set_mock_millis(100);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::PULSE_ON, 500);
@@ -59,11 +62,11 @@ void test_pulse_stays_on_before_duration()
     TEST_ASSERT_TRUE(led.tick());
 
     // After 250ms, elapsed = 250, not > 500 → still on
-    time.advance(250);
+    set_mock_millis(millis() + 250);
     TEST_ASSERT_TRUE(led.tick());
 
     // After another 249ms, total elapsed = 499, not > 500 → still on
-    time.advance(249);
+    set_mock_millis(millis() + 249);
     TEST_ASSERT_TRUE(led.tick());
 }
 
@@ -72,21 +75,22 @@ void test_pulse_stays_on_before_duration()
  */
 void test_pulse_turns_off_after_duration()
 {
-    MockTimeService time(100);
+    RealTimeService time;
+    set_mock_millis(100);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::PULSE_ON, 500);
 
     // Advance to 500ms elapsed → not > 500 → still on
-    time.set(600);
+    set_mock_millis(600);
     TEST_ASSERT_TRUE(led.tick());
 
     // Advance to 501ms elapsed → > 500 → off, transitions to OFF
-    time.set(601);
+    set_mock_millis(601);
     TEST_ASSERT_FALSE(led.tick());
 
     // Subsequent ticks remain OFF
-    time.advance(100);
+    set_mock_millis(millis() + 100);
     TEST_ASSERT_FALSE(led.tick());
 }
 
@@ -100,7 +104,8 @@ void test_pulse_turns_off_after_duration()
  */
 void test_blink_cycles_on_and_off()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::BLINK, 100, 100);
@@ -109,27 +114,27 @@ void test_blink_cycles_on_and_off()
     TEST_ASSERT_TRUE(led.tick());
 
     // 50ms: still in ON phase
-    time.set(50);
+    set_mock_millis(50);
     TEST_ASSERT_TRUE(led.tick());
 
     // 100ms: elapsed == 100, not > 100 → still on
-    time.set(100);
+    set_mock_millis(100);
     TEST_ASSERT_TRUE(led.tick());
 
     // 101ms: elapsed > 100 → transitions to OFF phase, records new baseline
-    time.set(101);
+    set_mock_millis(101);
     TEST_ASSERT_FALSE(led.tick());
 
     // 150ms from start, but 49ms from OFF phase start (101+49=150), not > 100 → off
-    time.set(150);
+    set_mock_millis(150);
     TEST_ASSERT_FALSE(led.tick());
 
     // 201ms from start, 100ms from OFF phase start (101+100=201), not > 100 → off
-    time.set(201);
+    set_mock_millis(201);
     TEST_ASSERT_FALSE(led.tick());
 
     // 202ms from start, 101ms from OFF phase start → > 100 → transitions to ON phase
-    time.set(202);
+    set_mock_millis(202);
     TEST_ASSERT_TRUE(led.tick());
 }
 
@@ -138,7 +143,8 @@ void test_blink_cycles_on_and_off()
  */
 void test_blink_custom_durations()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::BLINK, 200, 50);
@@ -147,27 +153,27 @@ void test_blink_custom_durations()
     TEST_ASSERT_TRUE(led.tick());
 
     // 200ms: still on (not > 200)
-    time.set(200);
+    set_mock_millis(200);
     TEST_ASSERT_TRUE(led.tick());
 
     // 201ms: > 200 → transition to OFF, baseline = 201
-    time.set(201);
+    set_mock_millis(201);
     TEST_ASSERT_FALSE(led.tick());
 
     // 250ms (49ms from OFF start): still off (not > 50)
-    time.set(250);
+    set_mock_millis(250);
     TEST_ASSERT_FALSE(led.tick());
 
     // 252ms (51ms from OFF start): > 50 → transition to ON, baseline = 252
-    time.set(252);
+    set_mock_millis(252);
     TEST_ASSERT_TRUE(led.tick());
 
     // 451ms (199ms from ON start): still on (not > 200)
-    time.set(451);
+    set_mock_millis(451);
     TEST_ASSERT_TRUE(led.tick());
 
     // 453ms (201ms from ON start): > 200 → transition to OFF
-    time.set(453);
+    set_mock_millis(453);
     TEST_ASSERT_FALSE(led.tick());
 }
 
@@ -180,7 +186,8 @@ void test_blink_custom_durations()
  */
 void test_mode_switch_on_to_off()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::ON);
@@ -195,7 +202,8 @@ void test_mode_switch_on_to_off()
  */
 void test_mode_switch_off_to_on()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::OFF);
@@ -210,7 +218,8 @@ void test_mode_switch_off_to_on()
  */
 void test_mode_switch_blink_to_off()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     LedStateMachine led(time);
 
     led.set_mode(LedMode::BLINK, 100, 100);

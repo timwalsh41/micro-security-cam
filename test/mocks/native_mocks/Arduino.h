@@ -34,4 +34,8 @@ extern HardwareSerial Serial;
 uint32_t millis();
 void set_mock_millis(uint32_t ms);
 
+// Mock delay functions
+void delay(uint32_t ms);
+void delayMicroseconds(uint32_t us);
+
 #endif // ARDUINO_H

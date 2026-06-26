@@ -1,7 +1,8 @@
 #include <unity.h>
 #include "sd_write_controller.h"
+#include "time_service.h"
 #include "mock_sd_card_hal.h"
-#include "mock_time_service.h"
+#include <Arduino.h>
 
 using peripherals::SdSignal;
 
@@ -20,13 +21,13 @@ using peripherals::SdSignal;
  * @return SdSignal::CS_ACTIVE  if CS was asserted.
  * @return SdSignal::IDLE or CS_INACTIVE if CS was not asserted after sufficient ticks.
  */
-static SdSignal tick_until_cs_asserted(MockTimeService &time,
+static SdSignal tick_until_cs_asserted(RealTimeService &time,
                                         SdWriteController &ctrl)
 {
     // PRE_DEACTIVATE_CS requires DEACTIVATE_TIME_MS + 1 ms to transition
     for (uint32_t elapsed = 0; elapsed <= SdWriteController::DEACTIVATE_TIME_MS + 1; elapsed++)
     {
-        time.set(elapsed);
+        set_mock_millis(elapsed);
         SdSignal sig = ctrl.tick();
         if (sig == SdSignal::CS_ACTIVE)
         {
@@ -46,7 +47,8 @@ static SdSignal tick_until_cs_asserted(MockTimeService &time,
  */
 void test_idle_returns_cs_inactive()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     SdWriteController ctrl(time, sd_hal);
 
@@ -64,7 +66,8 @@ void test_idle_returns_cs_inactive()
  */
 void test_start_write_transitions_to_pre_deactivate()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -85,7 +88,8 @@ void test_start_write_transitions_to_pre_deactivate()
  */
 void test_pre_deactivate_to_activate_after_delay()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -97,12 +101,12 @@ void test_pre_deactivate_to_activate_after_delay()
 
     // Advance to just before the timeout → still PRE_DEACTIVATE_CS → CS_INACTIVE
     // (DEACTIVATE_TIME_MS = 10, elapsed = 10, condition is > 10 → not met)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 
     // Advance past the timeout → transitions to ACTIVATE_CS → CS_ACTIVE
     // (elapsed = 11 > 10 → true)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 }
 
@@ -120,7 +124,8 @@ void test_pre_deactivate_to_activate_after_delay()
  */
 void test_activate_to_writing_after_delay()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -129,18 +134,18 @@ void test_activate_to_writing_after_delay()
 
     // Advance through PRE_DEACTIVATE_CS
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());  // → ACTIVATE_CS
 
     // Just before ACTIVATE_CS timeout → still ACTIVATE_CS → CS_ACTIVE
     // (ACTIVATE_TIME_MS = 5, elapsed = 5, condition is > 5 → not met)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // Past ACTIVATE_CS timeout → transitions to WRITING → CS_ACTIVE
     // (elapsed = 6 > 5 → true)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
@@ -158,7 +163,8 @@ void test_activate_to_writing_after_delay()
  */
 void test_writing_performs_io_and_moves_to_stop()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -167,14 +173,14 @@ void test_writing_performs_io_and_moves_to_stop()
 
     // Advance through PRE_DEACTIVATE_CS and ACTIVATE_CS to reach WRITING
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());  // PRE_DEACTIVATE_CS
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS → WRITING (transition)
 
     // One more tick: WRITING executes I/O → STOP_WRITE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // Verify HAL was called correctly
@@ -197,7 +203,8 @@ void test_writing_performs_io_and_moves_to_stop()
  */
 void test_stop_write_transitions_to_post_deactivate()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -206,18 +213,18 @@ void test_stop_write_transitions_to_post_deactivate()
 
     // Advance to WRITING
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());  // PRE_DEACTIVATE_CS
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS → WRITING (transition)
 
     // Execute WRITING I/O → STOP_WRITE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // WRITING I/O → STOP_WRITE
 
     // Next tick: STOP_WRITE → POST_DEACTIVATE_CS → CS_INACTIVE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 }
 
@@ -231,7 +238,8 @@ void test_stop_write_transitions_to_post_deactivate()
  */
 void test_post_deactivate_to_idle_after_delay()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -240,26 +248,26 @@ void test_post_deactivate_to_idle_after_delay()
 
     // Advance through the full cycle to POST_DEACTIVATE_CS
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());  // PRE_DEACTIVATE_CS
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS → WRITING (transition)
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // WRITING I/O → STOP_WRITE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick()); // STOP_WRITE → POST_DEACTIVATE_CS
 
     // Just before POST_DEACTIVATE_CS timeout → still POST_DEACTIVATE_CS → CS_INACTIVE
-    time.advance(SdWriteController::DEACTIVATE_TIME_MS);
+    set_mock_millis(millis() + SdWriteController::DEACTIVATE_TIME_MS);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 
     // Past POST_DEACTIVATE_CS timeout → returns to IDLE → IDLE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::IDLE, ctrl.tick());
 
     // Verify back in IDLE — subsequent ticks return IDLE
-    time.advance(100);
+    set_mock_millis(millis() + 100);
     TEST_ASSERT_EQUAL(SdSignal::IDLE, ctrl.tick());
 }
 
@@ -273,7 +281,8 @@ void test_post_deactivate_to_idle_after_delay()
  */
 void test_full_write_cycle_state_sequence()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0xAA, 0xBB, 0xCC, 0xDD};
     SdWriteController ctrl(time, sd_hal);
@@ -287,16 +296,16 @@ void test_full_write_cycle_state_sequence()
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 
     // Phase: transition to ACTIVATE_CS (SD asserting CS)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // Phase: transition to WRITING (SD still asserting CS)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());  // ACTIVATE_CS → WRITING (transition)
 
     // Phase: execute WRITING I/O → STOP_WRITE (SD still asserting CS)
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // Verify HAL calls
@@ -308,11 +317,11 @@ void test_full_write_cycle_state_sequence()
     TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
 
     // Phase: STOP_WRITE → POST_DEACTIVATE_CS (SD actively de-asserting)
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 
     // Phase: POST_DEACTIVATE_CS → IDLE (SD doesn't care)
-    time.advance(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(millis() + SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::IDLE, ctrl.tick());
 
     // Verify back in IDLE — subsequent ticks return IDLE, no additional HAL calls
@@ -330,7 +339,8 @@ void test_full_write_cycle_state_sequence()
  */
 void test_end_to_end_write_success()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
     SdWriteController ctrl(time, sd_hal);
@@ -341,21 +351,21 @@ void test_end_to_end_write_success()
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, tick_until_cs_asserted(time, ctrl));
 
     // ACTIVATE_CS: wait ACTIVATE_TIME_MS then transition
-    time.advance(SdWriteController::ACTIVATE_TIME_MS);
+    set_mock_millis(millis() + SdWriteController::ACTIVATE_TIME_MS);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // still ACTIVATE_CS
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());   // ACTIVATE_CS → WRITING (transition)
 
     // Execute WRITING I/O → STOP_WRITE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // STOP_WRITE → POST_DEACTIVATE_CS
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 
     // POST_DEACTIVATE_CS → IDLE (wait DEACTIVATE_TIME_MS + 1)
-    time.advance(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(millis() + SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::IDLE, ctrl.tick());
 
     // Verify HAL was called correctly
@@ -367,7 +377,7 @@ void test_end_to_end_write_success()
     TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
 
     // Back in IDLE — subsequent ticks return IDLE
-    time.advance(100);
+    set_mock_millis(millis() + 100);
     TEST_ASSERT_EQUAL(SdSignal::IDLE, ctrl.tick());
 }
 
@@ -379,7 +389,8 @@ void test_end_to_end_write_success()
  */
 void test_end_to_end_write_open_failed()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -393,18 +404,18 @@ void test_end_to_end_write_open_failed()
     TEST_ASSERT_EQUAL_MESSAGE(SdSignal::CS_INACTIVE, r1, "tick 1 should be CS_INACTIVE (PRE_DEACTIVATE_CS wait)");
 
     // Tick 2: PRE_DEACTIVATE_CS → ACTIVATE_CS (time 11, elapsed 11 > 10)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1);
     SdSignal r2 = ctrl.tick();
     TEST_ASSERT_EQUAL_MESSAGE(SdSignal::CS_ACTIVE, r2, "tick 2 should be CS_ACTIVE (PRE→ACTIVATE)");
 
     // Tick 3: ACTIVATE_CS → WRITING (time 17, elapsed 6 > 5)
-    time.set(SdWriteController::DEACTIVATE_TIME_MS + 1 +
+    set_mock_millis(SdWriteController::DEACTIVATE_TIME_MS + 1 +
              SdWriteController::ACTIVATE_TIME_MS + 1);
     SdSignal r3 = ctrl.tick();
     TEST_ASSERT_EQUAL_MESSAGE(SdSignal::CS_ACTIVE, r3, "tick 3 should be CS_ACTIVE (ACTIVATE→WRITING)");
 
     // Tick 4: WRITING I/O (time 18)
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     SdSignal r4 = ctrl.tick();
     TEST_ASSERT_EQUAL_MESSAGE(SdSignal::CS_ACTIVE, r4, "tick 4 should be CS_ACTIVE (WRITING I/O)");
 
@@ -412,12 +423,12 @@ void test_end_to_end_write_open_failed()
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, sd_hal.open_call_count, "open_call_count after WRITING I/O");
 
     // Tick 5: STOP_WRITE → POST_DEACTIVATE_CS (time 19)
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     SdSignal r5 = ctrl.tick();
     TEST_ASSERT_EQUAL_MESSAGE(SdSignal::CS_INACTIVE, r5, "tick 5 should be CS_INACTIVE (STOP→POST)");
 
     // Tick 6: POST_DEACTIVATE_CS → IDLE (time 30)
-    time.advance(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(millis() + SdWriteController::DEACTIVATE_TIME_MS + 1);
     SdSignal r6 = ctrl.tick();
     TEST_ASSERT_EQUAL_MESSAGE(SdSignal::IDLE, r6, "tick 6 should be IDLE (POST→IDLE)");
 
@@ -432,7 +443,8 @@ void test_end_to_end_write_open_failed()
  */
 void test_end_to_end_write_write_error()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     uint8_t data[] = {0x01, 0x02, 0x03};
     SdWriteController ctrl(time, sd_hal);
@@ -445,19 +457,19 @@ void test_end_to_end_write_write_error()
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, tick_until_cs_asserted(time, ctrl));
 
     // ACTIVATE_CS → WRITING (transition)
-    time.advance(SdWriteController::ACTIVATE_TIME_MS + 1);
+    set_mock_millis(millis() + SdWriteController::ACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // Execute WRITING I/O (write fails) → STOP_WRITE
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_ACTIVE, ctrl.tick());
 
     // STOP_WRITE → POST_DEACTIVATE_CS
-    time.advance(1);
+    set_mock_millis(millis() + 1);
     TEST_ASSERT_EQUAL(SdSignal::CS_INACTIVE, ctrl.tick());
 
     // POST_DEACTIVATE_CS → IDLE
-    time.advance(SdWriteController::DEACTIVATE_TIME_MS + 1);
+    set_mock_millis(millis() + SdWriteController::DEACTIVATE_TIME_MS + 1);
     TEST_ASSERT_EQUAL(SdSignal::IDLE, ctrl.tick());
 
     // Verify both open and write were attempted, and close was called
@@ -475,7 +487,8 @@ void test_end_to_end_write_write_error()
  */
 void test_init_card_delegates_to_hal()
 {
-    MockTimeService time(0);
+    RealTimeService time;
+    set_mock_millis(0);
     MockSdCardHal sd_hal;
     SdWriteController ctrl(time, sd_hal);
 

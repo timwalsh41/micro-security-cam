@@ -12,3 +12,13 @@ void set_mock_millis(uint32_t ms)
 {
     mock_millis = ms;
 }
+
+void delay(uint32_t ms)
+{
+    mock_millis += ms;
+}
+
+void delayMicroseconds(uint32_t us)
+{
+    mock_millis += us / 1000;
+}
