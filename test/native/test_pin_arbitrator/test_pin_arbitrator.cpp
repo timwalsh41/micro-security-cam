@@ -60,14 +60,12 @@ void test_both_active_returns_true()
     TEST_ASSERT_TRUE(PinArbitrator::resolve(true, SdSignal::CS_ACTIVE));
 }
 
-void setup()
+void setUp()
 {
-    // No setup required for pure logic tests.
 }
 
 void tearDown()
 {
-    // No cleanup required for pure logic tests.
 }
 
 int main(int argc, char **argv)

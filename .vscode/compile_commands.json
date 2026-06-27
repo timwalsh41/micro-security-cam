@@ -12,6 +12,12 @@
         "output": ""
     },
     {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_logging_service/test_logging_service.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
+        "file": "test/native/test_logging_service/test_logging_service.cpp",
+        "output": ""
+    },
+    {
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_pin_arbitrator/test_pin_arbitrator.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
         "file": "test/native/test_pin_arbitrator/test_pin_arbitrator.cpp",
@@ -27,12 +33,6 @@
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_time_service/test_time_service.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
         "file": "test/native/test_time_service/test_time_service.cpp",
-        "output": ""
-    },
-    {
-        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_utility/test_utility.cpp",
-        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
-        "file": "test/native/test_utility/test_utility.cpp",
         "output": ""
     }
 ]

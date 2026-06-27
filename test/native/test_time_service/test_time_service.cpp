@@ -83,14 +83,12 @@ void test_delay_ms_does_not_affect_elapsed_ms()
     TEST_ASSERT_EQUAL_UINT32(50, TimeService::elapsed_ms(100, time.now()));
 }
 
-void setup()
+void setUp()
 {
-    // set up while unable to run tests in main()
 }
 
 void tearDown() 
 {
-    // clean up after test is completed
 }
 
 int main(int argc, char **argv)

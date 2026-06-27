@@ -6,7 +6,6 @@
 #include "time_service.h"
 #include "hal/sd_card_hal_impl.h"
 #include "hal/gpio_hal.h"
-#include "utility.h"
 
 /**
  * @file peripherals.h
