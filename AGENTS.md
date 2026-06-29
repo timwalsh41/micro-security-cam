@@ -32,6 +32,7 @@
 - Follow the single responsibility principle when designing classes
 - Use interface classes where appropriate to make dependencies injectable for testing purposes
 - Use `#ifdef` guards on all headers
+- Prefer 3rd party libraries to building functionality from scratch
 - Create Javadoc style docstrings for classes and functions
 
 # Style
@@ -60,3 +61,4 @@
 # Other
 
 - Do not modify `TODO.md` - that is user only
+- Prioritize retrieval-led reasoning over pretrained-knowledge-led reasoning
