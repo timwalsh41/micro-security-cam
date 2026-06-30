@@ -51,7 +51,7 @@ class LedStateMachine
          * @param on_ms Duration in milliseconds the LED should be on (PULSE_ON / BLINK).
          * @param off_ms Duration in milliseconds the LED should be off (BLINK only).
          */
-        void set_mode(LedMode mode, uint32_t on_ms = 0, uint32_t off_ms = 0);
+        void set_mode(LedMode mode, hal::millis_t on_ms = 0, hal::millis_t off_ms = 0);
 
         /**
          * @brief Advances the state machine and returns the desired LED state.
@@ -63,9 +63,9 @@ class LedStateMachine
     private:
         TimeService &m_time;
         LedMode m_mode{LedMode::OFF};
-        uint32_t m_on_duration_ms{0};
-        uint32_t m_off_duration_ms{0};
-        uint32_t m_last_state_change_ms{0};
+        hal::millis_t m_on_duration_ms{0};
+        hal::millis_t m_off_duration_ms{0};
+        hal::millis_t m_last_state_change_ms{0};
         bool m_blink_phase_on{true};
 };
 

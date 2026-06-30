@@ -9,12 +9,12 @@ millis_t get_millis()
     return millis();
 }
 
-void delay_ms(uint32_t ms)
+void delay_ms(millis_t ms)
 {
     delay(ms);
 }
 
-void delay_us(uint32_t us)
+void delay_us(millis_t us)
 {
     delayMicroseconds(us);
 }

@@ -60,5 +60,6 @@
 
 # Other
 
+- Use `hal::millis_t` from `hal/time_hal.h` for millisecond time type
 - Do not modify `TODO.md` - that is user only
 - Prioritize retrieval-led reasoning over pretrained-knowledge-led reasoning

@@ -22,6 +22,7 @@ class String : public std::string
 class HardwareSerial
 {
     public:
+        void begin(uint32_t) {}
         void print(const String& s) { std::cout << s; }
         void print(uint32_t n) { std::cout << n; }
         void println(const String& s) { std::cout << s << std::endl; }

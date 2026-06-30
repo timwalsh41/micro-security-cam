@@ -122,7 +122,7 @@ IDLE → PRE_DEACTIVATE_CS → ACTIVATE_CS → WRITING → STOP_WRITE → POST_D
 
 The `tick()` method returns an `SdSignal` (`IDLE`, `CS_ACTIVE`, or `CS_INACTIVE`) that describes what the shared pin should do. When `IDLE`, the LED's request wins. When `CS_ACTIVE` or `CS_INACTIVE`, the SD card overrides the LED.
 
-Provides both non-blocking (`start_write()` + repeated `tick()`) and blocking (`write_synchronous()` with timeout) write APIs. Hardware I/O is delegated to an injected `SdCardHal`.
+Provides both non-blocking (`start_write()` + repeated `tick()`) and blocking (`write_file()` with timeout) write APIs. Hardware I/O is delegated to an injected `SdCardHal`.
 
 ### PinArbitrator
 
@@ -205,7 +205,7 @@ Acts as the **composition root and facade** for all peripheral sub-components. W
   3. Feeds both into `PinArbitrator::resolve()` → gets the final pin state.
   4. Applies the result to GPIO 21 via `GpioHal`.
 - **LED convenience**: `turn_led_on()`, `turn_led_off()`, `pulse_led(ms)`, `blink(on_ms, off_ms)` — delegate to `LedStateMachine::set_mode()`.
-- **SD convenience**: `write_file(path, data, len, timeout_ms)` — delegates to `SdWriteController::write_synchronous()`.
+- **SD convenience**: `write_file(path, data, len, timeout_ms)` — delegates to `SdController::write_file()`.
 
 ### Shared Pin Protocol
 

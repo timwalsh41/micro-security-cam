@@ -36,7 +36,7 @@ Key changes:
 Suggested API direction:
 
 - `SdController::read_file(...)` for simple blocking reads used by config loading.
-- `SdController::write_synchronous(...)` retained for image capture writes.
+- `SdController::write_file(...)` retained for image capture writes.
 - `hal::SdCardHal` methods should remain minimal and focused on file access, not higher-level parsing.
 
 ### 2. Add an INI config loader

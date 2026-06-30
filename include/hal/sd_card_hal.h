@@ -27,13 +27,22 @@ enum class SdInitResult : uint8_t
 };
 
 /**
+ * @brief File open mode for SD card operations.
+ */
+enum class FileOpenMode : uint8_t
+{
+    READ,               ///< Open file for reading
+    WRITE               ///< Open file for writing (truncates if exists)
+};
+
+/**
  * @class SdCardHal
  * @brief Abstract interface for SD card hardware operations.
  *
  * Provides a mockable abstraction over the SD card library (SD.h).
- * The SdWriteController owns the chip-select (CS) pin timing protocol;
- * therefore file operations (open/write/close) MUST only be called
- * when the CS pin is asserted by the controller.
+ * The SdController owns the chip-select (CS) pin timing protocol;
+ * therefore file operations (open/write/read/close) MUST only be
+ * called when the CS pin is asserted by the controller.
  */
 class SdCardHal
 {
@@ -50,25 +59,39 @@ public:
     virtual SdInitResult init() = 0;
 
     /**
-     * @brief Opens a file for writing.
+     * @brief Opens a file with the specified mode.
      *
      * Must only be called when the chip-select pin is asserted.
      *
      * @param path The file path to open.
+     * @param mode The open mode (READ or WRITE).
      * @return true if the file was opened successfully, false otherwise.
      */
-    virtual bool open(const char *path) = 0;
+    virtual bool open(const char *path, FileOpenMode mode) = 0;
 
     /**
      * @brief Writes data to the currently open file.
      *
      * Must only be called when the chip-select pin is asserted.
+     * The file must have been opened in WRITE mode.
      *
      * @param data Pointer to the data buffer to write.
      * @param len Number of bytes to write.
      * @return true if all bytes were written successfully, false otherwise.
      */
     virtual bool write(const uint8_t *data, size_t len) = 0;
+
+    /**
+     * @brief Reads data from the currently open file.
+     *
+     * Must only be called when the chip-select pin is asserted.
+     * The file must have been opened in READ mode.
+     *
+     * @param buffer Pointer to the buffer to read into.
+     * @param len Maximum number of bytes to read.
+     * @return Number of bytes actually read (0 on failure or EOF).
+     */
+    virtual size_t read(uint8_t *buffer, size_t len) = 0;
 
     /**
      * @brief Closes the currently open file.

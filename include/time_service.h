@@ -18,12 +18,12 @@ public:
     /**
      * @brief Blocks execution for the given number of milliseconds.
      */
-    virtual void delay_ms(uint32_t ms) = 0;
+    virtual void delay_ms(hal::millis_t ms) = 0;
 
     /**
      * @brief Blocks execution for the given number of microseconds.
      */
-    virtual void delay_us(uint32_t us) = 0;
+    virtual void delay_us(hal::millis_t us) = 0;
 
     /**
      * @brief Calculates elapsed time between two timestamps, handling rollover correctly.
@@ -41,8 +41,8 @@ public:
 class RealTimeService : public TimeService {
     public:
         hal::millis_t now() override;
-        void delay_ms(uint32_t ms) override;
-        void delay_us(uint32_t us) override;
+        void delay_ms(hal::millis_t ms) override;
+        void delay_us(hal::millis_t us) override;
 };
 
 #endif // TIME_SERVICE_H

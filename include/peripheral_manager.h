@@ -2,7 +2,7 @@
 #define PERIPHERALS_H
 
 #include "led_state_machine.h"
-#include "sd_write_controller.h"
+#include "sd_controller.h"
 #include "time_service.h"
 #include "hal/sd_card_hal_impl.h"
 #include "hal/gpio_hal.h"
@@ -12,7 +12,7 @@
  * @brief Composition root that wires together all peripheral sub-components.
  *
  * PeripheralManager is a thin facade that owns and connects the
- * LedStateMachine, SdWriteController, PinArbitrator, and HAL
+ * LedStateMachine, SdController, PinArbitrator, and HAL
  * implementations. It contains no state machine logic of its own —
  * all behavior is delegated to the sub-components.
  */
@@ -27,7 +27,7 @@
  * @brief Facade that composes and wires peripheral sub-components.
  *
  * Owns a RealTimeService, LedStateMachine, SdCardHalImpl, and
- * SdWriteController. The tick() method ticks both state machines,
+ * SdController. The tick() method ticks both state machines,
  * resolves the shared pin via PinArbitrator, and applies the result
  * to the GPIO pin.
  */
@@ -73,16 +73,16 @@ class PeripheralManager
          * @brief Pulses the LED on for the given duration, then turns off.
          * @param ms Duration in milliseconds.
          */
-        void pulse_led(uint32_t ms);
+        void pulse_led(hal::millis_t ms);
 
         /**
          * @brief Blinks the LED with the given on/off durations.
          * @param on_ms  Duration in milliseconds the LED is on.
          * @param off_ms Duration in milliseconds the LED is off.
          */
-        void blink(uint32_t on_ms, uint32_t off_ms);
+        void blink(hal::millis_t on_ms, hal::millis_t off_ms);
 
-        // SD convenience methods — delegate to SdWriteController
+        // SD convenience methods — delegate to SdController
 
         /**
          * @brief Performs a synchronous SD card write with a timeout.
@@ -93,13 +93,26 @@ class PeripheralManager
          * @return SdWriteResult indicating success or failure.
          */
         SdWriteResult write_file(const char *path, const uint8_t *data,
-                                  size_t len, uint32_t timeout_ms);
+                                  size_t len, hal::millis_t timeout_ms);
+
+        /**
+         * @brief Performs a synchronous SD card read with a timeout.
+         * @param path        File path to read from.
+         * @param buffer      Pointer to the buffer to read into.
+         * @param buffer_size Maximum number of bytes the buffer can hold.
+         * @param bytes_read  Output: number of bytes actually read.
+         * @param timeout_ms  Maximum time in milliseconds.
+         * @return SdReadResult indicating success or failure.
+         */
+        SdReadResult read_file(const char *path, uint8_t *buffer,
+                                size_t buffer_size, size_t *bytes_read,
+                                hal::millis_t timeout_ms);
 
     private:
         RealTimeService m_time;
         LedStateMachine m_led{m_time};
         hal::SdCardHalImpl m_sd_hal{SD_CS};
-        SdWriteController m_sd{m_time, m_sd_hal};
+        SdController m_sd{m_time, m_sd_hal};
 
         /**
          * @brief Applies the resolved pin state to the GPIO output.

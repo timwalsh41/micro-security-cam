@@ -19,12 +19,12 @@ millis_t get_millis();
 /**
  * @brief Blocks execution for the given number of milliseconds.
  */
-void delay_ms(uint32_t ms);
+void delay_ms(hal::millis_t ms);
 
 /**
  * @brief Blocks execution for the given number of microseconds.
  */
-void delay_us(uint32_t us);
+void delay_us(hal::millis_t us);
 
 } // namespace hal
 

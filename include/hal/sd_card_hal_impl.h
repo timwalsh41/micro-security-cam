@@ -32,8 +32,9 @@ public:
 
     SdInitResult init() override;
 
-    bool open(const char *path) override;
+    bool open(const char *path, hal::FileOpenMode mode) override;
     bool write(const uint8_t *data, size_t len) override;
+    size_t read(uint8_t *buffer, size_t len) override;
     void close() override;
     bool is_initialized() const override;
 

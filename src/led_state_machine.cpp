@@ -1,11 +1,14 @@
 #include "led_state_machine.h"
+#include "hal/time_hal.h"
+
+using hal::millis_t;
 
 LedStateMachine::LedStateMachine(TimeService &time)
     : m_time(time)
 {
 }
 
-void LedStateMachine::set_mode(LedMode mode, uint32_t on_ms, uint32_t off_ms)
+void LedStateMachine::set_mode(LedMode mode, millis_t on_ms, millis_t off_ms)
 {
     m_mode = mode;
     m_on_duration_ms = on_ms;
@@ -26,7 +29,7 @@ bool LedStateMachine::tick()
 
         case LedMode::PULSE_ON:
         {
-            uint32_t elapsed = TimeService::elapsed_ms(m_last_state_change_ms, m_time.now());
+            millis_t elapsed = TimeService::elapsed_ms(m_last_state_change_ms, m_time.now());
             if (elapsed > m_on_duration_ms)
             {
                 m_mode = LedMode::OFF;
@@ -37,7 +40,7 @@ bool LedStateMachine::tick()
 
         case LedMode::BLINK:
         {
-            uint32_t elapsed = TimeService::elapsed_ms(m_last_state_change_ms, m_time.now());
+            millis_t elapsed = TimeService::elapsed_ms(m_last_state_change_ms, m_time.now());
 
             if (m_blink_phase_on)
             {
