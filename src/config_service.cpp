@@ -1,0 +1,56 @@
+#include "config_service.h"
+#include <cstring>
+
+// Out-of-class definition for ODR-use (C++11 constexpr string member)
+constexpr char ConfigService::DEFAULT_CONFIG_PATH[];
+
+// ============================================================
+// Construction
+// ============================================================
+
+ConfigService::ConfigService(LoggingService& logger)
+    : m_logger(logger)
+{
+    m_config = IniParser::defaults();
+}
+
+// ============================================================
+// Public interface
+// ============================================================
+
+bool ConfigService::load(const uint8_t* data, size_t length)
+{
+    m_logger.info("CONFIG", "Parsing config: %zu bytes", length);
+
+    if (!data || length == 0)
+    {
+        m_logger.warn("CONFIG", "No config data, using defaults");
+        m_config = IniParser::defaults();
+        return false;
+    }
+
+    m_config = IniParser::parse(reinterpret_cast<const char*>(data), length);
+
+    // Log parsed settings at INFO level
+    if (m_config.wifi.ssid[0] != '\0')
+    {
+        m_logger.info("CONFIG", "WiFi SSID: %s", m_config.wifi.ssid);
+    }
+    m_logger.info("CONFIG", "AP SSID: %s",
+                  m_config.ap.ssid[0] != '\0' ? m_config.ap.ssid : "(not set)");
+    m_logger.info("CONFIG", "Web port: %u", m_config.web.port);
+    m_logger.info("CONFIG", "Capture interval: %u ms",
+                  m_config.camera.capture_interval_ms);
+
+    return true;
+}
+
+const ConfigData& ConfigService::config() const
+{
+    return m_config;
+}
+
+ConfigData& ConfigService::mutable_config()
+{
+    return m_config;
+}

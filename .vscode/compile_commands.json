@@ -6,6 +6,18 @@
         "output": ""
     },
     {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_config_service/test_config_service.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
+        "file": "test/native/test_config_service/test_config_service.cpp",
+        "output": ""
+    },
+    {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_ini_parser/test_ini_parser.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
+        "file": "test/native/test_ini_parser/test_ini_parser.cpp",
+        "output": ""
+    },
+    {
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_led_state_machine/test_led_state_machine.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_photo_camera",
         "file": "test/native/test_led_state_machine/test_led_state_machine.cpp",

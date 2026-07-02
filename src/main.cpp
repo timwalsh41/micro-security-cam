@@ -5,13 +5,14 @@
 #include "time_service.h"
 #include "logging_service.h"
 #include "peripheral_manager.h"
+#include "config_service.h"
 
 using hal::millis_t;
 
 namespace constants
 {
   constexpr millis_t LED_ON_TIME_MS = 1000;
-  constexpr millis_t CAMERA_CAPTURE_INTERVAL_MS = 20000;
+  constexpr millis_t DEFAULT_CAMERA_CAPTURE_INTERVAL_MS = 20000;
   constexpr millis_t PERIPHERAL_MANAGER_TICK_TIME_MS = 5;
 }
 
@@ -21,10 +22,12 @@ uint32_t image_count = 1;               // File counter
 RealTimeService real_time;
 hal::SerialLogBackend log_backend;
 LoggingService logger{log_backend, real_time};
+ConfigService config_service{logger};
 PeripheralManager peripheral_manager;
 hal::CameraHalImpl camera_hal;
 CameraController camera_ctrl{camera_hal};
 millis_t last_peripheral_tick_time_ms = 0;
+millis_t camera_capture_interval_ms = constants::DEFAULT_CAMERA_CAPTURE_INTERVAL_MS;
 
 void take_photo(uint32_t image_count)
 {
@@ -77,9 +80,25 @@ void setup()
   {
     logger.error("MAIN", "SD initialization failed");
     return;
-    
   }
   logger.info("MAIN", "SD initialized");
+
+  // Load config from SD card
+  uint8_t config_buf[ConfigService::CONFIG_BUFFER_SIZE];
+  size_t bytes_read = 0;
+  peripheral_manager.read_file(ConfigService::DEFAULT_CONFIG_PATH,
+                               config_buf, sizeof(config_buf),
+                               &bytes_read, ConfigService::READ_TIMEOUT_MS);
+  logger.info("MAIN", "Config read: %zu / %zu bytes",
+              bytes_read, ConfigService::CONFIG_BUFFER_SIZE);
+  config_service.load(config_buf, bytes_read);
+
+  // Apply config values
+  if (config_service.config().camera.capture_interval_ms > 0)
+  {
+    camera_capture_interval_ms = config_service.config().camera.capture_interval_ms;
+    logger.info("MAIN", "Capture interval: %u ms", camera_capture_interval_ms);
+  }
 }
 
 void loop() {
@@ -93,7 +112,7 @@ void loop() {
       last_peripheral_tick_time_ms = now;
     }
 
-    if (TimeService::elapsed_ms(last_capture_time_ms, now) >= constants::CAMERA_CAPTURE_INTERVAL_MS)
+    if (TimeService::elapsed_ms(last_capture_time_ms, now) >= camera_capture_interval_ms)
     {
       peripheral_manager.pulse_led(constants::LED_ON_TIME_MS);
       last_capture_time_ms = now;

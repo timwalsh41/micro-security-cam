@@ -23,6 +23,7 @@ The design follows a layered architecture that separates hardware access from ap
 │  CameraController       LedStateMachine         │
 │  SdWriteController      PinArbitrator           │
 │  TimeService            LoggingService          │
+│  ConfigService          IniParser               │
 │  PeripheralManager  (facade / composition root) │
 └─────────────────────────────────────────────────┘
                          │
@@ -149,6 +150,132 @@ Provides convenience methods (`debug()`, `info()`, `warn()`, `error()`) with pri
 
 ---
 
+## IniParser
+
+**Files**: `include/ini_parser.h`, `src/ini_parser.cpp`
+
+### Responsibility
+
+A stateless, single-pass INI file parser. Parses a character buffer into a `ConfigData` struct containing all firmware configuration.
+
+### INI Format
+
+```ini
+[wifi]
+ssid=MyNetwork
+password=secret123
+
+[ap]
+ssid=ESP32-Cam
+password=admin
+
+[web]
+port=8080
+password=webpass
+
+[camera]
+capture_interval_ms=15000
+```
+
+- Sections are denoted by `[name]`
+- Key-value pairs use `key=value` syntax
+- Lines starting with `#` or `;` are comments
+- Blank lines are ignored
+- Section and key matching is case-insensitive
+- Whitespace around keys, values, and section headers is trimmed
+- Unknown sections and keys are silently ignored
+- Values are truncated to `CONFIG_FIELD_MAX_LENGTH - 1` (63) characters
+- Integer values (port, capture_interval_ms) are validated with range checking
+
+### API
+
+- `IniParser::defaults()` — returns a `ConfigData` populated with defaults (port 80, capture interval 20000 ms, empty strings).
+- `IniParser::parse(const char* content, size_t length)` — parses the given buffer and returns a `ConfigData`. Malformed lines are skipped gracefully. Unknown fields retain their defaults.
+- `IniParser::serialize(const ConfigData& data, char* buffer, size_t buffer_size)` — serializes a `ConfigData` into INI-format text written to `buffer`. Returns the number of bytes written (excluding null terminator). If the buffer is null or too small, returns the number of bytes that would have been needed. The output is round-trip compatible with `parse()` — serializing and re-parsing yields identical values. All fields are always written, including empty strings.
+
+### ConfigData Structure
+
+```c++
+struct ConfigData
+{
+    struct WifiConfig   { char ssid[64]; char password[64]; };
+    struct ApConfig     { char ssid[64]; char password[64]; };
+    struct WebConfig    { uint16_t port; char password[64]; };
+    struct CameraConfig { uint32_t capture_interval_ms; };
+
+    WifiConfig wifi;
+    ApConfig ap;
+    WebConfig web;
+    CameraConfig camera;
+};
+```
+
+### Testability
+
+Pure logic with no hardware dependencies. Testable natively with 35 unit tests covering defaults, parsing, edge cases, comments, whitespace, malformed input, and serialization round-trips.
+
+---
+
+## ConfigService
+
+**Files**: `include/config_service.h`, `src/config_service.cpp`
+
+### Responsibility
+
+High-level configuration service that owns the current `ConfigData` and provides a `load()` method to populate it from a raw byte buffer (typically read from an INI file on the SD card).
+
+### Dependencies
+
+- `LoggingService &` — for diagnostic output during config loading.
+
+### Key Methods
+
+- `load(const uint8_t* data, size_t length)` — parses the buffer via `IniParser::parse()`, logs the result (WiFi SSID, AP SSID, web port, capture interval), and stores the parsed config. Returns `true` on success, `false` if the buffer is null or empty (in which case defaults are retained with a warning log).
+- `config()` — returns a `const ConfigData&` to the current configuration (read-only).
+- `mutable_config()` — returns a `ConfigData&` for in-place modification. Callers can modify fields directly, then use `IniParser::serialize()` to produce an updated INI buffer for persistence.
+
+### Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `CONFIG_BUFFER_SIZE` | 512 | Maximum buffer size expected for config file reads |
+| `DEFAULT_CONFIG_PATH` | `/config.ini` | Path on SD card where config file is looked up |
+| `READ_TIMEOUT_MS` | 5000 | Timeout for SD card read operations |
+
+### Integration
+
+In `main.cpp`, after SD card initialization:
+1. A stack-allocated buffer of `CONFIG_BUFFER_SIZE` bytes is created.
+2. `PeripheralManager::read_file()` reads `/config.ini` from the SD card.
+3. `ConfigService::load()` parses the buffer and logs the result.
+4. `camera_capture_interval_ms` is updated from the parsed config.
+
+### Write Pattern
+
+ConfigService does not own file I/O or serialization. Callers that need to persist modified config follow this pattern:
+
+```c++
+// 1. Modify config in place
+config_service.mutable_config().web.port = 9090;
+
+// 2. Serialize to INI text
+char buf[ConfigService::CONFIG_BUFFER_SIZE];
+size_t len = IniParser::serialize(config_service.config(), buf, sizeof(buf));
+
+// 3. Write to SD card via PeripheralManager
+peripheral_manager.write_file(ConfigService::DEFAULT_CONFIG_PATH,
+                              reinterpret_cast<const uint8_t*>(buf),
+                              len, timeout_ms);
+```
+
+This keeps ConfigService thin (no PeripheralManager dependency) while enabling full round-trip config persistence.
+
+### Testability
+
+Testable natively with 15 unit tests using `MockLogBackend` for log verification and `RealTimeService` for time. Tests cover defaults, loading, mutable access, and reload behavior.
+
+---
+
 ## CameraController
 
 **Files**: `include/camera_controller.h`, `src/camera_controller.cpp`
@@ -206,6 +333,7 @@ Acts as the **composition root and facade** for all peripheral sub-components. W
   4. Applies the result to GPIO 21 via `GpioHal`.
 - **LED convenience**: `turn_led_on()`, `turn_led_off()`, `pulse_led(ms)`, `blink(on_ms, off_ms)` — delegate to `LedStateMachine::set_mode()`.
 - **SD convenience**: `write_file(path, data, len, timeout_ms)` — delegates to `SdController::write_file()`.
+- **SD read**: `read_file(path, buffer, max_len, bytes_read, timeout_ms)` — reads a file from SD into the provided buffer.
 
 ### Shared Pin Protocol
 
@@ -217,9 +345,11 @@ GPIO 21 is shared between the LED (active LOW) and the SD card chip-select (acti
 
 **File**: `src/main.cpp`
 
-The `setup()` function initializes Serial, the PeripheralManager, camera, and SD card in sequence. The camera initialization is PSRAM-aware. An LED blink pattern provides visual feedback during startup.
+The `setup()` function initializes Serial, the PeripheralManager, camera, SD card, and config service in sequence. The camera initialization is PSRAM-aware. An LED blink pattern provides visual feedback during startup.
 
-The `loop()` function runs on a 5 ms tick for the PeripheralManager and a configurable interval (default 20 seconds) for camera captures. Each capture cycle:
+After SD card initialization, the firmware reads `/config.ini` from the SD card into a stack-allocated buffer and passes it to `ConfigService::load()` for parsing. If the file is missing or empty, sensible defaults are used.
+
+The `loop()` function runs on a 5 ms tick for the PeripheralManager and a configurable interval for camera captures (default 20 seconds, overridable via the `[camera]` section of the config file). Each capture cycle:
 
 1. `camera_ctrl.capture_frame()` — acquire a frame from the camera.
 2. `camera_ctrl.get_frame()` — access the JPEG data.
@@ -245,6 +375,8 @@ Tests live under `test/` in environment-specific subfolders:
 test/
   native/                           ← Native unit tests (Unity framework)
     test_camera_controller/
+    test_config_service/
+    test_ini_parser/
     test_led_state_machine/
     test_logging_service/
     test_pin_arbitrator/

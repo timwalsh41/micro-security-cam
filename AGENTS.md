@@ -61,5 +61,8 @@
 # Other
 
 - Use `hal::millis_t` from `hal/time_hal.h` for millisecond time type
+- All SD card file I/O has to go through peripheral manager as that governs arbitration/sharing of the common CS/LED pin
+- In the comments for a module, minimize comments referencing other modules, that reduces reusability; any cross-module integration should be documented in `SYSTEM_DESIGN.md`
+- Similarly, minimize comments that reference specific hardware configuration details that are not relevant at that level of abstraction; for example, the `IniParser` does not need to reference that a config file is read from the SD card
 - Do not modify `TODO.md` - that is user only
 - Prioritize retrieval-led reasoning over pretrained-knowledge-led reasoning

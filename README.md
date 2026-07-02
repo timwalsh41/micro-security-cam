@@ -59,6 +59,77 @@ pio test -e native -f native/test_camera_controller
 pio test -e seeed_xiao_esp32s3_test
 ```
 
+## Configuration
+
+The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used.
+
+### Example Config File
+
+```ini
+[wifi]
+ssid=MyNetwork
+password=MyPassword
+
+[ap]
+ssid=ESP32-Cam
+password=FallbackPass
+
+[web]
+port=80
+password=WebPass
+
+[camera]
+capture_interval_ms=20000
+```
+
+### Sections and Keys
+
+| Section | Key | Type | Default | Description |
+|---------|-----|------|---------|-------------|
+| `[wifi]` | `ssid` | string | `""` | WiFi network name (station mode) |
+| `[wifi]` | `password` | string | `""` | WiFi network password |
+| `[ap]` | `ssid` | string | `""` | Access point name (fallback) |
+| `[ap]` | `password` | string | `""` | Access point password |
+| `[web]` | `port` | integer | `80` | HTTP server port (1–65535) |
+| `[web]` | `password` | string | `""` | Web interface password |
+| `[camera]` | `capture_interval_ms` | integer | `20000` | Time between captures in ms |
+
+Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
+
+### Adding a New Config Section
+
+1. Add a sub-struct to `ConfigData` in `include/ini_parser.h` with default values:
+
+   ```c++
+   struct NewConfig
+   {
+       char some_key[CONFIG_FIELD_MAX_LENGTH]{};
+       uint32_t some_number{42};
+   };
+   ```
+
+2. Add the sub-struct as a member of `ConfigData`:
+
+   ```c++
+   NewConfig new_section;
+   ```
+
+3. In `src/ini_parser.cpp`, add a new `SECTION_XXX` case to the `Section` enum and its matching in the section header parsing block.
+
+4. Add key-matching branches inside the `switch (current_section)` block for your new section.
+
+5. Add the section header and key=value lines to `IniParser::serialize()`.
+
+6. Add tests in `test/native/test_ini_parser/` for both parsing and round-trip serialization.
+
+7. Use the new config field in application code via `config_service.config().new_section.some_key`.
+
+### Adding a New Key to an Existing Section
+
+Follow steps 4–7 above (skip the struct and enum additions).
+
+---
+
 ## Debugging
 
 The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/Debugging.md](docs/Debugging.md) for the full GDB workflow and PlatformIO debug configuration.
