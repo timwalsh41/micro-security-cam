@@ -35,13 +35,13 @@ The ESP32-CAM_MJPEG2SD reference project already implements a production-grade M
          │                              │
          ▼                              ▼
 ┌─────────────────────┐    ┌───────────────────────────┐
-│  PeripheralManager   │    │  VideoController          │
-│  • LedStateMachine   │    │  • State machine (IDLE/   │
-│  • SdController      │    │    RECORDING/STOPPING)    │
-│  • PinArbitrator     │    │  • Frame pacing via       │
+│  PeripheralManager  │    │  VideoController          │
+│  • LedStateMachine  │    │  • State machine (IDLE/   │
+│  • SdController     │    │    RECORDING/STOPPING)    │
+│  • PinArbitrator    │    │  • Frame pacing via       │
 │                     │    │    elapsed time check     │
 └─────────────────────┘    │  • File naming + dirs     │
-                           └─────┬─────┬─────┬────────┘
+                           └─────┬─────┬─────┬─────────┘
                                  │     │     │
                     ┌────────────┘     │     └────────────┐
                     ▼                  ▼                  ▼
@@ -53,7 +53,7 @@ The ESP32-CAM_MJPEG2SD reference project already implements a production-grade M
            └──────────────┘  └──────────────┘  └──────────────────┘
                 │                   │                    │
                 ▼                   ▼                    ▼
-           ┌──────────┐      (pure byte     ┌──────────────────┐
+           ┌──────────┐      (pure byte      ┌──────────────────┐
            │ CameraHal│       formatting,    │   SdController   │
            │ (esp_cam)│       no I/O)        │ • write_file()   │
            └──────────┘                      └──────────────────┘
@@ -95,7 +95,7 @@ A pure utility class that knows how to construct AVI files with MJPEG video stre
 │    ├── JPEG frame size (4 bytes)                 │
 │    ├── JPEG frame data (N bytes)                 │
 │    └── 0-3 bytes padding (DWORD alignment)       │
-├─ idx1 (frame index) ────────────────────────────┤
+├─ idx1 (frame index) ─────────────────────────────┤
 │  Per frame:                                      │
 │    ├── Chunk ID (0x00dc, 4 bytes)                │
 │    ├── Flags (0x00000000, 4 bytes)               │
@@ -246,7 +246,7 @@ The central orchestrator that coordinates camera capture, AVI writing, and SD bu
 IDLE ──── start_recording() ────► RECORDING ──── stop_recording() / max_frames / max_size
   ▲                                         │
   │              close complete             │
-  └──────────── STOPPING ◄─────────────────┘
+  └──────────── STOPPING ◄──────────────────┘
 ```
 
 **API design:**
