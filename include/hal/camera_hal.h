@@ -59,6 +59,20 @@ struct CameraConfig
 
     /** Number of frame buffers when PSRAM is absent. */
     uint8_t fb_count_no_psram{1};
+
+    /**
+     * @brief Camera grab mode override.
+     *
+     * Controls how the camera driver delivers frames:
+     *   - 0 (CAMERA_GRAB_WHEN_EMPTY): Return frame when available, may return stale frame.
+     *   - 1 (CAMERA_GRAB_LATEST): Discard buffered frames, return only the freshest frame.
+     *   - 0xFF (default): Auto-detect based on PSRAM availability. When PSRAM is present,
+     *     uses CAMERA_GRAB_LATEST; otherwise uses CAMERA_GRAB_WHEN_EMPTY.
+     *
+     * Video recording should use CAMERA_GRAB_LATEST (1) to prevent stale frame delivery
+     * during SD write stalls.
+     */
+    uint8_t grab_mode{0xFF};
 };
 
 /**

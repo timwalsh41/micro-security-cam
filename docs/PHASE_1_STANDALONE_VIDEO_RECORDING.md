@@ -211,10 +211,12 @@ The camera controller currently supports single-shot capture (`capture_frame()` 
    ```cpp
    struct CameraConfig {
      // ... existing fields ...
-     int grab_mode = 0;  // 0 = default (grab when ready), 1 = CAMERA_GRAB_LATEST
+     uint8_t grab_mode{0xFF};  // 0xFF = auto (PSRAM-based), 0 = WHEN_EMPTY, 1 = LATEST
    };
    ```
-   When `grab_mode = 1`, the camera driver discards any frame that arrived while the previous frame was still being processed. This prevents stale frame delivery when the SD write occasionally stalls.
+   Uses a sentinel default (`0xFF`) to preserve the existing PSRAM-based auto-selection. When `grab_mode = 0xFF`, the HAL applies the current logic: `CAMERA_GRAB_LATEST` with PSRAM, `CAMERA_GRAB_WHEN_EMPTY` without. When explicitly set to 0 or 1, the value is passed through directly.
+
+   For video recording, the VideoController should set `grab_mode = 1` (CAMERA_GRAB_LATEST) to prevent stale frame delivery when the SD write occasionally stalls. For photo-only mode, the default auto-sentinel works correctly.
 
 2. **Ensure rapid capture/release cycle works:**
    The existing `capture_frame()` / `get_frame()` / `release_frame()` API is already correct for video. The main concern is that the release → re-acquire cycle completes within the frame interval. Testing will verify this at target FPS.
@@ -225,9 +227,9 @@ The camera controller currently supports single-shot capture (`capture_frame()` 
    ```
    This is passed to `esp_camera_init()` which sets it on the camera driver.
 
-**No HAL changes needed** — `CameraHal::capture()` and `release()` already map directly to `esp_camera_fb_get()` and `esp_camera_fb_return()`. The change is purely in the configuration struct and initialization.
+**`CameraHalImpl` changes** — The init method in `CameraHalImpl` is updated to respect the `grab_mode` config field. When `grab_mode` is the sentinel value (0xFF), the existing PSRAM-based auto-detection is preserved. When explicitly set (0 or 1), the value is passed directly to `esp_camera_init()`. No changes needed to `CameraHal::capture()` or `release()` — they already map directly to `esp_camera_fb_get()` and `esp_camera_fb_return()`.
 
-**Architecture fit:** Small, backwards-compatible extension to an existing service. Default `grab_mode = 0` preserves current behavior.
+**Architecture fit:** Small, backwards-compatible extension to an existing service. Default `grab_mode = 0xFF` (auto-sentinel) preserves current PSRAM-based behavior; explicit values (0 or 1) override for video or other use cases.
 
 ---
 

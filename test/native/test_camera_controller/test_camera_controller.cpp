@@ -96,6 +96,8 @@ void test_init_passes_default_config()
                             hal.last_init_config.fb_count_no_psram);
     TEST_ASSERT_EQUAL_UINT8(expected.frame_size_no_psram,
                             hal.last_init_config.frame_size_no_psram);
+    TEST_ASSERT_EQUAL_UINT8(expected.grab_mode,
+                            hal.last_init_config.grab_mode);
 }
 
 // ============================================================
@@ -296,6 +298,56 @@ void test_double_capture_releases_previous()
 }
 
 // ============================================================
+// grab_mode configuration
+// ============================================================
+
+/**
+ * @brief Default grab_mode (0xFF sentinel) is passed through to HAL.
+ */
+void test_init_default_grab_mode_is_auto_sentinel()
+{
+    MockCameraHal hal;
+    CameraController ctrl(hal);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT8(0xFF, hal.last_init_config.grab_mode);
+}
+
+/**
+ * @brief Explicit grab_mode = CAMERA_GRAB_WHEN_EMPTY (0) is passed through.
+ */
+void test_init_explicit_grab_mode_when_empty()
+{
+    MockCameraHal hal;
+    hal::CameraConfig config;
+    config.grab_mode = 0;  // CAMERA_GRAB_WHEN_EMPTY
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT8(0, hal.last_init_config.grab_mode);
+}
+
+/**
+ * @brief Explicit grab_mode = CAMERA_GRAB_LATEST (1) is passed through.
+ */
+void test_init_explicit_grab_mode_latest()
+{
+    MockCameraHal hal;
+    hal::CameraConfig config;
+    config.grab_mode = 1;  // CAMERA_GRAB_LATEST
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT8(1, hal.last_init_config.grab_mode);
+}
+
+// ============================================================
 // Full lifecycle
 // ============================================================
 
@@ -364,6 +416,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_release_frame_delegates_to_hal);
     RUN_TEST(test_release_frame_without_capture);
     RUN_TEST(test_double_capture_releases_previous);
+
+    // grab_mode configuration
+    RUN_TEST(test_init_default_grab_mode_is_auto_sentinel);
+    RUN_TEST(test_init_explicit_grab_mode_when_empty);
+    RUN_TEST(test_init_explicit_grab_mode_latest);
 
     // Full lifecycle
     RUN_TEST(test_full_lifecycle);

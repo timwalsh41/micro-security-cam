@@ -30,10 +30,19 @@ CameraInitResult CameraHalImpl::init(const CameraConfig &cam_config)
     config.xclk_freq_hz = 20000000;
     config.frame_size = FRAMESIZE_UXGA;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = cam_config.jpeg_quality_no_psram;
     config.fb_count = cam_config.fb_count_no_psram;
+
+    // Apply grab mode: sentinel 0xFF means auto-detect based on PSRAM
+    if (cam_config.grab_mode == 0xFF)
+    {
+        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    }
+    else
+    {
+        config.grab_mode = static_cast<camera_grab_mode_t>(cam_config.grab_mode);
+    }
 
     // Adjust settings based on PSRAM availability
     if (config.pixel_format == PIXFORMAT_JPEG)
@@ -42,7 +51,11 @@ CameraInitResult CameraHalImpl::init(const CameraConfig &cam_config)
         {
             config.jpeg_quality = cam_config.jpeg_quality_with_psram;
             config.fb_count = cam_config.fb_count_with_psram;
-            config.grab_mode = CAMERA_GRAB_LATEST;
+            // Auto mode uses LATEST with PSRAM; explicit override always takes precedence
+            if (cam_config.grab_mode == 0xFF)
+            {
+                config.grab_mode = CAMERA_GRAB_LATEST;
+            }
         }
         else
         {
