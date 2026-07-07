@@ -1059,10 +1059,10 @@ void test_write_file_wrapper_timeout_mid_operation()
     uint8_t data[] = {0x01};
     SdController ctrl(time, sd_hal);
 
-    // Timeout of 18ms is enough to get through PRE_DEACTIVATE_CS (11ms),
-    // ACTIVATE_CS (6ms) = 17ms total, but not enough to finish the
-    // full cycle which requires well past 20ms.
-    SdWriteResult result = ctrl.write_file("/slow.bin", data, 1, 18);
+    // Timeout of 5 ms is enough to get through PRE_DEACTIVATE_CS (2ms),
+    // ACTIVATE_CS (2ms) = 4 ms total, but not enough to finish the
+    // full cycle which requires more than 6 ms.
+    SdWriteResult result = ctrl.write_file("/slow.bin", data, 1, 5);
 
     TEST_ASSERT_EQUAL(SdWriteResult::TIMEOUT, result);
 

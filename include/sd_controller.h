@@ -160,10 +160,10 @@ class SdController
         // ============================================================
 
         /** Minimum time CS must remain de-asserted between transactions (ms). */
-        static constexpr hal::millis_t DEACTIVATE_TIME_MS = 10;
+        static constexpr hal::millis_t DEACTIVATE_TIME_MS = 1;
 
         /** Minimum time CS must be asserted before starting I/O (ms). */
-        static constexpr hal::millis_t ACTIVATE_TIME_MS = 5;
+        static constexpr hal::millis_t ACTIVATE_TIME_MS = 1;
 
     private:
         /**
