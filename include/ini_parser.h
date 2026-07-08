@@ -75,10 +75,27 @@ struct ConfigData
         uint32_t capture_interval_ms{20000};
     };
 
+    /**
+     * @brief Video recording configuration.
+     *
+     * Resolution is stored as a string (e.g. "VGA", "HD") to keep
+     * ConfigData platform-independent. The VideoController maps the
+     * string to the platform-specific framesize_t enum at runtime.
+     */
+    struct VideoConfig
+    {
+        uint16_t fps{10};
+        char resolution[CONFIG_FIELD_MAX_LENGTH]{"VGA"};
+        uint16_t clip_duration_s{60};
+        uint16_t max_file_size_mb{0};
+        uint8_t jpeg_quality{10};
+    };
+
     WifiConfig wifi;
     ApConfig ap;
     WebConfig web;
     CameraConfig camera;
+    VideoConfig video;
 };
 
 /**

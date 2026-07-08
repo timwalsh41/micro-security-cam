@@ -29,7 +29,8 @@ ConfigData IniParser::parse(const char* content, size_t length)
         WIFI,
         AP,
         WEB,
-        CAMERA
+        CAMERA,
+        VIDEO
     };
 
     Section current_section = Section::NONE;
@@ -109,6 +110,10 @@ ConfigData IniParser::parse(const char* content, size_t length)
                 else if (section_len == 6 && strncasecmp(p, "camera", 6) == 0)
                 {
                     current_section = Section::CAMERA;
+                }
+                else if (section_len == 5 && strncasecmp(p, "video", 5) == 0)
+                {
+                    current_section = Section::VIDEO;
                 }
                 else
                 {
@@ -227,6 +232,73 @@ ConfigData IniParser::parse(const char* content, size_t length)
                     }
                     break;
                 }
+                case Section::VIDEO:
+                {
+                    if (key_len == 3 &&
+                        strncasecmp(key_start, "fps", 3) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        if (parsed >= 1 && parsed <= 30)
+                        {
+                            config.video.fps = static_cast<uint16_t>(parsed);
+                        }
+                    }
+                    else if (key_len == 10 &&
+                             strncasecmp(key_start, "resolution", 10) == 0)
+                    {
+                        size_t copy_len = val_len < CONFIG_FIELD_MAX_LENGTH - 1
+                                              ? val_len
+                                              : CONFIG_FIELD_MAX_LENGTH - 1;
+                        memcpy(config.video.resolution, val_start, copy_len);
+                        config.video.resolution[copy_len] = '\0';
+                    }
+                    else if (key_len == 15 &&
+                             strncasecmp(key_start, "clip_duration_s", 15) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        config.video.clip_duration_s =
+                            static_cast<uint16_t>(strtoul(val_buf, nullptr, 10));
+                    }
+                    else if (key_len == 16 &&
+                             strncasecmp(key_start, "max_file_size_mb", 16) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        config.video.max_file_size_mb =
+                            static_cast<uint16_t>(strtoul(val_buf, nullptr, 10));
+                    }
+                    else if (key_len == 12 &&
+                             strncasecmp(key_start, "jpeg_quality", 12) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        if (parsed <= 63)
+                        {
+                            config.video.jpeg_quality = static_cast<uint8_t>(parsed);
+                        }
+                    }
+                    break;
+                }
                 case Section::NONE:
                     break;
             }
@@ -288,6 +360,28 @@ size_t IniParser::serialize(const ConfigData& data,
     write("[camera]\n");
     snprintf(num_buf, sizeof(num_buf), "%u", data.camera.capture_interval_ms);
     write("capture_interval_ms=");
+    write(num_buf);
+    write("\n");
+
+    // [video]
+    write("[video]\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.video.fps);
+    write("fps=");
+    write(num_buf);
+    write("\n");
+    write("resolution=");
+    write(data.video.resolution);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.video.clip_duration_s);
+    write("clip_duration_s=");
+    write(num_buf);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.video.max_file_size_mb);
+    write("max_file_size_mb=");
+    write(num_buf);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.video.jpeg_quality);
+    write("jpeg_quality=");
     write(num_buf);
     write("\n");
 

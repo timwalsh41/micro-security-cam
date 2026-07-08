@@ -1,5 +1,9 @@
 # Phase 1: Standalone Video Recording
 
+## Instructions
+
+**Refer to the process for executing a plan step at `.girhub/prompts/execute-plan.prompt.md` before reviewing this document**
+
 ## Overview
 
 Extend the ESP32_photo_camera's layered OOP framework with MJPEG video recording in AVI containers, porting core patterns from the ESP32-CAM_MJPEG2SD (record_video_decorder) reference implementation. This is a standalone, video-only phase — no audio, no streaming, no WiFi dependency. The existing cooperative polling architecture is preserved.
@@ -257,12 +261,14 @@ jpeg_quality=10
 ```cpp
 struct VideoConfig {
   uint16_t fps = 10;
-  framesize_t resolution = FRAMESIZE_VGA;  // 640×480
+  char resolution[CONFIG_FIELD_MAX_LENGTH] = "VGA";  // String, mapped to framesize_t by VideoController
   uint16_t clipDurationS = 60;             // 0 = no time limit
   uint16_t maxFileSizeMB = 0;              // 0 = no size limit
   uint8_t jpegQuality = 10;               // 0-63 (lower = better quality)
 };
 ```
+
+> **Design note:** Resolution is stored as a string (e.g. `"VGA"`, `"HD"`) to keep `ConfigData` and `IniParser` platform-independent. The `VideoController` maps the string to the platform-specific `framesize_t` enum at runtime. This avoids adding an ESP32 camera driver dependency to the config layer.
 
 **Resolution mapping:**
 

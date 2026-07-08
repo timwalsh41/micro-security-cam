@@ -128,6 +128,18 @@ Comments (`#` or `;`) and blank lines are ignored. Section and key names are cas
 
 Follow steps 4–7 above (skip the struct and enum additions).
 
+### Resolution mapping
+
+| Config String | `framesize_t` | Resolution |
+|--------------|---------------|------------|
+| `QQVGA` | `FRAMESIZE_QQVGA` | 160×120 |
+| `QVGA` | `FRAMESIZE_QVGA` | 320×240 |
+| `VGA` | `FRAMESIZE_VGA` | 640×480 |
+| `SVGA` | `FRAMESIZE_SVGA` | 800×600 |
+| `XGA` | `FRAMESIZE_XGA` | 1024×768 |
+| `HD` | `FRAMESIZE_HD` | 1280×720 |
+| `UXGA` | `FRAMESIZE_UXGA` | 1600×1200 |
+
 ---
 
 ## Debugging

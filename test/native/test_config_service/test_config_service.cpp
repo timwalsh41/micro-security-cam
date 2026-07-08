@@ -93,7 +93,13 @@ void test_load_valid_config()
         "port=8080\n"
         "password=WebKey\n"
         "[camera]\n"
-        "capture_interval_ms=10000\n";
+        "capture_interval_ms=10000\n"
+        "[video]\n"
+        "fps=15\n"
+        "resolution=HD\n"
+        "clip_duration_s=120\n"
+        "max_file_size_mb=200\n"
+        "jpeg_quality=5\n";
 
     TEST_ASSERT_TRUE(svc.load(reinterpret_cast<const uint8_t*>(ini), strlen(ini)));
 
@@ -103,6 +109,11 @@ void test_load_valid_config()
     TEST_ASSERT_EQUAL_STRING("ESP32", cfg.ap.ssid);
     TEST_ASSERT_EQUAL_UINT16(8080, cfg.web.port);
     TEST_ASSERT_EQUAL_UINT32(10000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(15, cfg.video.fps);
+    TEST_ASSERT_EQUAL_STRING("HD", cfg.video.resolution);
+    TEST_ASSERT_EQUAL_UINT16(120, cfg.video.clip_duration_s);
+    TEST_ASSERT_EQUAL_UINT16(200, cfg.video.max_file_size_mb);
+    TEST_ASSERT_EQUAL_UINT8(5, cfg.video.jpeg_quality);
 }
 
 void test_load_logs_parse_size()
@@ -127,6 +138,18 @@ void test_load_logs_wifi_ssid_when_set()
     TEST_ASSERT_TRUE(any_log_contains("MyNet"));
 }
 
+void test_load_logs_video_config()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    const char* ini = "[video]\nfps=15\nresolution=HD\n";
+
+    svc.load(reinterpret_cast<const uint8_t*>(ini), strlen(ini));
+
+    TEST_ASSERT_TRUE(any_log_contains("15fps"));
+    TEST_ASSERT_TRUE(any_log_contains("HD"));
+}
+
 // ============================================================
 // Empty / null buffer
 // ============================================================
@@ -149,6 +172,8 @@ void test_load_empty_buffer_uses_defaults()
     const ConfigData& cfg = svc.config();
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
     TEST_ASSERT_EQUAL_UINT32(20000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(10, cfg.video.fps);
+    TEST_ASSERT_EQUAL_STRING("VGA", cfg.video.resolution);
 }
 
 void test_load_empty_buffer_logs_warning()
@@ -178,6 +203,8 @@ void test_load_partial_config_preserves_defaults()
     TEST_ASSERT_EQUAL_STRING("Partial", cfg.wifi.ssid);
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
     TEST_ASSERT_EQUAL_UINT32(20000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(10, cfg.video.fps);
+    TEST_ASSERT_EQUAL_STRING("VGA", cfg.video.resolution);
 }
 
 // ============================================================
@@ -223,11 +250,13 @@ void test_mutable_config_modify_visible_through_config()
 
     svc.mutable_config().web.port = 9090;
     svc.mutable_config().camera.capture_interval_ms = 5000;
+    svc.mutable_config().video.fps = 20;
     strcpy(svc.mutable_config().wifi.ssid, "Modified");
 
     const ConfigData& cfg = svc.config();
     TEST_ASSERT_EQUAL_UINT16(9090, cfg.web.port);
     TEST_ASSERT_EQUAL_UINT32(5000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(20, cfg.video.fps);
     TEST_ASSERT_EQUAL_STRING("Modified", cfg.wifi.ssid);
 }
 
@@ -277,6 +306,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_load_valid_config);
     RUN_TEST(test_load_logs_parse_size);
     RUN_TEST(test_load_logs_wifi_ssid_when_set);
+    RUN_TEST(test_load_logs_video_config);
 
     // Empty / null buffer
     RUN_TEST(test_load_empty_buffer_returns_false);

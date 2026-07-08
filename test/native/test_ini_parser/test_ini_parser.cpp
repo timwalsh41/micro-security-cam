@@ -49,6 +49,36 @@ void test_defaults_has_camera_interval_20000()
     TEST_ASSERT_EQUAL_UINT32(20000, d.camera.capture_interval_ms);
 }
 
+void test_defaults_has_video_fps_10()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
+}
+
+void test_defaults_has_video_resolution_vga()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_STRING("VGA", d.video.resolution);
+}
+
+void test_defaults_has_video_clip_duration_60()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_UINT16(60, d.video.clip_duration_s);
+}
+
+void test_defaults_has_video_max_file_size_0()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_UINT16(0, d.video.max_file_size_mb);
+}
+
+void test_defaults_has_video_jpeg_quality_10()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_UINT8(10, d.video.jpeg_quality);
+}
+
 // ============================================================
 // Empty / null input
 // ============================================================
@@ -59,6 +89,8 @@ void test_empty_input_returns_defaults()
     TEST_ASSERT_EQUAL_STRING("", d.wifi.ssid);
     TEST_ASSERT_EQUAL_UINT16(80, d.web.port);
     TEST_ASSERT_EQUAL_UINT32(20000, d.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
+    TEST_ASSERT_EQUAL_STRING("VGA", d.video.resolution);
 }
 
 void test_null_input_returns_defaults()
@@ -103,7 +135,13 @@ void test_multiple_sections()
         "port=8080\n"
         "password=WebPass\n"
         "[camera]\n"
-        "capture_interval_ms=5000\n";
+        "capture_interval_ms=5000\n"
+        "[video]\n"
+        "fps=15\n"
+        "resolution=HD\n"
+        "clip_duration_s=120\n"
+        "max_file_size_mb=200\n"
+        "jpeg_quality=5\n";
 
     ConfigData d = IniParser::parse(ini, strlen(ini));
     TEST_ASSERT_EQUAL_STRING("HomeNet", d.wifi.ssid);
@@ -113,6 +151,11 @@ void test_multiple_sections()
     TEST_ASSERT_EQUAL_UINT16(8080, d.web.port);
     TEST_ASSERT_EQUAL_STRING("WebPass", d.web.password);
     TEST_ASSERT_EQUAL_UINT32(5000, d.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(15, d.video.fps);
+    TEST_ASSERT_EQUAL_STRING("HD", d.video.resolution);
+    TEST_ASSERT_EQUAL_UINT16(120, d.video.clip_duration_s);
+    TEST_ASSERT_EQUAL_UINT16(200, d.video.max_file_size_mb);
+    TEST_ASSERT_EQUAL_UINT8(5, d.video.jpeg_quality);
 }
 
 // ============================================================
@@ -288,13 +331,82 @@ void test_camera_interval_zero()
 }
 
 // ============================================================
+// Video section parsing
+// ============================================================
+
+void test_video_all_keys()
+{
+    const char* ini =
+        "[video]\n"
+        "fps=15\n"
+        "resolution=HD\n"
+        "clip_duration_s=120\n"
+        "max_file_size_mb=200\n"
+        "jpeg_quality=5\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(15, d.video.fps);
+    TEST_ASSERT_EQUAL_STRING("HD", d.video.resolution);
+    TEST_ASSERT_EQUAL_UINT16(120, d.video.clip_duration_s);
+    TEST_ASSERT_EQUAL_UINT16(200, d.video.max_file_size_mb);
+    TEST_ASSERT_EQUAL_UINT8(5, d.video.jpeg_quality);
+}
+
+void test_video_partial_keys_retain_defaults()
+{
+    const char* ini =
+        "[video]\n"
+        "fps=20\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(20, d.video.fps);
+    TEST_ASSERT_EQUAL_STRING("VGA", d.video.resolution);
+    TEST_ASSERT_EQUAL_UINT16(60, d.video.clip_duration_s);
+    TEST_ASSERT_EQUAL_UINT16(0, d.video.max_file_size_mb);
+    TEST_ASSERT_EQUAL_UINT8(10, d.video.jpeg_quality);
+}
+
+void test_video_fps_out_of_range_ignored()
+{
+    const char* ini = "[video]\nfps=50\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
+}
+
+void test_video_fps_zero_ignored()
+{
+    const char* ini = "[video]\nfps=0\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
+}
+
+void test_video_fps_minimum_accepted()
+{
+    const char* ini = "[video]\nfps=1\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(1, d.video.fps);
+}
+
+void test_video_fps_maximum_accepted()
+{
+    const char* ini = "[video]\nfps=30\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(30, d.video.fps);
+}
+
+void test_video_jpeg_quality_out_of_range_ignored()
+{
+    const char* ini = "[video]\njpeg_quality=100\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT8(10, d.video.jpeg_quality);
+}
+
+// ============================================================
 // Serialization
 // ============================================================
 
 void test_serialize_defaults()
 {
     ConfigData d = IniParser::defaults();
-    char buf[512];
+    char buf[1024];
     size_t written = IniParser::serialize(d, buf, sizeof(buf));
 
     TEST_ASSERT_GREATER_THAN(0u, written);
@@ -305,10 +417,16 @@ void test_serialize_defaults()
     TEST_ASSERT_NOT_NULL(strstr(buf, "[ap]"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "[web]"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "[camera]"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "[video]"));
 
     // Verify default integer values appear
     TEST_ASSERT_NOT_NULL(strstr(buf, "port=80"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=20000"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "fps=10"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "resolution=VGA"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=60"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=0"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=10"));
 }
 
 void test_serialize_non_default_values()
@@ -321,8 +439,13 @@ void test_serialize_non_default_values()
     d.web.port = 8080;
     strcpy(d.web.password, "WebPass");
     d.camera.capture_interval_ms = 5000;
+    d.video.fps = 15;
+    strcpy(d.video.resolution, "HD");
+    d.video.clip_duration_s = 120;
+    d.video.max_file_size_mb = 200;
+    d.video.jpeg_quality = 5;
 
-    char buf[512];
+    char buf[1024];
     size_t written = IniParser::serialize(d, buf, sizeof(buf));
 
     TEST_ASSERT_GREATER_THAN(0u, written);
@@ -330,12 +453,17 @@ void test_serialize_non_default_values()
     TEST_ASSERT_NOT_NULL(strstr(buf, "password=Pass123"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "port=8080"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=5000"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "fps=15"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "resolution=HD"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=120"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=200"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=5"));
 }
 
 void test_roundtrip_defaults()
 {
     ConfigData original = IniParser::defaults();
-    char buf[512];
+    char buf[1024];
     IniParser::serialize(original, buf, sizeof(buf));
 
     ConfigData parsed = IniParser::parse(buf, strlen(buf));
@@ -348,6 +476,14 @@ void test_roundtrip_defaults()
     TEST_ASSERT_EQUAL_STRING(original.web.password, parsed.web.password);
     TEST_ASSERT_EQUAL_UINT32(original.camera.capture_interval_ms,
                              parsed.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(original.video.fps, parsed.video.fps);
+    TEST_ASSERT_EQUAL_STRING(original.video.resolution, parsed.video.resolution);
+    TEST_ASSERT_EQUAL_UINT16(original.video.clip_duration_s,
+                             parsed.video.clip_duration_s);
+    TEST_ASSERT_EQUAL_UINT16(original.video.max_file_size_mb,
+                             parsed.video.max_file_size_mb);
+    TEST_ASSERT_EQUAL_UINT8(original.video.jpeg_quality,
+                            parsed.video.jpeg_quality);
 }
 
 void test_roundtrip_custom_values()
@@ -360,8 +496,13 @@ void test_roundtrip_custom_values()
     original.web.port = 9090;
     strcpy(original.web.password, "WebSecret");
     original.camera.capture_interval_ms = 30000;
+    original.video.fps = 15;
+    strcpy(original.video.resolution, "HD");
+    original.video.clip_duration_s = 120;
+    original.video.max_file_size_mb = 200;
+    original.video.jpeg_quality = 5;
 
-    char buf[512];
+    char buf[1024];
     IniParser::serialize(original, buf, sizeof(buf));
 
     ConfigData parsed = IniParser::parse(buf, strlen(buf));
@@ -374,6 +515,14 @@ void test_roundtrip_custom_values()
     TEST_ASSERT_EQUAL_STRING(original.web.password, parsed.web.password);
     TEST_ASSERT_EQUAL_UINT32(original.camera.capture_interval_ms,
                              parsed.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_UINT16(original.video.fps, parsed.video.fps);
+    TEST_ASSERT_EQUAL_STRING(original.video.resolution, parsed.video.resolution);
+    TEST_ASSERT_EQUAL_UINT16(original.video.clip_duration_s,
+                             parsed.video.clip_duration_s);
+    TEST_ASSERT_EQUAL_UINT16(original.video.max_file_size_mb,
+                             parsed.video.max_file_size_mb);
+    TEST_ASSERT_EQUAL_UINT8(original.video.jpeg_quality,
+                            parsed.video.jpeg_quality);
 }
 
 void test_serialize_buffer_too_small_returns_bytes_needed()
@@ -391,7 +540,7 @@ void test_serialize_null_buffer_returns_bytes_needed()
     ConfigData d = IniParser::defaults();
     size_t needed1 = IniParser::serialize(d, nullptr, 0);
 
-    char real_buf[512];
+    char real_buf[1024];
     size_t needed2 = IniParser::serialize(d, real_buf, sizeof(real_buf));
 
     TEST_ASSERT_EQUAL(needed2, needed1);
@@ -407,8 +556,13 @@ void test_serialize_all_fields_present()
     d.web.port = 1234;
     strcpy(d.web.password, "W_PASS2");
     d.camera.capture_interval_ms = 7777;
+    d.video.fps = 20;
+    strcpy(d.video.resolution, "QVGA");
+    d.video.clip_duration_s = 30;
+    d.video.max_file_size_mb = 100;
+    d.video.jpeg_quality = 20;
 
-    char buf[512];
+    char buf[1024];
     IniParser::serialize(d, buf, sizeof(buf));
 
     // Check every key=value pair
@@ -423,6 +577,12 @@ void test_serialize_all_fields_present()
     TEST_ASSERT_NOT_NULL(strstr(buf, "password=W_PASS2"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "[camera]"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=7777"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "[video]"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "fps=20"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "resolution=QVGA"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=30"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=100"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=20"));
 }
 
 // ============================================================
@@ -448,6 +608,11 @@ int main(int argc, char** argv)
     RUN_TEST(test_defaults_has_web_port_80);
     RUN_TEST(test_defaults_has_empty_web_password);
     RUN_TEST(test_defaults_has_camera_interval_20000);
+    RUN_TEST(test_defaults_has_video_fps_10);
+    RUN_TEST(test_defaults_has_video_resolution_vga);
+    RUN_TEST(test_defaults_has_video_clip_duration_60);
+    RUN_TEST(test_defaults_has_video_max_file_size_0);
+    RUN_TEST(test_defaults_has_video_jpeg_quality_10);
 
     RUN_TEST(test_empty_input_returns_defaults);
     RUN_TEST(test_null_input_returns_defaults);
@@ -479,6 +644,15 @@ int main(int argc, char** argv)
     RUN_TEST(test_case_insensitive_key_names);
     RUN_TEST(test_port_out_of_range_ignored);
     RUN_TEST(test_camera_interval_zero);
+
+    // Video section parsing
+    RUN_TEST(test_video_all_keys);
+    RUN_TEST(test_video_partial_keys_retain_defaults);
+    RUN_TEST(test_video_fps_out_of_range_ignored);
+    RUN_TEST(test_video_fps_zero_ignored);
+    RUN_TEST(test_video_fps_minimum_accepted);
+    RUN_TEST(test_video_fps_maximum_accepted);
+    RUN_TEST(test_video_jpeg_quality_out_of_range_ignored);
 
     // Serialization
     RUN_TEST(test_serialize_defaults);
