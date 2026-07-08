@@ -20,6 +20,8 @@ The ESP32-CAM_MJPEG2SD reference project already implements a production-grade M
 | **Concurrency** | Cooperative polling (`tick()`) | Matches existing architecture; highly testable; sufficient for video-only at ≤15 FPS |
 | **Platform** | Portable HAL abstraction | No platform-specific code outside HAL implementations; enables future porting |
 | **File format** | Standard AVI with MJPEG | Universally playable; proven by reference implementation; no custom codecs needed |
+| **AVI write strategy** | Buffer-all-at-close | Arduino SD library uses append-only `FILE_WRITE`; cannot seek to overwrite initial header. Complete AVI (header + frames + index) buffered in RAM and written in one shot at clip close. `CLIP_BUFFER_RAM_SIZE` defines the RAM budget; `MAX_CLIP_FRAMES` is derived at compile time. |
+| **SD I/O routing** | Via PeripheralManager | All SD card I/O goes through PeripheralManager to maintain pin arbitration between LED and SD chip-select on shared GPIO. SdWriteBuffer depends on PeripheralManager. |
 
 ## Architecture
 
@@ -68,8 +70,8 @@ The ESP32-CAM_MJPEG2SD reference project already implements a production-grade M
 ### Key Architectural Points
 
 - **AviWriter is format-only** — it builds AVI byte streams in memory. No I/O, no HAL, no tasks. Composition with SD happens at the VideoController level via SdWriteBuffer.
-- **SdWriteBuffer decouples buffering from I/O** — accumulates small JPEG frames into sector-aligned chunks before flushing through SdController. This minimizes the number of SD writes (the slowest operation).
-- **VideoController is a service-layer class** — depends on CameraController, AviWriter, SdWriteBuffer, TimeService, and LoggingService. No direct HAL knowledge.
+- **SdWriteBuffer decouples buffering from I/O** — accumulates small JPEG frames into sector-aligned chunks before flushing through PeripheralManager. This minimizes the number of SD writes (the slowest operation) while ensuring all I/O routes through the pin arbitration layer.
+- **VideoController is a service-layer class** — depends on CameraController, PeripheralManager (for SD access), AviWriter, SdWriteBuffer, TimeService, and LoggingService. No direct HAL knowledge.
 - **Existing photo capture cycle is unchanged** — video recording is purely additive to main.cpp.
 
 ## Implementation Steps
@@ -233,139 +235,7 @@ The camera controller currently supports single-shot capture (`capture_frame()` 
 
 ---
 
-### Step 4: Add Video Controller Service
-
-**New files:** `include/video_controller.h`, `src/video_controller.cpp`
-
-The central orchestrator that coordinates camera capture, AVI writing, and SD buffering into a recording session.
-
-**State machine:**
-
-```
-  ┌─────────────────────────────────────────┐
-  │                                         │
-  ▼                                         │
-IDLE ──── start_recording() ────► RECORDING ──── stop_recording() / max_frames / max_size
-  ▲                                         │
-  │              close complete             │
-  └──────────── STOPPING ◄──────────────────┘
-```
-
-**API design:**
-
-```cpp
-class VideoController {
-public:
-  VideoController(CameraController& cam, TimeService& time, LoggingService& log);
-
-  // Initialization
-  bool init(const VideoConfig& config, SdController& sd);
-
-  // Called from main loop
-  void tick();
-
-  // Control
-  bool startRecording();
-  bool stopRecording();
-  bool isRecording() const;
-
-  // State
-  RecordingState state() const;
-  uint32_t framesRecorded() const;
-  uint32_t fileSize() const;
-
-private:
-  void openClip();
-  void closeClip();
-  void captureAndWriteFrame();
-  void createDirectory(const char* path);
-
-  // Dependencies (injected)
-  CameraController& m_camera;
-  TimeService& m_time;
-  LoggingService& m_log;
-
-  // Owned components
-  AviWriter m_aviWriter;
-  SdWriteBuffer m_sdBuffer;
-
-  // State
-  RecordingState m_state;
-  uint32_t m_lastFrameTime;
-  uint32_t m_framesRecorded;
-  uint32_t m_fileSize;
-  VideoConfig m_config;
-};
-```
-
-**`tick()` implementation (cooperative frame pacing):**
-
-```cpp
-void VideoController::tick() {
-  if (m_state != RECORDING) return;
-
-  uint32_t now = m_time.now();
-  uint32_t elapsed = TimeService::elapsed_ms(m_lastFrameTime, now);
-
-  if (elapsed >= m_frameIntervalMs) {
-    captureAndWriteFrame();
-    m_lastFrameTime = now;
-
-    // Check clip termination conditions
-    if (m_config.clipDurationS > 0 &&
-        m_framesRecorded >= m_config.fps * m_config.clipDurationS) {
-      stopRecording();
-    }
-    if (m_config.maxFileSizeMB > 0 &&
-        m_fileSize >= m_config.maxFileSizeMB * 1024UL * 1024UL) {
-      stopRecording();
-    }
-  }
-}
-```
-
-**`captureAndWriteFrame()` implementation:**
-
-```cpp
-void VideoController::captureAndWriteFrame() {
-  auto result = m_camera.capture_frame();
-  if (result.status != CameraCaptureStatus::OK) {
-    m_log.warn("[Video] Frame capture failed");
-    return;
-  }
-
-  CameraFrame frame = m_camera.get_frame();
-  m_aviWriter.writeFrame(frame.data, frame.len);
-  m_sdBuffer.bufferFrame(/* AVI chunk: header + JPEG data */, frame.len + CHUNK_HDR);
-  m_camera.release_frame();
-
-  m_framesRecorded++;
-  m_fileSize += frame.len + CHUNK_HDR + padding;
-}
-```
-
-**File naming:**
-
-```
-/SD/
-├── /20260705/
-│   ├── 20260705_143022_640x480_10fps.avi
-│   ├── 20260705_144155_640x480_10fps.avi
-│   └── ...
-```
-
-Pattern: `YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`
-
-**Clip rotation:**
-- When a clip reaches `clip_duration_s` or `max_file_size_mb`, `closeClip()` is called
-- A new clip is opened immediately if `startRecording()` was not explicitly stopped
-- This enables unattended recording that doesn't create unbounded files
-
-**Architecture fit:** Service-layer class. Depends on CameraController, AviWriter, SdWriteBuffer, TimeService, LoggingService. No direct HAL knowledge. Fully injectable dependencies enable native testing with mocks.
-
----
-
-### Step 5: Extend Configuration System
+### Step 4: Extend Configuration System
 
 **Modify:** `include/ini_parser.h`, `src/ini_parser.cpp`, `include/config_service.h`, `src/config_service.cpp`
 
@@ -421,7 +291,329 @@ struct VideoConfig {
 
 ---
 
-### Step 6: Update Main Loop and PeripheralManager
+### Step 5: Refactor SdWriteBuffer to Use PeripheralManager
+
+**Modify:** `include/sd_write_buffer.h`, `src/sd_write_buffer.cpp`
+
+The `SdWriteBuffer` currently takes a direct `SdController&` reference. Per project convention (AGENTS.md), **all SD card file I/O must go through PeripheralManager** because it governs the pin arbitration between the LED and SD chip-select on the shared GPIO21 pin. Bypassing PeripheralManager — even by obtaining a reference to the internal `SdController` — breaks this arbitration and can cause bus contention between the LED and SD operations.
+
+**SdWriteBuffer changes:**
+
+Replace the `SdController&` dependency with `PeripheralManager&`:
+
+```cpp
+class SdWriteBuffer
+{
+    public:
+        static constexpr size_t RAMSIZE = 8192;
+
+        /**
+         * @brief Constructs an SdWriteBuffer with the given peripheral manager.
+         * @param peripheral Reference to a PeripheralManager used for SD file I/O.
+         */
+        explicit SdWriteBuffer(PeripheralManager &peripheral);
+
+        // ... open(), buffer_frame(), flush(), reset() unchanged ...
+```
+
+The internal `flush_buffer()` implementation changes from:
+
+```cpp
+SdWriteResult result = m_sd.write_file(m_path, m_buffer, m_high_point, 5000);
+```
+
+to:
+
+```cpp
+SdWriteResult result = m_peripheral.write_file(m_path, m_buffer, m_high_point, 5000);
+```
+
+**No changes to PeripheralManager** — the existing `write_file()` public API already provides the correct abstraction.
+
+**Test updates (`test/native/test_sd_write_buffer/`):**
+
+All existing tests construct `SdWriteBuffer` with an `SdController&`. These must be updated to construct a `PeripheralManager` (which owns the `SdController` and its HAL dependencies) and pass it to `SdWriteBuffer`:
+
+```cpp
+// Before (broken after refactor):
+MockSdCardHal sd_hal;
+SdController sd_ctrl(time, sd_hal);
+SdWriteBuffer buf(sd_ctrl);
+
+// After:
+PeripheralManager peripheral;  // or a test-friendly variant
+SdWriteBuffer buf(peripheral);
+```
+
+Note that `PeripheralManager` currently owns its HAL implementations (`RealTimeService`, `SdCardHalImpl`) as private members — it has no constructor parameters or dependency injection. For native tests, this means the SD operations will route through the real `SdCardHalImpl` backed by `MockSdCardHal`. If `PeripheralManager` does not yet support test-friendly construction (injectable HALs), this step must also add a test constructor or friend access to make the mock HAL inspectable. Alternatively, the existing `SdWriteBuffer` tests can be adapted to use a `PeripheralManager` with a `MockSdCardHal` injected at the appropriate layer — this depends on how `PeripheralManager` is structured. If the refactoring reveals that `PeripheralManager` is not testable as-is, add a test-oriented constructor that accepts HAL references, following the same injection pattern used by `CameraController` and `SdController`.
+
+---
+
+### Step 6: Add Video Controller Service
+
+**New files:** `include/video_controller.h`, `src/video_controller.cpp`
+
+The central orchestrator that coordinates camera capture, AVI writing, and SD buffering into a recording session.
+
+**AVI Write Strategy: Buffer-All-At-Close**
+
+Since the Arduino SD library opens files in append mode (`FILE_WRITE`), seeking back to overwrite an initial placeholder header is not possible. The VideoController therefore buffers the complete AVI in RAM — header, all frame chunks, and index — and writes the entire file to SD in a single `flush()` at clip end.
+
+**Memory budget:**
+
+| Component | Per-Frame | Notes |
+|-----------|-----------|-------|
+| AviWriter header | 224 bytes | One-time, fixed |
+| Frame chunk (VGA JPEG ~20KB) | ~20 KB | JPEG data + 8-byte chunk header + DWORD padding |
+| Index entry | 16 bytes | One per frame |
+| **Subtotal at 10 FPS** | **~200 KB/s** | |
+| **`CLIP_BUFFER_RAM_SIZE`** | **4 MB** | Compile-time budget, single tuning knob |
+| **`MAX_CLIP_FRAMES`** | **`CLIP_BUFFER_RAM_SIZE / AVG_BYTES_PER_FRAME`** | Derived: 4 MB / 20 KB = 204 frames |
+
+**Compile-time constants:**
+
+Two constants control RAM usage for frame accumulation:
+
+```cpp
+// In video_controller.h
+
+/** RAM budget for frame accumulation buffer (bytes). */
+static constexpr size_t CLIP_BUFFER_RAM_SIZE = 4 * 1024 * 1024;  // 4 MB
+
+/** Estimated average bytes per frame (JPEG data + chunk header + padding). */
+static constexpr uint32_t AVG_BYTES_PER_FRAME = 20 * 1024;  // ~20 KB (VGA)
+
+/** Maximum frames per clip, derived from RAM budget. */
+static constexpr uint32_t MAX_CLIP_FRAMES = CLIP_BUFFER_RAM_SIZE / AVG_BYTES_PER_FRAME;
+// 4 MB / 20 KB = 204 frames (~20s @ 10 FPS)
+```
+
+`CLIP_BUFFER_RAM_SIZE` is the single tuning knob — increase it for longer clips (more RAM), decrease for memory-constrained builds. `AVG_BYTES_PER_FRAME` is an estimate; actual frame sizes vary with JPEG quality and scene complexity. The `clip_duration_s` and `max_file_size_mb` config values provide runtime limits that should typically trigger well before this cap. If `MAX_CLIP_FRAMES` is reached, the clip is force-closed.
+
+For boards without PSRAM, reduce `CLIP_BUFFER_RAM_SIZE` to fit within DRAM constraints (e.g., `512 * 1024` = 512 KB → 25 frames).
+
+**Writing to SD at close:**
+
+```cpp
+void VideoController::closeClip() {
+    m_aviWriter.close();
+
+    // 1. Write patched header to file start
+    AviBytes hdr = m_aviWriter.patchedHeader();
+    m_sd_buffer.buffer_frame(hdr.data, hdr.len);
+
+    // 2. Write each frame chunk (already buffered in AviWriter)
+    //    — these were buffered incrementally during recording
+
+    // 3. Write index
+    AviBytes idx = m_aviWriter.index();
+    m_sd_buffer.buffer_frame(idx.data, idx.len);
+
+    // 4. Single flush to SD
+    m_sd_buffer.flush();
+    m_sd_buffer.reset();
+}
+```
+
+Note: During recording, frame chunks are accumulated in the `SdWriteBuffer` (which has its own 8 KB `RAMSIZE` buffer). At close, the patched header and index are appended, and the final `flush()` writes everything remaining. The `SdWriteBuffer` may have already flushed partial data to SD during recording if its internal buffer filled up — this is fine because the frame data was written in order, and the header is rewritten at close to include the correct `RIFF` size and frame count. **This means the initial bytes on SD (the header written before any frames) will be stale** — but since we don't write an initial header (the buffer starts empty), the first bytes on disk will be frame chunks, which is non-standard.
+
+**Revised write sequence:**
+
+To produce a correct AVI file where the header is at byte offset 0:
+
+1. `openClip()` — calls `AviWriter::open()` to generate the header template. Stores the header bytes but does NOT write them yet.
+2. During recording — `captureAndWriteFrame()` calls `AviWriter::writeFrame()` then `SdWriteBuffer::buffer_frame()` with each frame chunk. `SdWriteBuffer` may flush partial data to SD as its internal buffer fills.
+3. `closeClip()` — calls `AviWriter::close()` to patch the header and build the index. Then:
+   - Writes the patched header bytes via `SdWriteBuffer::buffer_frame()`
+   - Flushes everything to SD via `SdWriteBuffer::flush()`
+   - Resets the buffer
+
+**Problem:** The frame chunks were already flushed to SD during recording (by `SdWriteBuffer`'s auto-flush at `RAMSIZE`), so the patched header cannot be prepended to them.
+
+**Solution:** Accept that the AVI header will NOT be at byte offset 0 for clips where `SdWriteBuffer` auto-flushed during recording. Instead, rely on the frame index for playback (VLC and ffplay handle AVI files without a leading header via the `idx1` chunk). Alternatively, write the full AVI in one shot at close (no incremental flushing) — but this requires enough RAM for the entire clip.
+
+**Recommended approach:** For Phase 1, write the complete AVI in one shot at `closeClip()`. The `SdWriteBuffer` is used only for its `flush()` capability — no incremental `buffer_frame()` calls during recording. This produces correct AVI files with the header at offset 0, at the cost of higher peak RAM usage. The `CLIP_BUFFER_RAM_SIZE` budget and derived `MAX_CLIP_FRAMES` bound this.
+
+```cpp
+void VideoController::captureAndWriteFrame() {
+    auto result = m_camera.capture_frame();
+    if (result != CameraCaptureResult::SUCCESS) {
+        m_log.warn("VIDEO", "Frame capture failed");
+        return;
+    }
+
+    hal::CameraFrame frame = m_camera.get_frame();
+    m_avi_writer.writeFrame(frame.data, frame.len);
+    m_camera.release_frame();
+
+    m_frames_recorded++;
+    m_file_size += m_avi_writer.lastFrameChunk().len;
+}
+
+void VideoController::closeClip() {
+    m_avi_writer.close();
+
+    // Write header
+    AviBytes hdr = m_avi_writer.patchedHeader();
+    m_sd_buffer.buffer_frame(hdr.data, hdr.len);
+
+    // Write all frame chunks (replayed from AviWriter)
+    // Note: AviWriter discards chunks after writeFrame(), so we
+    // accumulate them in a vector during recording (see below).
+
+    // Write index
+    AviBytes idx = m_avi_writer.index();
+    m_sd_buffer.buffer_frame(idx.data, idx.len);
+
+    m_sd_buffer.flush();
+    m_sd_buffer.reset();
+}
+```
+
+**Frame accumulation:** Since AviWriter discards each frame chunk after `writeFrame()` (only the last chunk is retained), the VideoController must accumulate frame chunks in a `std::vector` during recording so they can be replayed at close. This adds memory overhead proportional to total clip size. An alternative is to modify AviWriter to retain all chunks (at higher memory cost), but keeping the accumulation in VideoController is cleaner separation of concerns.
+
+**State machine:**
+
+```
+  ┌─────────────────────────────────────────┐
+  │                                         │
+  ▼                                         │
+IDLE ──── start_recording() ────► RECORDING ──── stop_recording() / max_frames / max_size
+  ▲                                         │
+  │              close complete             │
+  └──────────── STOPPING ◄──────────────────┘
+```
+
+**API design:**
+
+```cpp
+class VideoController {
+public:
+  VideoController(CameraController& cam, PeripheralManager& peripheral,
+                  TimeService& time, LoggingService& log);
+
+  // Initialization
+  bool init(const VideoConfig& config);
+
+  // Called from main loop
+  void tick();
+
+  // Control
+  bool startRecording();
+  bool stopRecording();
+  bool isRecording() const;
+
+  // State
+  RecordingState state() const;
+  uint32_t framesRecorded() const;
+  uint32_t fileSize() const;
+
+  /** RAM budget for frame accumulation (bytes). */
+  static constexpr size_t CLIP_BUFFER_RAM_SIZE = 4 * 1024 * 1024;
+
+  /** Estimated average bytes per frame (JPEG + chunk header + padding). */
+  static constexpr uint32_t AVG_BYTES_PER_FRAME = 20 * 1024;
+
+  /** Maximum frames per clip, derived from RAM budget. */
+  static constexpr uint32_t MAX_CLIP_FRAMES = CLIP_BUFFER_RAM_SIZE / AVG_BYTES_PER_FRAME;
+
+private:
+  void openClip();
+  void closeClip();
+  void captureAndWriteFrame();
+  void createDirectory(const char* path);
+
+  // Dependencies (injected)
+  CameraController& m_camera;
+  PeripheralManager& m_peripheral;
+  TimeService& m_time;
+  LoggingService& m_log;
+
+  // Owned components
+  AviWriter m_avi_writer;
+  SdWriteBuffer m_sd_buffer;
+  std::vector<uint8_t> m_frame_accumulator;  // Replays chunks at close
+
+  // State
+  RecordingState m_state;
+  hal::millis_t m_last_frame_time;
+  uint32_t m_frames_recorded;
+  uint32_t m_file_size;
+  VideoConfig m_config;
+};
+```
+
+**`tick()` implementation (cooperative frame pacing):**
+
+```cpp
+void VideoController::tick() {
+  if (m_state != RecordingState::RECORDING) return;
+
+  hal::millis_t now = m_time.now();
+  hal::millis_t elapsed = TimeService::elapsed_ms(m_last_frame_time, now);
+
+  if (elapsed >= m_frame_interval_ms) {
+    captureAndWriteFrame();
+    m_last_frame_time = now;
+
+    // Check clip termination conditions
+    if (m_config.clipDurationS > 0 &&
+        m_frames_recorded >= m_config.fps * m_config.clipDurationS) {
+      stopRecording();
+    }
+    if (m_config.maxFileSizeMB > 0 &&
+        m_file_size >= m_config.maxFileSizeMB * 1024UL * 1024UL) {
+      stopRecording();
+    }
+    if (m_frames_recorded >= MAX_CLIP_FRAMES) {
+      m_log.warn("VIDEO", "Max frames reached, closing clip");
+      stopRecording();
+    }
+  }
+}
+```
+
+**File naming:**
+
+```
+/SD/
+├── /20260705/
+│   ├── 20260705_143022_640x480_10fps.avi
+│   ├── 20260705_144155_640x480_10fps.avi
+│   └── ...
+```
+
+Pattern: `YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`
+
+**Clip rotation:**
+- When a clip reaches `clip_duration_s` or `max_file_size_mb`, `closeClip()` is called
+- A new clip is opened immediately if `startRecording()` was not explicitly stopped
+- This enables unattended recording that doesn't create unbounded files
+
+**LED feedback:**
+
+Handled at the application layer in `main.cpp` based on `videoController.state()`:
+
+```cpp
+// In main loop, after videoController.tick():
+switch (videoController.state()) {
+    case RecordingState::RECORDING:
+        peripheral_manager.blink(200, 200);   // Fast blink
+        break;
+    case RecordingState::STOPPING:
+        peripheral_manager.pulse_led(500);    // Pulse at clip boundary
+        break;
+    case RecordingState::IDLE:
+        // LED controlled by other logic (photo capture, etc.)
+        break;
+}
+```
+
+**Architecture fit:** Service-layer class. Depends on CameraController, PeripheralManager (for SD access via `sdController()`), AviWriter, SdWriteBuffer, TimeService, LoggingService. No direct HAL knowledge. Fully injectable dependencies enable native testing with mocks.
+
+---
+
+### Step 7: Update Main Loop and PeripheralManager
 
 **Modify:** `src/main.cpp`
 
@@ -472,7 +664,7 @@ Note: The PeripheralManager reference needs to be passed to VideoController or t
 
 ---
 
-### Step 7: Update Documentation and Add Tests
+### Step 8: Update Documentation and Add Tests
 
 #### Documentation Updates
 
@@ -513,7 +705,8 @@ Note: The PeripheralManager reference needs to be passed to VideoController or t
 - Flush: correct sector-aligned writes to SD
 - Double-buffer wrap: circular buffer doesn't corrupt data at wrap point
 - Flush on demand: `flush()` writes remaining data correctly
-- Mock: MockSdController tracking write calls and data
+- PeripheralManager integration: verify write_file() is called through PeripheralManager, not SdController directly
+- Mock: PeripheralManager with MockSdCardHal tracking write calls and data
 
 ## Verification Checklist
 
@@ -621,7 +814,8 @@ For long recording sessions (hours/days), additional considerations:
 - **File size limits:** `max_file_size_mb` prevents unbounded files. Default 0 (no limit) is fine for short sessions; set to 200-500MB for extended recording.
 - **Clip rotation:** Automatic clip splitting at duration/size boundaries keeps files manageable and provides natural recovery points if power is lost (only the current clip is lost).
 - **SD card free space:** No automatic cleanup in Phase 1. A future enhancement could delete oldest clips when free space drops below a threshold (matching the reference implementation's `MAX_SD_FREE` behavior).
-- **Index memory:** Very long clips (30+ minutes at 10 FPS = 18,000+ frames) consume ~288KB for the index. Ensure PSRAM is available, or use the incremental index write strategy.
+- **RAM bounds:** `CLIP_BUFFER_RAM_SIZE` (default 4 MB) defines the RAM budget for frame accumulation. `MAX_CLIP_FRAMES` is derived at compile time (`CLIP_BUFFER_RAM_SIZE / AVG_BYTES_PER_FRAME`). For boards without PSRAM, reduce `CLIP_BUFFER_RAM_SIZE` to fit within DRAM constraints.
+- **Frame accumulation memory:** The VideoController accumulates frame chunks in a buffer sized to `CLIP_BUFFER_RAM_SIZE` during recording so they can be replayed at close (since AviWriter discards each chunk after `writeFrame()`). The buffer is bounded by `MAX_CLIP_FRAMES` frames.
 
 ### 6. Testing Strategy Emphasis
 

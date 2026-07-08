@@ -7,7 +7,7 @@ agent: "agent"
 
 # Execute a Plan Step
 
-You are given a plan file and a step number. Your job is to review, validate, and implement **exactly one step** — nothing more.
+You are given a plan file and a step number. Your job is to review, validate, and implement **exactly one step** — nothing more. Review the instructions below, present the plan to the user along with any questions or concerns, and receive explicit approval before starting implementation.
 
 ## Inputs
 
