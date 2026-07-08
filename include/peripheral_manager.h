@@ -4,7 +4,6 @@
 #include "led_state_machine.h"
 #include "sd_controller.h"
 #include "time_service.h"
-#include "hal/sd_card_hal_impl.h"
 #include "hal/gpio_hal.h"
 
 /**
@@ -34,7 +33,13 @@
 class PeripheralManager
 {
     public:
-        PeripheralManager() = default;
+        /**
+         * @brief Constructs a PeripheralManager with the given dependencies.
+         *
+         * @param time   Reference to a TimeService for time acquisition.
+         * @param sd_hal Reference to an SdCardHal for SD card I/O.
+         */
+        PeripheralManager(TimeService &time, hal::SdCardHal &sd_hal);
         ~PeripheralManager() = default;
 
         /**
@@ -109,10 +114,10 @@ class PeripheralManager
                                 hal::millis_t timeout_ms);
 
     private:
-        RealTimeService m_time;
-        LedStateMachine m_led{m_time};
-        hal::SdCardHalImpl m_sd_hal{SD_CS};
-        SdController m_sd{m_time, m_sd_hal};
+        TimeService &m_time;
+        hal::SdCardHal &m_sd_hal;
+        LedStateMachine m_led;
+        SdController m_sd;
 
         /**
          * @brief Applies the resolved pin state to the GPIO output.

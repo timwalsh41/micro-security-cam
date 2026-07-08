@@ -1,6 +1,7 @@
 #include "hal/time_hal.h"
 #include "hal/camera_hal_impl.h"
 #include "hal/serial_log_backend.h"
+#include "hal/sd_card_hal_impl.h"
 #include "camera_controller.h"
 #include "time_service.h"
 #include "logging_service.h"
@@ -23,7 +24,8 @@ RealTimeService real_time;
 hal::SerialLogBackend log_backend;
 LoggingService logger{log_backend, real_time};
 ConfigService config_service{logger};
-PeripheralManager peripheral_manager;
+hal::SdCardHalImpl sd_hal{SD_CS};
+PeripheralManager peripheral_manager{real_time, sd_hal};
 hal::CameraHalImpl camera_hal;
 CameraController camera_ctrl{camera_hal};
 millis_t last_peripheral_tick_time_ms = 0;

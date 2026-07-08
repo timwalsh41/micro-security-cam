@@ -125,28 +125,6 @@ void SdController::start_write(const char *path, const uint8_t *data, size_t len
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
 
-SdWriteResult SdController::write_file(const char *path, const uint8_t *data,
-                                         size_t len, millis_t timeout_ms)
-{
-    start_write(path, data, len);
-
-    millis_t start_time = m_time.now();
-
-    while (m_state != SdState::IDLE)
-    {
-        if (TimeService::elapsed_ms(start_time, m_time.now()) > timeout_ms)
-        {
-            m_state = SdState::IDLE;
-            return SdWriteResult::TIMEOUT;
-        }
-
-        tick();
-        m_time.delay_ms(1);
-    }
-
-    return m_write_result;
-}
-
 void SdController::start_read(const char *path, uint8_t *buffer, size_t buffer_size)
 {
     m_io_path = path;
@@ -159,36 +137,24 @@ void SdController::start_read(const char *path, uint8_t *buffer, size_t buffer_s
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
 
-SdReadResult SdController::read_file(const char *path, uint8_t *buffer,
-                                      size_t buffer_size, size_t *bytes_read,
-                                      millis_t timeout_ms)
+bool SdController::is_idle() const
 {
-    start_read(path, buffer, buffer_size);
+    return m_state == SdState::IDLE;
+}
 
-    millis_t start_time = m_time.now();
+SdWriteResult SdController::get_write_result() const
+{
+    return m_write_result;
+}
 
-    while (m_state != SdState::IDLE)
-    {
-        if (TimeService::elapsed_ms(start_time, m_time.now()) > timeout_ms)
-        {
-            m_state = SdState::IDLE;
-            if (bytes_read != nullptr)
-            {
-                *bytes_read = 0;
-            }
-            return SdReadResult::TIMEOUT;
-        }
-
-        tick();
-        m_time.delay_ms(1);
-    }
-
-    if (bytes_read != nullptr)
-    {
-        *bytes_read = m_bytes_read;
-    }
-
+SdReadResult SdController::get_read_result() const
+{
     return m_read_result;
+}
+
+size_t SdController::get_bytes_read() const
+{
+    return m_bytes_read;
 }
 
 // ============================================================

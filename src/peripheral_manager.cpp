@@ -5,9 +5,17 @@
 
 using hal::millis_t;
 
+PeripheralManager::PeripheralManager(TimeService &time, hal::SdCardHal &sd_hal)
+    : m_time(time)
+    , m_sd_hal(sd_hal)
+    , m_led(m_time)
+    , m_sd(m_time, m_sd_hal)
+{
+}
+
 void PeripheralManager::init()
 {
-    hal::pin_mode(LED_BUILTIN, OUTPUT);
+    hal::set_pin_as_output(hal::LED_PIN);
     m_led.set_mode(LedMode::OFF);
     apply_led_state(false);
 }
@@ -53,17 +61,56 @@ void PeripheralManager::blink(millis_t on_ms, millis_t off_ms)
 SdWriteResult PeripheralManager::write_file(const char *path, const uint8_t *data,
                                              size_t len, millis_t timeout_ms)
 {
-    return m_sd.write_file(path, data, len, timeout_ms);
+    m_sd.start_write(path, data, len);
+
+    millis_t start_time = m_time.now();
+
+    while (!m_sd.is_idle())
+    {
+        if (TimeService::elapsed_ms(start_time, m_time.now()) > timeout_ms)
+        {
+            return SdWriteResult::TIMEOUT;
+        }
+
+        tick();
+        m_time.delay_ms(1);
+    }
+
+    return m_sd.get_write_result();
 }
 
 SdReadResult PeripheralManager::read_file(const char *path, uint8_t *buffer,
                                            size_t buffer_size, size_t *bytes_read,
                                            millis_t timeout_ms)
 {
-    return m_sd.read_file(path, buffer, buffer_size, bytes_read, timeout_ms);
+    m_sd.start_read(path, buffer, buffer_size);
+
+    millis_t start_time = m_time.now();
+
+    while (!m_sd.is_idle())
+    {
+        if (TimeService::elapsed_ms(start_time, m_time.now()) > timeout_ms)
+        {
+            if (bytes_read != nullptr)
+            {
+                *bytes_read = 0;
+            }
+            return SdReadResult::TIMEOUT;
+        }
+
+        tick();
+        m_time.delay_ms(1);
+    }
+
+    if (bytes_read != nullptr)
+    {
+        *bytes_read = m_sd.get_bytes_read();
+    }
+
+    return m_sd.get_read_result();
 }
 
 void PeripheralManager::apply_led_state(bool pin_low)
 {
-    hal::digital_write(LED_BUILTIN, pin_low ? LOW : HIGH);
+    hal::digital_write(hal::LED_PIN, pin_low ? hal::PIN_LOW : hal::PIN_HIGH);
 }

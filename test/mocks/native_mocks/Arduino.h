@@ -4,10 +4,21 @@
 #include <iostream>
 #include <string>
 #include <stdint.h>
+#include <vector>
+#include <utility>
 
 // Basic Arduino types
 typedef uint32_t uint32_t; 
 typedef uint8_t uint8_t;
+
+// Arduino constants
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 21
+#endif
+#define OUTPUT 1
+#define INPUT 0
+#define HIGH 1
+#define LOW 0
 
 // Mock String class to satisfy utility.cpp
 class String : public std::string
@@ -38,5 +49,13 @@ void set_mock_millis(uint32_t ms);
 // Mock delay functions
 void delay(uint32_t ms);
 void delayMicroseconds(uint32_t us);
+
+// Mock GPIO functions
+void pinMode(uint8_t pin, uint8_t mode);
+void digitalWrite(uint8_t pin, uint8_t value);
+
+// GPIO call tracking
+std::vector<std::pair<uint8_t, uint8_t>> &get_gpio_log();
+void clear_gpio_log();
 
 #endif // ARDUINO_H

@@ -4,9 +4,14 @@
 namespace hal
 {
 
-void pin_mode(uint8_t pin, uint8_t mode)
+void set_pin_as_output(uint8_t pin)
 {
-    pinMode(pin, mode);
+    pinMode(pin, OUTPUT);
+}
+
+void set_pin_as_input(uint8_t pin)
+{
+    pinMode(pin, INPUT);
 }
 
 void digital_write(uint8_t pin, uint8_t value)

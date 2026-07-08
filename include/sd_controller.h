@@ -99,21 +99,6 @@ class SdController
         void start_write(const char *path, const uint8_t *data, size_t len);
 
         /**
-         * @brief Performs a synchronous write with a timeout.
-         *
-         * Calls start_write() then loops tick() until the state machine
-         * returns to IDLE or the timeout expires.
-         *
-         * @param path      The file path to write to.
-         * @param data      Pointer to the data buffer to write.
-         * @param len       Number of bytes to write.
-         * @param timeout_ms Maximum time in milliseconds for the full operation.
-         * @return SdWriteResult indicating success, failure reason, or timeout.
-         */
-        SdWriteResult write_file(const char *path, const uint8_t *data,
-                                 size_t len, hal::millis_t timeout_ms);
-
-        /**
          * @brief Initiates a non-blocking read operation.
          *
          * Enters the CS timing protocol starting from PRE_DEACTIVATE_CS.
@@ -130,21 +115,28 @@ class SdController
         void start_read(const char *path, uint8_t *buffer, size_t buffer_size);
 
         /**
-         * @brief Performs a synchronous read with a timeout.
-         *
-         * Calls start_read() then loops tick() until the state machine
-         * returns to IDLE or the timeout expires.
-         *
-         * @param path        The file path to read from.
-         * @param buffer      Pointer to the buffer to read data into.
-         * @param buffer_size Maximum number of bytes the buffer can hold.
-         * @param bytes_read  Output: the number of bytes actually read.
-         * @param timeout_ms  Maximum time in milliseconds for the full operation.
-         * @return SdReadResult indicating success, failure reason, or timeout.
+         * @brief Returns whether the state machine is in IDLE state.
+         * @return true if no I/O operation is in progress.
          */
-        SdReadResult read_file(const char *path, uint8_t *buffer,
-                                size_t buffer_size, size_t *bytes_read,
-                                hal::millis_t timeout_ms);
+        bool is_idle() const;
+
+        /**
+         * @brief Returns the result of the last completed write operation.
+         * @return SdWriteResult from the most recent start_write() cycle.
+         */
+        SdWriteResult get_write_result() const;
+
+        /**
+         * @brief Returns the result of the last completed read operation.
+         * @return SdReadResult from the most recent start_read() cycle.
+         */
+        SdReadResult get_read_result() const;
+
+        /**
+         * @brief Returns the number of bytes read in the last read operation.
+         * @return Byte count from the most recent start_read() cycle.
+         */
+        size_t get_bytes_read() const;
 
         /**
          * @brief Initializes the SD card hardware.
