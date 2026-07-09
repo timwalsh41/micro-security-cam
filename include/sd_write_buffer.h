@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
-#include "sd_controller.h"
+#include "peripheral_manager.h"
 
 /**
  * @file sd_write_buffer.h
@@ -40,10 +40,14 @@ class SdWriteBuffer
         static constexpr size_t RAMSIZE = 8192;
 
         /**
-         * @brief Constructs an SdWriteBuffer with the given SD controller.
-         * @param sd Reference to an SdController used for file I/O.
+         * @brief Constructs an SdWriteBuffer with the given peripheral manager.
+         *
+         * All SD card I/O routes through PeripheralManager to ensure proper
+         * pin arbitration between the LED and SD chip-select.
+         *
+         * @param peripheral Reference to a PeripheralManager used for SD file I/O.
          */
-        explicit SdWriteBuffer(SdController &sd);
+        explicit SdWriteBuffer(PeripheralManager &peripheral);
 
         /**
          * @brief Sets the target file path for subsequent flushes.
@@ -105,14 +109,14 @@ class SdWriteBuffer
         /**
          * @brief Writes the current buffer contents to the SD card.
          *
-         * Calls SdController::write_file() with the buffered data,
-         * then resets the write position to 0.
+         * Pass-through to PeripheralManager::write_file() with the buffered
+         * data, then resets the write position to 0.
          *
          * @return true if the write succeeded.
          */
         bool flush_buffer();
 
-        SdController &m_sd;
+        PeripheralManager &m_peripheral;
         const char *m_path{nullptr};
         uint8_t m_buffer[RAMSIZE];
         size_t m_high_point{0};

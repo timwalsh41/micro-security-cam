@@ -5,8 +5,8 @@
 // Construction
 // ============================================================
 
-SdWriteBuffer::SdWriteBuffer(SdController &sd)
-    : m_sd(sd)
+SdWriteBuffer::SdWriteBuffer(PeripheralManager &peripheral)
+    : m_peripheral(peripheral)
 {
 }
 
@@ -48,7 +48,7 @@ bool SdWriteBuffer::buffer_frame(const uint8_t *avi_chunk, size_t chunk_len)
         }
 
         // Write the oversized chunk directly to SD (bypassing the buffer)
-        SdWriteResult result = m_sd.write_file(m_path, avi_chunk, chunk_len, 5000);
+        SdWriteResult result = m_peripheral.write_file(m_path, avi_chunk, chunk_len, 5000);
         return (result == SdWriteResult::SUCCESS);
     }
 
@@ -124,7 +124,7 @@ bool SdWriteBuffer::flush_buffer()
         return true;
     }
 
-    SdWriteResult result = m_sd.write_file(m_path, m_buffer, m_high_point, 5000);
+    SdWriteResult result = m_peripheral.write_file(m_path, m_buffer, m_high_point, 5000);
     m_high_point = 0;
 
     return (result == SdWriteResult::SUCCESS);

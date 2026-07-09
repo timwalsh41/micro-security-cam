@@ -53,7 +53,7 @@ captureTask (Priority 6, 4KB stack)
   • Signals frameSemaphore[] for each active stream
          │
          ├──► streamBuffer[i] → frameSemaphore[i] → sustainTask[i] → HTTP
-         ├──► AviWriter → SdWriteBuffer → SdController → SD card
+         ├──► AviWriter → SdWriteBuffer → PeripheralManager → SdController → SD card
          └──► MotionDetector → motionStatus flag
 
 micTask (Priority 2, 4KB stack)
@@ -73,7 +73,7 @@ main.cpp loop()
 
 ```
 Camera ──► captureTask ──┬──► streamBuffer[i] ──► frameSemaphore[i] ──► sustainTask[i] ──► HTTP
-                         ├──► AviWriter ──► SdWriteBuffer ──► SdController ──► SD card
+                         ├──► AviWriter ──► SdWriteBuffer ──► PeripheralManager ──► SdController ──► SD card
                          └──► MotionDetector ──► motionStatus flag
 
 I2S Mic ──► micTask ──► gain ──► WAV file ──► (at close) ──► AviWriter audio merge ──► SD card

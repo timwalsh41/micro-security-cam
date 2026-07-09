@@ -1,6 +1,5 @@
 #include <unity.h>
 #include "sd_write_buffer.h"
-#include "sd_controller.h"
 #include "time_service.h"
 #include "mock_sd_card_hal.h"
 #include <cstring>
@@ -56,8 +55,8 @@ void test_initial_not_open()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     TEST_ASSERT_FALSE(buf.is_open());
 }
@@ -70,8 +69,8 @@ void test_initial_buffered_bytes_zero()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     TEST_ASSERT_EQUAL_UINT32(0, buf.buffered_bytes());
 }
@@ -88,8 +87,8 @@ void test_open_success()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     TEST_ASSERT_TRUE(buf.open("/test.avi"));
     TEST_ASSERT_TRUE(buf.is_open());
@@ -103,8 +102,8 @@ void test_open_null_path_returns_false()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     TEST_ASSERT_FALSE(buf.open(nullptr));
     TEST_ASSERT_FALSE(buf.is_open());
@@ -122,8 +121,8 @@ void test_buffer_frame_before_open_returns_false()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     std::vector<uint8_t> chunk;
     build_fake_chunk(100, 0xAB, chunk);
@@ -138,8 +137,8 @@ void test_buffer_frame_null_data_returns_false()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     TEST_ASSERT_FALSE(buf.buffer_frame(nullptr, 10));
@@ -153,8 +152,8 @@ void test_buffer_frame_zero_length_returns_false()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     uint8_t data[10] = {};
@@ -169,8 +168,8 @@ void test_buffer_frame_accumulates_in_ram()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     std::vector<uint8_t> chunk;
@@ -190,8 +189,8 @@ void test_multiple_frames_accumulate()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     std::vector<uint8_t> chunk1, chunk2;
@@ -220,8 +219,8 @@ void test_auto_flush_at_ramsize_threshold()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Fill buffer to just below RAMSIZE
@@ -251,8 +250,8 @@ void test_auto_flush_at_exact_ramsize()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Add a chunk that exactly fills RAMSIZE
@@ -277,8 +276,8 @@ void test_oversized_chunk_written_directly()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Create a chunk larger than RAMSIZE
@@ -299,8 +298,8 @@ void test_oversized_chunk_flushes_pending_first()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Buffer some data first
@@ -331,8 +330,8 @@ void test_flush_empty_returns_true()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     TEST_ASSERT_TRUE(buf.flush());
@@ -347,8 +346,8 @@ void test_flush_before_open_returns_false()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     TEST_ASSERT_FALSE(buf.flush());
 }
@@ -361,8 +360,8 @@ void test_flush_writes_to_sd()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Buffer a chunk
@@ -392,8 +391,8 @@ void test_flush_after_partial_fill()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Buffer a chunk smaller than RAMSIZE
@@ -420,8 +419,8 @@ void test_multiple_flush_cycles()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // First cycle: buffer + flush
@@ -455,8 +454,8 @@ void test_reset_clears_buffer()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     std::vector<uint8_t> chunk;
@@ -477,8 +476,8 @@ void test_reset_prevents_further_buffering()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
     buf.reset();
 
@@ -499,8 +498,8 @@ void test_data_integrity_small_chunk()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Build a chunk with a known pattern
@@ -522,8 +521,8 @@ void test_data_integrity_two_flushes()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     std::vector<uint8_t> chunk1, chunk2;
@@ -553,8 +552,8 @@ void test_single_byte_chunk()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Smallest possible chunk: 8-byte header + 1 byte payload → padded to 12
@@ -577,8 +576,8 @@ void test_chunk_fills_exact_remaining_space()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // First chunk: fill most of the buffer
@@ -606,8 +605,8 @@ void test_flush_after_auto_flush()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Fill past RAMSIZE to trigger auto-flush
@@ -635,8 +634,8 @@ void test_flush_sd_write_failure()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     std::vector<uint8_t> chunk;
@@ -657,9 +656,8 @@ void test_auto_flush_sd_write_failure()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
-    buf.open("/test.avi");
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
 
     // Fill to just below RAMSIZE
     std::vector<uint8_t> chunk1;
@@ -687,8 +685,8 @@ void test_multiple_auto_flush_cycles()
     RealTimeService time;
     set_mock_millis(0);
     MockSdCardHal sd_hal;
-    SdController sd_ctrl(time, sd_hal);
-    SdWriteBuffer buf(sd_ctrl);
+    PeripheralManager peripheral(time, sd_hal);
+    SdWriteBuffer buf(peripheral);
     buf.open("/test.avi");
 
     // Fill the buffer to trigger auto-flush 3 times
