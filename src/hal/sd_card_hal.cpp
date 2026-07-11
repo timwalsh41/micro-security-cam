@@ -66,6 +66,11 @@ void SdCardHalImpl::close()
     }
 }
 
+bool SdCardHalImpl::create_dir(const char *path)
+{
+    return SD.mkdir(path);
+}
+
 bool SdCardHalImpl::is_initialized() const
 {
     return m_initialized;

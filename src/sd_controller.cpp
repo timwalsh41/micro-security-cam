@@ -54,7 +54,15 @@ peripherals::SdSignal SdController::tick()
             // Perform the file I/O while CS is asserted.
             // close() is always called to ensure proper resource cleanup,
             // even if open() fails.
-            if (!m_sd_hal.open(m_io_path,
+            if (m_operation == SdOperation::CREATE_DIR)
+            {
+                // Directory creation: no open/close needed
+                if (!m_sd_hal.create_dir(m_io_path))
+                {
+                    m_create_dir_result = SdCreateDirResult::FAILED;
+                }
+            }
+            else if (!m_sd_hal.open(m_io_path,
                 m_operation == SdOperation::READ ? hal::FileOpenMode::READ : hal::FileOpenMode::WRITE))
             {
                 if (m_operation == SdOperation::WRITE)
@@ -83,7 +91,10 @@ peripherals::SdSignal SdController::tick()
                         : SdReadResult::FILE_READ_EMPTY;
                 }
             }
-            m_sd_hal.close();
+            if (m_operation != SdOperation::CREATE_DIR)
+            {
+                m_sd_hal.close();
+            }
 
             set_state(SdState::END_IO);
             return peripherals::SdSignal::CS_ACTIVE;        // CS remains active through END_IO entry
@@ -137,6 +148,15 @@ void SdController::start_read(const char *path, uint8_t *buffer, size_t buffer_s
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
 
+void SdController::start_create_dir(const char *path)
+{
+    m_io_path = path;
+    m_create_dir_result = SdCreateDirResult::SUCCESS;
+    m_operation = SdOperation::CREATE_DIR;
+
+    set_state(SdState::PRE_DEACTIVATE_CS);
+}
+
 bool SdController::is_idle() const
 {
     return m_state == SdState::IDLE;
@@ -150,6 +170,11 @@ SdWriteResult SdController::get_write_result() const
 SdReadResult SdController::get_read_result() const
 {
     return m_read_result;
+}
+
+SdCreateDirResult SdController::get_create_dir_result() const
+{
+    return m_create_dir_result;
 }
 
 size_t SdController::get_bytes_read() const

@@ -24,57 +24,57 @@ bool AviWriter::open(const char *path, uint16_t fps, uint16_t width, uint16_t he
     m_fps = fps;
     m_width = width;
     m_height = height;
-    m_frameCount = 0;
-    m_dataSize = 0;
+    m_frame_count = 0;
+    m_data_size = 0;
 
-    m_indexEntries.clear();
-    m_indexBuffer.clear();
+    m_index_entries.clear();
+    m_index_buffer.clear();
 
-    buildHeader();
+    build_header();
     m_open = true;
     return true;
 }
 
-bool AviWriter::writeFrame(const uint8_t *jpegData, size_t jpegLen)
+bool AviWriter::write_frame(const uint8_t *jpeg_data, size_t jpeg_len)
 {
-    if (!m_open || !jpegData || jpegLen == 0)
+    if (!m_open || !jpeg_data || jpeg_len == 0)
     {
         return false;
     }
 
     // Calculate DWORD-aligned total chunk size
-    size_t rawSize = CHUNK_HEADER_SIZE + jpegLen;
-    size_t alignedSize = dwordAlign(rawSize);
-    size_t padding = alignedSize - rawSize;
+    size_t raw_size = CHUNK_HEADER_SIZE + jpeg_len;
+    size_t aligned_size = dword_align(raw_size);
+    size_t padding = aligned_size - raw_size;
 
     // Build frame chunk: marker(4) + size(4) + data + padding
-    m_frameChunk.resize(alignedSize);
+    m_frame_chunk.resize(aligned_size);
 
     // Write chunk marker: stream 0, compressed video = 0x00dc
-    writeU32(m_frameChunk, 0, 0x00dc);
+    write_u32(m_frame_chunk, 0, 0x00dc);
 
     // Write data size (JPEG only, not including header or padding)
-    writeU32(m_frameChunk, 4, static_cast<uint32_t>(jpegLen));
+    write_u32(m_frame_chunk, 4, static_cast<uint32_t>(jpeg_len));
 
     // Copy JPEG data
-    memcpy(&m_frameChunk[CHUNK_HEADER_SIZE], jpegData, jpegLen);
+    memcpy(&m_frame_chunk[CHUNK_HEADER_SIZE], jpeg_data, jpeg_len);
 
     // Zero-fill padding
     if (padding > 0)
     {
-        memset(&m_frameChunk[rawSize], 0, padding);
+        memset(&m_frame_chunk[raw_size], 0, padding);
     }
 
     // Record index entry: offset is from start of movi data to chunk header
-    uint32_t chunkOffset = MOVI_DATA_OFFSET + m_dataSize;
+    uint32_t chunk_offset = MOVI_DATA_OFFSET + m_data_size;
     IndexEntry entry;
-    entry.offset = chunkOffset;
-    entry.size = static_cast<uint32_t>(jpegLen);
-    m_indexEntries.push_back(entry);
+    entry.offset = chunk_offset;
+    entry.size = static_cast<uint32_t>(jpeg_len);
+    m_index_entries.push_back(entry);
 
     // Update counters
-    m_dataSize += static_cast<uint32_t>(alignedSize);
-    m_frameCount++;
+    m_data_size += static_cast<uint32_t>(aligned_size);
+    m_frame_count++;
 
     return true;
 }
@@ -86,8 +86,8 @@ bool AviWriter::close()
         return false;
     }
 
-    patchHeader();
-    buildIndex();
+    patch_header();
+    build_index();
     m_open = false;
     return true;
 }
@@ -96,25 +96,25 @@ bool AviWriter::close()
 // State queries
 // ============================================================
 
-bool AviWriter::isOpen() const
+bool AviWriter::is_open() const
 {
     return m_open;
 }
 
-uint32_t AviWriter::frameCount() const
+uint32_t AviWriter::frame_count() const
 {
-    return m_frameCount;
+    return m_frame_count;
 }
 
-uint32_t AviWriter::fileSize() const
+uint32_t AviWriter::file_size() const
 {
     if (m_header.empty())
     {
         return 0;
     }
     // Total = header + movi data + idx1 header + index data
-    return AVI_HEADER_SIZE + m_dataSize + CHUNK_HEADER_SIZE +
-           static_cast<uint32_t>(m_indexEntries.size() * INDEX_ENTRY_SIZE);
+    return AVI_HEADER_SIZE + m_data_size + CHUNK_HEADER_SIZE +
+           static_cast<uint32_t>(m_index_entries.size() * INDEX_ENTRY_SIZE);
 }
 
 const char *AviWriter::path() const
@@ -135,25 +135,25 @@ AviBytes AviWriter::header() const
     return {m_header.data(), m_header.size()};
 }
 
-AviBytes AviWriter::lastFrameChunk() const
+AviBytes AviWriter::last_frame_chunk() const
 {
-    if (m_frameChunk.empty())
+    if (m_frame_chunk.empty())
     {
         return {nullptr, 0};
     }
-    return {m_frameChunk.data(), m_frameChunk.size()};
+    return {m_frame_chunk.data(), m_frame_chunk.size()};
 }
 
 AviBytes AviWriter::index() const
 {
-    if (m_indexBuffer.empty())
+    if (m_index_buffer.empty())
     {
         return {nullptr, 0};
     }
-    return {m_indexBuffer.data(), m_indexBuffer.size()};
+    return {m_index_buffer.data(), m_index_buffer.size()};
 }
 
-AviBytes AviWriter::patchedHeader() const
+AviBytes AviWriter::patched_header() const
 {
     if (m_header.empty())
     {
@@ -166,119 +166,120 @@ AviBytes AviWriter::patchedHeader() const
 // Header construction
 // ============================================================
 
-void AviWriter::buildHeader()
+void AviWriter::build_header()
 {
     m_header.resize(AVI_HEADER_SIZE, 0);
 
     // ---- RIFF header ----
-    writeFourCC(m_header, 0, "RIFF");
+    write_four_cc(m_header, 0, "RIFF");
     // RIFF size patched at close()
-    writeFourCC(m_header, 8, "AVI ");
+    write_four_cc(m_header, 8, "AVI ");
 
     // ---- LIST hdrl ----
-    writeFourCC(m_header, 12, "LIST");
-    writeU32(m_header, HDRL_LIST_SIZE_OFFSET, 192);
-    writeFourCC(m_header, 20, "hdrl");
+    write_four_cc(m_header, 12, "LIST");
+    write_u32(m_header, HDRL_LIST_SIZE_OFFSET, 192);
+    write_four_cc(m_header, 20, "hdrl");
 
     // ---- avih (Main AVI Header) ----
-    writeFourCC(m_header, 24, "avih");
-    writeU32(m_header, 28, 56);  // data size
-    writeU32(m_header, 32, 1000000u / m_fps);  // dwMicroSecPerFrame
+    write_four_cc(m_header, 24, "avih");
+    write_u32(m_header, 28, 56);  // data size
+    write_u32(m_header, 32, 1000000u / m_fps);  // dwMicroSecPerFrame
     // dwMaxBytesPerSec = 0 (offset 36)
     // dwPaddingGranularity = 0 (offset 40)
-    writeU32(m_header, 44, 0x10);  // dwFlags = AVIF_HASINDEX
+    write_u32(m_header, 44, 0x10);  // dwFlags = AVIF_HASINDEX
     // dwTotalFrames patched at close() (offset 48)
     // dwInitialFrames = 0 (offset 52)
-    writeU32(m_header, 56, 1);  // dwStreams = 1
+    write_u32(m_header, 56, 1);  // dwStreams = 1
     // dwSuggestedBufferSize = 0 (offset 60)
-    writeU32(m_header, 64, m_width);
-    writeU32(m_header, 68, m_height);
+    write_u32(m_header, 64, m_width);
+    write_u32(m_header, 68, m_height);
     // dwReserved[0..3] = 0 (offsets 72-84)
 
     // ---- LIST strl (video stream) ----
-    writeFourCC(m_header, 88, "LIST");
-    writeU32(m_header, STRL_LIST_SIZE_OFFSET, 116);
-    writeFourCC(m_header, 96, "strl");
+    write_four_cc(m_header, 88, "LIST");
+    write_u32(m_header, STRL_LIST_SIZE_OFFSET, 116);
+    write_four_cc(m_header, 96, "strl");
 
     // ---- strh (Stream Header) ----
-    writeFourCC(m_header, 100, "strh");
-    writeU32(m_header, 104, 56);  // data size
-    writeFourCC(m_header, 108, "vids");  // stream type: video
-    writeFourCC(m_header, 112, "MJPG");  // handler: Motion JPEG
+    write_four_cc(m_header, 100, "strh");
+    write_u32(m_header, 104, 56);  // data size
+    write_four_cc(m_header, 108, "vids");  // stream type: video
+    write_four_cc(m_header, 112, "MJPG");  // handler: Motion JPEG
     // dwFlags = 0 (offset 116)
-    // wPriority = 0, wInitialFrames = 0 (offset 120)
-    writeU32(m_header, 124, 1);  // dwScale
-    writeU32(m_header, 128, m_fps);  // dwRate = fps * scale
+    // wPriority = 0 (offset 120)
+    // wInitialFrames = 0 (offset 122)
+    write_u32(m_header, 124, 1);  // dwScale
+    write_u32(m_header, 128, m_fps);  // dwRate = fps * scale
     // dwStart = 0 (offset 132)
     // dwLength patched at close() (offset 136)
     // dwSuggestedBufferSize = 0 (offset 140)
-    writeU32(m_header, 148, 0xFFFFFFFF);  // dwQuality = default (-1)
+    write_u32(m_header, 144, 0xFFFFFFFF);  // dwQuality = default (-1)
     // dwSampleSize = 0 (offset 148)
 
     // ---- strf (Stream Format: BITMAPINFOHEADER) ----
-    writeFourCC(m_header, 152, "strf");
-    writeU32(m_header, 156, 40);  // data size
-    writeU32(m_header, 160, 40);  // biSize
-    writeU32(m_header, 164, m_width);
-    writeU32(m_header, 168, m_height);
-    writeU16(m_header, 172, 1);   // biPlanes
-    writeU16(m_header, 174, 24);  // biBitCount
-    writeFourCC(m_header, 176, "MJPG");  // biCompression
-    // biSizeImage = 0 (offset 182)
-    // biXPelsPerMeter = 0 (offset 186)
-    // biYPelsPerMeter = 0 (offset 190)
-    // biClrUsed = 0 (offset 194)
-    // biClrImportant = 0 (offset 198)
+    write_four_cc(m_header, 164, "strf");
+    write_u32(m_header, 168, 40);  // data size
+    write_u32(m_header, 172, 40);  // biSize
+    write_u32(m_header, 176, m_width);
+    write_u32(m_header, 180, m_height);
+    write_u16(m_header, 184, 1);   // biPlanes
+    write_u16(m_header, 186, 24);  // biBitCount
+    write_four_cc(m_header, 188, "MJPG");  // biCompression
+    // biSizeImage = 0 (offset 192)
+    // biXPelsPerMeter = 0 (offset 196)
+    // biYPelsPerMeter = 0 (offset 200)
+    // biClrUsed = 0 (offset 204)
+    // biClrImportant = 0 (offset 208)
 
     // ---- LIST movi ----
-    writeFourCC(m_header, 212, "LIST");
+    write_four_cc(m_header, 212, "LIST");
     // movi list size patched at close() (offset 216)
-    writeFourCC(m_header, 220, "movi");
+    write_four_cc(m_header, 220, "movi");
 }
 
 // ============================================================
 // Header patching
 // ============================================================
 
-void AviWriter::patchHeader()
+void AviWriter::patch_header()
 {
     // RIFF total size = total file size - 8
-    uint32_t totalSize = fileSize();
-    writeU32(m_header, RIFF_SIZE_OFFSET, totalSize - 8);
+    uint32_t total_size = file_size();
+    write_u32(m_header, RIFF_SIZE_OFFSET, total_size - 8);
 
     // avih: dwTotalFrames
-    writeU32(m_header, AVIH_FRAME_COUNT_OFFSET, m_frameCount);
+    write_u32(m_header, AVIH_FRAME_COUNT_OFFSET, m_frame_count);
 
     // strh: dwLength (frame count)
-    writeU32(m_header, STRH_FRAME_COUNT_OFFSET, m_frameCount);
+    write_u32(m_header, STRH_FRAME_COUNT_OFFSET, m_frame_count);
 
     // LIST movi size = 4 ("movi") + total frame data with padding
-    writeU32(m_header, MOVI_LIST_SIZE_OFFSET, MOVI_DATA_OFFSET + m_dataSize);
+    write_u32(m_header, MOVI_LIST_SIZE_OFFSET, MOVI_DATA_OFFSET + m_data_size);
 }
 
 // ============================================================
 // Index construction
 // ============================================================
 
-void AviWriter::buildIndex()
+void AviWriter::build_index()
 {
-    size_t indexSize = m_indexEntries.size() * INDEX_ENTRY_SIZE;
-    m_indexBuffer.resize(CHUNK_HEADER_SIZE + indexSize);
+    size_t index_size = m_index_entries.size() * INDEX_ENTRY_SIZE;
+    m_index_buffer.resize(CHUNK_HEADER_SIZE + index_size);
 
     // idx1 chunk header
-    writeFourCC(m_indexBuffer, 0, "idx1");
-    writeU32(m_indexBuffer, 4, static_cast<uint32_t>(indexSize));
+    write_four_cc(m_index_buffer, 0, "idx1");
+    write_u32(m_index_buffer, 4, static_cast<uint32_t>(index_size));
 
     // Index entries
-    for (size_t i = 0; i < m_indexEntries.size(); i++)
+    for (size_t i = 0; i < m_index_entries.size(); i++)
     {
         size_t offset = CHUNK_HEADER_SIZE + (i * INDEX_ENTRY_SIZE);
-        const IndexEntry &entry = m_indexEntries[i];
+        const IndexEntry &entry = m_index_entries[i];
 
-        writeU32(m_indexBuffer, offset, 0x00dc);          // ckid
-        writeU32(m_indexBuffer, offset + 4, 0);           // dwFlags
-        writeU32(m_indexBuffer, offset + 8, entry.offset); // dwOffset
-        writeU32(m_indexBuffer, offset + 12, entry.size);  // dwSize
+        write_u32(m_index_buffer, offset, 0x00dc);          // ckid
+        write_u32(m_index_buffer, offset + 4, 0);           // dwFlags
+        write_u32(m_index_buffer, offset + 8, entry.offset); // dwOffset
+        write_u32(m_index_buffer, offset + 12, entry.size);  // dwSize
     }
 }
 
@@ -286,12 +287,12 @@ void AviWriter::buildIndex()
 // Utility methods
 // ============================================================
 
-size_t AviWriter::dwordAlign(size_t size) const
+size_t AviWriter::dword_align(size_t size) const
 {
     return (size + 3) & ~static_cast<size_t>(3);
 }
 
-void AviWriter::writeU32(std::vector<uint8_t> &buf, size_t offset, uint32_t value) const
+void AviWriter::write_u32(std::vector<uint8_t> &buf, size_t offset, uint32_t value) const
 {
     if (offset + 4 <= buf.size())
     {
@@ -299,7 +300,7 @@ void AviWriter::writeU32(std::vector<uint8_t> &buf, size_t offset, uint32_t valu
     }
 }
 
-void AviWriter::writeU16(std::vector<uint8_t> &buf, size_t offset, uint16_t value) const
+void AviWriter::write_u16(std::vector<uint8_t> &buf, size_t offset, uint16_t value) const
 {
     if (offset + 2 <= buf.size())
     {
@@ -307,7 +308,7 @@ void AviWriter::writeU16(std::vector<uint8_t> &buf, size_t offset, uint16_t valu
     }
 }
 
-void AviWriter::writeFourCC(std::vector<uint8_t> &buf, size_t offset,
+void AviWriter::write_four_cc(std::vector<uint8_t> &buf, size_t offset,
                             const char fourcc[4]) const
 {
     if (offset + 4 <= buf.size())

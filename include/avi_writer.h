@@ -27,15 +27,15 @@
  * @endcode
  *
  * Lifecycle:
- *   open() → writeFrame() × N → close()
+ *   open() → write_frame() × N → close()
  *
  * After open(), call header() to get the initial AVI header bytes.
- * After each writeFrame(), call lastFrameChunk() to get the formatted
- * chunk bytes. After close(), call patchedHeader() for the header with
+ * After each write_frame(), call last_frame_chunk() to get the formatted
+ * chunk bytes. After close(), call patched_header() for the header with
  * final stats, and index() for the frame index.
  *
  * All byte accessors return pointers to internal buffers that remain
- * valid until the next mutating call (writeFrame, close, or destruction).
+ * valid until the next mutating call (write_frame, close, or destruction).
  */
 
 /**
@@ -79,13 +79,13 @@ class AviWriter
          *
          * Builds a chunk with the 0x00dc marker, frame data size, JPEG
          * data, and DWORD-alignment padding. The formatted bytes are
-         * available via lastFrameChunk() until the next writeFrame() call.
+         * available via last_frame_chunk() until the next write_frame() call.
          *
-         * @param jpegData Pointer to JPEG frame data.
-         * @param jpegLen  Length of JPEG data in bytes.
+         * @param jpeg_data Pointer to JPEG frame data.
+         * @param jpeg_len  Length of JPEG data in bytes.
          * @return true if the frame was formatted successfully.
          */
-        bool writeFrame(const uint8_t *jpegData, size_t jpegLen);
+        bool write_frame(const uint8_t *jpeg_data, size_t jpeg_len);
 
         /**
          * @brief Finalizes the AVI with actual frame count and file size.
@@ -93,7 +93,7 @@ class AviWriter
          * Patches the header with final statistics (RIFF size, frame
          * count, movi list size) and builds the frame index. After
          * close(), the patched header and index are available via
-         * patchedHeader() and index() accessors.
+         * patched_header() and index() accessors.
          *
          * @return true if the AVI was successfully finalized.
          */
@@ -103,13 +103,13 @@ class AviWriter
          * @brief Returns whether the writer is in an open state.
          * @return true if open() was called and close() has not been called.
          */
-        bool isOpen() const;
+        bool is_open() const;
 
         /**
          * @brief Returns the number of frames written.
-         * @return Frame count (only valid after at least one writeFrame() call).
+         * @return Frame count (only valid after at least one write_frame() call).
          */
-        uint32_t frameCount() const;
+        uint32_t frame_count() const;
 
         /**
          * @brief Returns the total file size in bytes.
@@ -120,7 +120,7 @@ class AviWriter
          *
          * @return Total file size in bytes.
          */
-        uint32_t fileSize() const;
+        uint32_t file_size() const;
 
         /**
          * @brief Returns the file path passed to open().
@@ -132,7 +132,7 @@ class AviWriter
          * @brief Returns the initial AVI header bytes.
          *
          * Valid after open() and before close(). After close(), use
-         * patchedHeader() for the finalized version.
+         * patched_header() for the finalized version.
          *
          * @return AviBytes pointing to the header buffer.
          */
@@ -141,13 +141,13 @@ class AviWriter
         /**
          * @brief Returns the last formatted frame chunk bytes.
          *
-         * Valid after writeFrame() and until the next writeFrame() or
+         * Valid after write_frame() and until the next write_frame() or
          * close() call. Includes the 8-byte chunk header (0x00dc + size),
          * JPEG data, and padding.
          *
          * @return AviBytes pointing to the frame chunk buffer.
          */
-        AviBytes lastFrameChunk() const;
+        AviBytes last_frame_chunk() const;
 
         /**
          * @brief Returns the frame index bytes.
@@ -168,7 +168,7 @@ class AviWriter
          *
          * @return AviBytes pointing to the patched header buffer.
          */
-        AviBytes patchedHeader() const;
+        AviBytes patched_header() const;
 
     private:
         static constexpr size_t AVI_HEADER_SIZE = 224;
@@ -184,26 +184,26 @@ class AviWriter
         static constexpr size_t STRH_FRAME_COUNT_OFFSET = 136;
         static constexpr size_t MOVI_LIST_SIZE_OFFSET = 216;
 
-        void buildHeader();
-        void patchHeader();
-        void buildIndex();
-        size_t dwordAlign(size_t size) const;
+        void build_header();
+        void patch_header();
+        void build_index();
+        size_t dword_align(size_t size) const;
 
         /**
          * @brief Writes a 32-bit little-endian value into a byte buffer.
          */
-        void writeU32(std::vector<uint8_t> &buf, size_t offset, uint32_t value) const;
+        void write_u32(std::vector<uint8_t> &buf, size_t offset, uint32_t value) const;
 
         /**
          * @brief Writes a 16-bit little-endian value into a byte buffer.
          */
-        void writeU16(std::vector<uint8_t> &buf, size_t offset, uint16_t value) const;
+        void write_u16(std::vector<uint8_t> &buf, size_t offset, uint16_t value) const;
 
         /**
          * @brief Writes a FourCC (4-byte identifier) into a byte buffer.
          */
-        void writeFourCC(std::vector<uint8_t> &buf, size_t offset,
-                         const char fourcc[4]) const;
+        void write_four_cc(std::vector<uint8_t> &buf, size_t offset,
+                           const char fourcc[4]) const;
 
         bool m_open{false};
         const char *m_path{nullptr};
@@ -211,19 +211,19 @@ class AviWriter
         uint16_t m_width{0};
         uint16_t m_height{0};
 
-        uint32_t m_frameCount{0};
-        uint32_t m_dataSize{0};
+        uint32_t m_frame_count{0};
+        uint32_t m_data_size{0};
 
         std::vector<uint8_t> m_header;
-        std::vector<uint8_t> m_frameChunk;
-        std::vector<uint8_t> m_indexBuffer;
+        std::vector<uint8_t> m_frame_chunk;
+        std::vector<uint8_t> m_index_buffer;
 
         struct IndexEntry
         {
             uint32_t offset;    ///< Offset from start of movi data to chunk header
             uint32_t size;      ///< JPEG data size (without chunk header or padding)
         };
-        std::vector<IndexEntry> m_indexEntries;
+        std::vector<IndexEntry> m_index_entries;
 };
 
 #endif // AVI_WRITER_H

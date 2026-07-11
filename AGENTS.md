@@ -23,6 +23,7 @@
 
 # Development guidelines
 
+- **Stop and wait for explicit approval** before implementing changes requested via  plan execution prompts or similar structured workflows. Request approval to proceed and wait for the user's affirmative response.
 - C++11 standard
 - Include unit test coverage for all new code
     - Logical/control level components should be tested in the `native` environment

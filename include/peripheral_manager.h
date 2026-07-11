@@ -113,6 +113,15 @@ class PeripheralManager
                                 size_t buffer_size, size_t *bytes_read,
                                 hal::millis_t timeout_ms);
 
+        /**
+         * @brief Creates a directory on the SD card with a timeout.
+         * @param path      Directory path to create.
+         * @param timeout_ms Maximum time in milliseconds.
+         * @return SdCreateDirResult indicating success or failure.
+         */
+        SdCreateDirResult create_dir(const char *path,
+                                     hal::millis_t timeout_ms);
+
     private:
         TimeService &m_time;
         hal::SdCardHal &m_sd_hal;

@@ -36,6 +36,7 @@ public:
     bool write(const uint8_t *data, size_t len) override;
     size_t read(uint8_t *buffer, size_t len) override;
     void close() override;
+    bool create_dir(const char *path) override;
     bool is_initialized() const override;
 
 private:

@@ -110,6 +110,27 @@ SdReadResult PeripheralManager::read_file(const char *path, uint8_t *buffer,
     return m_sd.get_read_result();
 }
 
+SdCreateDirResult PeripheralManager::create_dir(const char *path,
+                                                 millis_t timeout_ms)
+{
+    m_sd.start_create_dir(path);
+
+    millis_t start_time = m_time.now();
+
+    while (!m_sd.is_idle())
+    {
+        if (TimeService::elapsed_ms(start_time, m_time.now()) > timeout_ms)
+        {
+            return SdCreateDirResult::TIMEOUT;
+        }
+
+        tick();
+        m_time.delay_ms(1);
+    }
+
+    return m_sd.get_create_dir_result();
+}
+
 void PeripheralManager::apply_led_state(bool pin_low)
 {
     hal::digital_write(hal::LED_PIN, pin_low ? hal::PIN_LOW : hal::PIN_HIGH);

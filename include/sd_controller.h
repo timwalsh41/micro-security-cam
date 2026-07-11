@@ -39,6 +39,16 @@ enum class SdReadResult : uint8_t
 };
 
 /**
+ * @brief Result of an SD card directory creation operation.
+ */
+enum class SdCreateDirResult : uint8_t
+{
+    SUCCESS,            ///< Directory created successfully
+    FAILED,             ///< Directory creation failed
+    TIMEOUT             ///< Operation exceeded allowed time
+};
+
+/**
  * @class SdController
  * @brief Manages SD card read/write lifecycle with proper CS timing protocol.
  *
@@ -115,6 +125,20 @@ class SdController
         void start_read(const char *path, uint8_t *buffer, size_t buffer_size);
 
         /**
+         * @brief Initiates a non-blocking directory creation operation.
+         *
+         * Enters the CS timing protocol starting from PRE_DEACTIVATE_CS.
+         * Call tick() repeatedly to advance the state machine through
+         * the full cycle back to IDLE.
+         *
+         * The caller must ensure that @p path remains valid until
+         * the state machine returns to IDLE.
+         *
+         * @param path The directory path to create.
+         */
+        void start_create_dir(const char *path);
+
+        /**
          * @brief Returns whether the state machine is in IDLE state.
          * @return true if no I/O operation is in progress.
          */
@@ -131,6 +155,12 @@ class SdController
          * @return SdReadResult from the most recent start_read() cycle.
          */
         SdReadResult get_read_result() const;
+
+        /**
+         * @brief Returns the result of the last completed create_dir operation.
+         * @return SdCreateDirResult from the most recent start_create_dir() cycle.
+         */
+        SdCreateDirResult get_create_dir_result() const;
 
         /**
          * @brief Returns the number of bytes read in the last read operation.
@@ -177,7 +207,8 @@ class SdController
         enum class SdOperation : uint8_t
         {
             READ,
-            WRITE
+            WRITE,
+            CREATE_DIR
         };
 
         TimeService &m_time;
@@ -202,6 +233,9 @@ class SdController
         size_t m_read_buffer_size{0};
         size_t m_bytes_read{0};
         SdReadResult m_read_result{SdReadResult::SUCCESS};
+
+        // CreateDir-specific parameters
+        SdCreateDirResult m_create_dir_result{SdCreateDirResult::SUCCESS};
 
         // Internal function to advance state
         void set_state(SdState next_state);

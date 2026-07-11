@@ -102,6 +102,17 @@ public:
     virtual void close() = 0;
 
     /**
+     * @brief Creates a directory on the SD card.
+     *
+     * Must only be called when the chip-select pin is asserted.
+     * If the directory already exists, this is a no-op that returns true.
+     *
+     * @param path The directory path to create.
+     * @return true if the directory was created (or already existed), false otherwise.
+     */
+    virtual bool create_dir(const char *path) = 0;
+
+    /**
      * @brief Checks whether the SD card has been successfully initialized, e.g. hardware
      *        configured and SD card present.
      *

@@ -2,7 +2,9 @@
 
 ## Instructions
 
-**Refer to the process for executing a plan step at `.girhub/prompts/execute-plan.prompt.md` before reviewing this document**
+Refer to the process for executing a plan step at `.girhub/prompts/execute-plan.prompt.md` before reviewing this document. Be sure to review the whole document, not just the assigned step, as it includes architectural and design decision guidance and rationale.
+
+**⛔ CRITICAL RULE: You MUST NOT write, create, edit, or delete any source code files until you have received an explicit affirmative response from the user approving implementation. This applies EVEN IF you found no issues in your review. Present your review, ask for approval, and wait for the answer.**
 
 ## Overview
 

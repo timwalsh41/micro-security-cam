@@ -32,30 +32,30 @@ static uint32_t readU32(const uint8_t *data, size_t offset)
 // ============================================================
 
 /**
- * @brief Before open(), isOpen() returns false.
+ * @brief Before open(), is_open() returns false.
  */
 void test_initial_not_open()
 {
     AviWriter writer;
-    TEST_ASSERT_FALSE(writer.isOpen());
+    TEST_ASSERT_FALSE(writer.is_open());
 }
 
 /**
- * @brief Before open(), frameCount() returns 0.
+ * @brief Before open(), frame_count() returns 0.
  */
 void test_initial_frame_count_zero()
 {
     AviWriter writer;
-    TEST_ASSERT_EQUAL_UINT32(0, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());
 }
 
 /**
- * @brief Before open(), fileSize() returns 0.
+ * @brief Before open(), file_size() returns 0.
  */
 void test_initial_file_size_zero()
 {
     AviWriter writer;
-    TEST_ASSERT_EQUAL_UINT32(0, writer.fileSize());
+    TEST_ASSERT_EQUAL_UINT32(0, writer.file_size());
 }
 
 /**
@@ -78,8 +78,8 @@ void test_open_success()
 {
     AviWriter writer;
     TEST_ASSERT_TRUE(writer.open("/test.avi", 10, 640, 480));
-    TEST_ASSERT_TRUE(writer.isOpen());
-    TEST_ASSERT_EQUAL_UINT32(0, writer.frameCount());
+    TEST_ASSERT_TRUE(writer.is_open());
+    TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());
 }
 
 /**
@@ -193,8 +193,8 @@ void test_header_strf_dimensions()
     AviWriter writer;
     writer.open("/test.avi", 15, 320, 240);
     AviBytes hdr = writer.header();
-    TEST_ASSERT_EQUAL_UINT32(320, readU32(hdr.data, 164));
-    TEST_ASSERT_EQUAL_UINT32(240, readU32(hdr.data, 168));
+    TEST_ASSERT_EQUAL_UINT32(320, readU32(hdr.data, 176));
+    TEST_ASSERT_EQUAL_UINT32(240, readU32(hdr.data, 180));
 }
 
 /**
@@ -205,7 +205,7 @@ void test_header_strf_mjpg()
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     AviBytes hdr = writer.header();
-    assertFourCC(hdr, 176, "MJPG");
+    assertFourCC(hdr, 188, "MJPG");
 }
 
 /**
@@ -273,46 +273,68 @@ void test_header_strf_size()
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     AviBytes hdr = writer.header();
-    TEST_ASSERT_EQUAL_UINT32(40, readU32(hdr.data, 156));
+    TEST_ASSERT_EQUAL_UINT32(40, readU32(hdr.data, 168));
+}
+
+/**
+ * @brief Header has dwQuality = 0xFFFFFFFF in strh.
+ */
+void test_header_strh_quality()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    AviBytes hdr = writer.header();
+    TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFF, readU32(hdr.data, 144));
+}
+
+/**
+ * @brief Header has dwSampleSize = 0 in strh.
+ */
+void test_header_strh_sample_size()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    AviBytes hdr = writer.header();
+    TEST_ASSERT_EQUAL_UINT32(0, readU32(hdr.data, 148));
 }
 
 // ============================================================
-// writeFrame() — basic
+// write_frame() — basic
 // ============================================================
 
 /**
- * @brief writeFrame() before open() returns false.
+ * @brief write_frame() before open() returns false.
  */
 void test_write_frame_before_open_returns_false()
 {
     AviWriter writer;
     uint8_t jpeg[10] = {0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0};
-    TEST_ASSERT_FALSE(writer.writeFrame(jpeg, 10));
+    TEST_ASSERT_FALSE(writer.write_frame(jpeg, 10));
 }
 
 /**
- * @brief writeFrame() with null data returns false.
+ * @brief write_frame() with null data returns false.
  */
 void test_write_frame_null_data_returns_false()
 {
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
-    TEST_ASSERT_FALSE(writer.writeFrame(nullptr, 10));
+    TEST_ASSERT_FALSE(writer.write_frame(nullptr, 10));
 }
 
 /**
- * @brief writeFrame() with zero length returns false.
+ * @brief write_frame() with zero length returns false.
  */
 void test_write_frame_zero_length_returns_false()
 {
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[10] = {};
-    TEST_ASSERT_FALSE(writer.writeFrame(jpeg, 0));
+    TEST_ASSERT_FALSE(writer.write_frame(jpeg, 0));
 }
 
 /**
- * @brief writeFrame() returns true on success.
+ * @brief write_frame() returns true on success.
  */
 void test_write_frame_success()
 {
@@ -320,11 +342,11 @@ void test_write_frame_success()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[100];
     memset(jpeg, 0xAB, sizeof(jpeg));
-    TEST_ASSERT_TRUE(writer.writeFrame(jpeg, sizeof(jpeg)));
+    TEST_ASSERT_TRUE(writer.write_frame(jpeg, sizeof(jpeg)));
 }
 
 /**
- * @brief writeFrame() increments frame count.
+ * @brief write_frame() increments frame count.
  */
 void test_write_frame_increments_count()
 {
@@ -333,15 +355,15 @@ void test_write_frame_increments_count()
     uint8_t jpeg[50];
     memset(jpeg, 0, sizeof(jpeg));
 
-    writer.writeFrame(jpeg, sizeof(jpeg));
-    TEST_ASSERT_EQUAL_UINT32(1, writer.frameCount());
+    writer.write_frame(jpeg, sizeof(jpeg));
+    TEST_ASSERT_EQUAL_UINT32(1, writer.frame_count());
 
-    writer.writeFrame(jpeg, sizeof(jpeg));
-    TEST_ASSERT_EQUAL_UINT32(2, writer.frameCount());
+    writer.write_frame(jpeg, sizeof(jpeg));
+    TEST_ASSERT_EQUAL_UINT32(2, writer.frame_count());
 }
 
 // ============================================================
-// writeFrame() — chunk format
+// write_frame() — chunk format
 // ============================================================
 
 /**
@@ -353,9 +375,9 @@ void test_frame_chunk_marker()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[100];
     memset(jpeg, 0xAB, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(0x00dc, readU32(chunk.data, 0));
 }
 
@@ -368,9 +390,9 @@ void test_frame_chunk_data_size()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[100];
     memset(jpeg, 0xAB, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(100, readU32(chunk.data, 4));
 }
 
@@ -386,14 +408,14 @@ void test_frame_chunk_data_content()
     {
         jpeg[i] = i;
     }
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT8_ARRAY(jpeg, &chunk.data[8], 50);
 }
 
 // ============================================================
-// writeFrame() — DWORD alignment
+// write_frame() — DWORD alignment
 // ============================================================
 
 /**
@@ -406,9 +428,9 @@ void test_dword_align_no_padding()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[96];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(104, chunk.len);
 }
 
@@ -422,9 +444,9 @@ void test_dword_align_one_byte_padding()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[97];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(108, chunk.len);
     // Verify padding byte is zero
     TEST_ASSERT_EQUAL_UINT8(0, chunk.data[105]);
@@ -442,9 +464,9 @@ void test_dword_align_two_bytes_padding()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[98];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(108, chunk.len);
     TEST_ASSERT_EQUAL_UINT8(0, chunk.data[106]);
     TEST_ASSERT_EQUAL_UINT8(0, chunk.data[107]);
@@ -460,9 +482,9 @@ void test_dword_align_three_bytes_padding()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[99];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(108, chunk.len);
     TEST_ASSERT_EQUAL_UINT8(0, chunk.data[107]);
 }
@@ -475,9 +497,9 @@ void test_dword_align_small_frame()
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg = 0xFF;
-    writer.writeFrame(&jpeg, 1);
+    writer.write_frame(&jpeg, 1);
 
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_EQUAL_UINT32(12, chunk.len);
 }
 
@@ -496,15 +518,15 @@ void test_multiple_frames_data_size()
     // Frame 1: 100 bytes → chunk = 108 (DWORD aligned: 8+100=108)
     uint8_t jpeg1[100];
     memset(jpeg1, 0, sizeof(jpeg1));
-    writer.writeFrame(jpeg1, sizeof(jpeg1));
+    writer.write_frame(jpeg1, sizeof(jpeg1));
 
     // Frame 2: 50 bytes → chunk = 60 (DWORD aligned: 8+50=58 → padded to 60)
     uint8_t jpeg2[50];
     memset(jpeg2, 0, sizeof(jpeg2));
-    writer.writeFrame(jpeg2, sizeof(jpeg2));
+    writer.write_frame(jpeg2, sizeof(jpeg2));
 
-    // fileSize = header(224) + frame1(108) + frame2(60) + idx1_header(8) + index(32)
-    TEST_ASSERT_EQUAL_UINT32(224 + 108 + 60 + 8 + 32, writer.fileSize());
+    // file_size = header(224) + frame1(108) + frame2(60) + idx1_header(8) + index(32)
+    TEST_ASSERT_EQUAL_UINT32(224 + 108 + 60 + 8 + 32, writer.file_size());
 }
 
 /**
@@ -517,11 +539,11 @@ void test_multiple_frames_index_entries()
 
     uint8_t jpeg1[100];
     memset(jpeg1, 0, sizeof(jpeg1));
-    writer.writeFrame(jpeg1, sizeof(jpeg1));
+    writer.write_frame(jpeg1, sizeof(jpeg1));
 
     uint8_t jpeg2[50];
     memset(jpeg2, 0, sizeof(jpeg2));
-    writer.writeFrame(jpeg2, sizeof(jpeg2));
+    writer.write_frame(jpeg2, sizeof(jpeg2));
 
     writer.close();
 
@@ -554,11 +576,11 @@ void test_close_patches_riFF_size()
 
     uint8_t jpeg[100];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
-    AviBytes hdr = writer.patchedHeader();
-    uint32_t expected = writer.fileSize() - 8;
+    AviBytes hdr = writer.patched_header();
+    uint32_t expected = writer.file_size() - 8;
     TEST_ASSERT_EQUAL_UINT32(expected, readU32(hdr.data, 4));
 }
 
@@ -572,12 +594,12 @@ void test_close_patches_avih_frame_count()
 
     uint8_t jpeg[100];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(3, readU32(hdr.data, 48));
 }
 
@@ -591,10 +613,10 @@ void test_close_patches_strh_frame_count()
 
     uint8_t jpeg[100];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(1, readU32(hdr.data, 136));
 }
 
@@ -609,10 +631,10 @@ void test_close_patches_movi_list_size()
     // Frame: 100 bytes JPEG → chunk = 108 bytes (DWORD aligned)
     uint8_t jpeg[100];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     // movi list size = 4 ("movi") + 108 (frame data) = 112
     TEST_ASSERT_EQUAL_UINT32(112, readU32(hdr.data, 216));
 }
@@ -627,7 +649,7 @@ void test_close_builds_index()
 
     uint8_t jpeg[100];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
     AviBytes idx = writer.index();
@@ -636,16 +658,16 @@ void test_close_builds_index()
 }
 
 /**
- * @brief close() sets isOpen() to false.
+ * @brief close() sets is_open() to false.
  */
 void test_close_sets_not_open()
 {
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[10] = {};
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
-    TEST_ASSERT_FALSE(writer.isOpen());
+    TEST_ASSERT_FALSE(writer.is_open());
 }
 
 /**
@@ -670,7 +692,7 @@ void test_index_has_idx1_marker()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[50];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
     AviBytes idx = writer.index();
@@ -686,8 +708,8 @@ void test_index_has_correct_size_field()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[50];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
     AviBytes idx = writer.index();
@@ -703,7 +725,7 @@ void test_index_entries_chunk_id()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[50];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
     AviBytes idx = writer.index();
@@ -720,7 +742,7 @@ void test_index_entries_zero_flags()
     writer.open("/test.avi", 10, 640, 480);
     uint8_t jpeg[50];
     memset(jpeg, 0, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
     writer.close();
 
     AviBytes idx = writer.index();
@@ -741,14 +763,14 @@ void test_single_frame()
 
     uint8_t jpeg[200];
     memset(jpeg, 0xFF, sizeof(jpeg));
-    writer.writeFrame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
 
-    TEST_ASSERT_EQUAL_UINT32(1, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(1, writer.frame_count());
 
     writer.close();
 
     // Verify header frame count patched
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(1, readU32(hdr.data, 48));
     TEST_ASSERT_EQUAL_UINT32(1, readU32(hdr.data, 136));
 
@@ -766,9 +788,9 @@ void test_close_no_frames()
     writer.open("/test.avi", 10, 640, 480);
     writer.close();
 
-    TEST_ASSERT_EQUAL_UINT32(0, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());
 
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(0, readU32(hdr.data, 48));
 
     // Index should have idx1 header with size 0
@@ -788,13 +810,13 @@ void test_header_null_before_open()
 }
 
 /**
- * @brief lastFrameChunk returns null before any writeFrame.
+ * @brief last_frame_chunk returns null before any write_frame.
  */
 void test_last_frame_chunk_null_before_write()
 {
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     TEST_ASSERT_NULL(chunk.data);
 }
 
@@ -833,12 +855,12 @@ void test_different_dimensions()
     AviBytes hdr = writer.header();
     TEST_ASSERT_EQUAL_UINT32(1280, readU32(hdr.data, 64));
     TEST_ASSERT_EQUAL_UINT32(720, readU32(hdr.data, 68));
-    TEST_ASSERT_EQUAL_UINT32(1280, readU32(hdr.data, 164));
-    TEST_ASSERT_EQUAL_UINT32(720, readU32(hdr.data, 168));
+    TEST_ASSERT_EQUAL_UINT32(1280, readU32(hdr.data, 176));
+    TEST_ASSERT_EQUAL_UINT32(720, readU32(hdr.data, 180));
 }
 
 /**
- * @brief fileSize accounts for all components.
+ * @brief file_size accounts for all components.
  */
 void test_file_size_formula()
 {
@@ -850,13 +872,13 @@ void test_file_size_formula()
     uint8_t jpeg2[50];
     memset(jpeg1, 0, sizeof(jpeg1));
     memset(jpeg2, 0, sizeof(jpeg2));
-    writer.writeFrame(jpeg1, sizeof(jpeg1));
-    writer.writeFrame(jpeg2, sizeof(jpeg2));
+    writer.write_frame(jpeg1, sizeof(jpeg1));
+    writer.write_frame(jpeg2, sizeof(jpeg2));
 
     // header(224) + chunk1(108) + chunk2(60) + idx1_header(8) + 2_entries(32)
     // chunk2: 8+50=58 → padded to 60 for DWORD alignment
     uint32_t expected = 224 + 108 + 60 + 8 + 32;
-    TEST_ASSERT_EQUAL_UINT32(expected, writer.fileSize());
+    TEST_ASSERT_EQUAL_UINT32(expected, writer.file_size());
 }
 
 /**
@@ -873,14 +895,14 @@ void test_many_frames()
     const uint32_t NUM_FRAMES = 1000;
     for (uint32_t i = 0; i < NUM_FRAMES; i++)
     {
-        writer.writeFrame(jpeg, sizeof(jpeg));
+        writer.write_frame(jpeg, sizeof(jpeg));
     }
 
-    TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, writer.frame_count());
     writer.close();
 
     // Verify frame count patched in header
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, readU32(hdr.data, 48));
     TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, readU32(hdr.data, 136));
 
@@ -908,41 +930,41 @@ void test_multiple_open_close_cycles()
 
     uint8_t jpeg1[100];
     memset(jpeg1, 0xA1, sizeof(jpeg1));
-    writer.writeFrame(jpeg1, sizeof(jpeg1));
-    writer.writeFrame(jpeg1, sizeof(jpeg1));
+    writer.write_frame(jpeg1, sizeof(jpeg1));
+    writer.write_frame(jpeg1, sizeof(jpeg1));
 
-    TEST_ASSERT_EQUAL_UINT32(2, writer.frameCount());
-    TEST_ASSERT_TRUE(writer.isOpen());
+    TEST_ASSERT_EQUAL_UINT32(2, writer.frame_count());
+    TEST_ASSERT_TRUE(writer.is_open());
     TEST_ASSERT_EQUAL_STRING("/test1.avi", writer.path());
     writer.close();
-    TEST_ASSERT_FALSE(writer.isOpen());
+    TEST_ASSERT_FALSE(writer.is_open());
 
     // --- Cycle 2 ---
     TEST_ASSERT_TRUE(writer.open("/test2.avi", 15, 320, 240));
 
-    TEST_ASSERT_EQUAL_UINT32(0, writer.frameCount());  // Counter reset
-    TEST_ASSERT_TRUE(writer.isOpen());
+    TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());  // Counter reset
+    TEST_ASSERT_TRUE(writer.is_open());
     TEST_ASSERT_EQUAL_STRING("/test2.avi", writer.path());
     TEST_ASSERT_EQUAL_UINT32(15, readU32(writer.header().data, 128));  // New FPS
 
     uint8_t jpeg2[50];
     memset(jpeg2, 0xA2, sizeof(jpeg2));
-    writer.writeFrame(jpeg2, sizeof(jpeg2));
+    writer.write_frame(jpeg2, sizeof(jpeg2));
 
-    TEST_ASSERT_EQUAL_UINT32(1, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(1, writer.frame_count());
     writer.close();
-    TEST_ASSERT_FALSE(writer.isOpen());
+    TEST_ASSERT_FALSE(writer.is_open());
 
     // --- Cycle 3 (no frames written) ---
     TEST_ASSERT_TRUE(writer.open("/test3.avi", 30, 1280, 720));
-    TEST_ASSERT_EQUAL_UINT32(0, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());
 
     AviBytes hdr3 = writer.header();
     TEST_ASSERT_EQUAL_UINT32(1280, readU32(hdr3.data, 64));
     TEST_ASSERT_EQUAL_UINT32(720, readU32(hdr3.data, 68));
 
     writer.close();
-    TEST_ASSERT_FALSE(writer.isOpen());
+    TEST_ASSERT_FALSE(writer.is_open());
 }
 
 /**
@@ -961,18 +983,18 @@ void test_many_frames_data_integrity()
     for (uint32_t i = 0; i < NUM_FRAMES; i++)
     {
         memset(jpeg, (uint8_t)(i & 0xFF), JPEG_SIZE);
-        writer.writeFrame(jpeg, JPEG_SIZE);
+        writer.write_frame(jpeg, JPEG_SIZE);
     }
 
-    TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, writer.frameCount());
+    TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, writer.frame_count());
 
     // Verify frame count patched in header
     writer.close();
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, readU32(hdr.data, 48));
 
     // Verify that the last frame chunk before close contains correct data
-    AviBytes chunk = writer.lastFrameChunk();
+    AviBytes chunk = writer.last_frame_chunk();
     // Last frame had pattern (NUM_FRAMES - 1) & 0xFF
     uint8_t expectedByte = (uint8_t)((NUM_FRAMES - 1) & 0xFF);
 
@@ -995,9 +1017,9 @@ void test_file_size_after_close_no_frames()
     writer.close();
 
     // With 0 frames: header(224) + idx1_header(8) + 0 index entries = 232
-    TEST_ASSERT_EQUAL_UINT32(TEST_AVI_HEADER_SIZE + TEST_CHUNK_HEADER_SIZE, writer.fileSize());
+    TEST_ASSERT_EQUAL_UINT32(TEST_AVI_HEADER_SIZE + TEST_CHUNK_HEADER_SIZE, writer.file_size());
 
-    AviBytes hdr = writer.patchedHeader();
+    AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(TEST_AVI_HEADER_SIZE, hdr.len);
 
     AviBytes idx = writer.index();
@@ -1041,15 +1063,17 @@ int main()
     RUN_TEST(test_header_avih_size);
     RUN_TEST(test_header_strh_size);
     RUN_TEST(test_header_strf_size);
+    RUN_TEST(test_header_strh_quality);
+    RUN_TEST(test_header_strh_sample_size);
 
-    // writeFrame() basic
+    // write_frame() basic
     RUN_TEST(test_write_frame_before_open_returns_false);
     RUN_TEST(test_write_frame_null_data_returns_false);
     RUN_TEST(test_write_frame_zero_length_returns_false);
     RUN_TEST(test_write_frame_success);
     RUN_TEST(test_write_frame_increments_count);
 
-    // writeFrame() chunk format
+    // write_frame() chunk format
     RUN_TEST(test_frame_chunk_marker);
     RUN_TEST(test_frame_chunk_data_size);
     RUN_TEST(test_frame_chunk_data_content);
