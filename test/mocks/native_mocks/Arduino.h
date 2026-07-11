@@ -55,7 +55,7 @@ void pinMode(uint8_t pin, uint8_t mode);
 void digitalWrite(uint8_t pin, uint8_t value);
 
 // GPIO call tracking
-std::vector<std::pair<uint8_t, uint8_t>> &get_gpio_log();
+std::vector<std::pair<uint8_t, uint8_t>>& get_gpio_log();
 void clear_gpio_log();
 
 #endif // ARDUINO_H

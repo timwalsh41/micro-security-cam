@@ -62,7 +62,7 @@ class MockCameraHal : public hal::CameraHal
         // Interface implementation
         // ============================================================
 
-        hal::CameraInitResult init(const hal::CameraConfig &config) override
+        hal::CameraInitResult init(const hal::CameraConfig& config) override
         {
             init_call_count++;
             last_init_config = config;

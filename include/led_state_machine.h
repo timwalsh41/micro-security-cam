@@ -38,7 +38,7 @@ class LedStateMachine
          * @brief Constructs a LedStateMachine with the given time source.
          * @param time Reference to a TimeService used for elapsed-time calculations.
          */
-        explicit LedStateMachine(TimeService &time);
+        explicit LedStateMachine(TimeService& time);
 
         /**
          * @brief Sets the operating mode and associated timing parameters.
@@ -61,7 +61,7 @@ class LedStateMachine
         bool tick();
 
     private:
-        TimeService &m_time;
+        TimeService& m_time;
         LedMode m_mode{LedMode::OFF};
         hal::millis_t m_on_duration_ms{0};
         hal::millis_t m_off_duration_ms{0};

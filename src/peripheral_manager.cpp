@@ -5,7 +5,7 @@
 
 using hal::millis_t;
 
-PeripheralManager::PeripheralManager(TimeService &time, hal::SdCardHal &sd_hal)
+PeripheralManager::PeripheralManager(TimeService& time, hal::SdCardHal& sd_hal)
     : m_time(time)
     , m_sd_hal(sd_hal)
     , m_led(m_time)
@@ -58,7 +58,7 @@ void PeripheralManager::blink(millis_t on_ms, millis_t off_ms)
     m_led.set_mode(LedMode::BLINK, on_ms, off_ms);
 }
 
-SdWriteResult PeripheralManager::write_file(const char *path, const uint8_t *data,
+SdWriteResult PeripheralManager::write_file(const char* path, const uint8_t* data,
                                              size_t len, millis_t timeout_ms)
 {
     m_sd.start_write(path, data, len);
@@ -79,8 +79,8 @@ SdWriteResult PeripheralManager::write_file(const char *path, const uint8_t *dat
     return m_sd.get_write_result();
 }
 
-SdReadResult PeripheralManager::read_file(const char *path, uint8_t *buffer,
-                                           size_t buffer_size, size_t *bytes_read,
+SdReadResult PeripheralManager::read_file(const char* path, uint8_t* buffer,
+                                           size_t buffer_size, size_t* bytes_read,
                                            millis_t timeout_ms)
 {
     m_sd.start_read(path, buffer, buffer_size);
@@ -110,7 +110,7 @@ SdReadResult PeripheralManager::read_file(const char *path, uint8_t *buffer,
     return m_sd.get_read_result();
 }
 
-SdCreateDirResult PeripheralManager::create_dir(const char *path,
+SdCreateDirResult PeripheralManager::create_dir(const char* path,
                                                  millis_t timeout_ms)
 {
     m_sd.start_create_dir(path);

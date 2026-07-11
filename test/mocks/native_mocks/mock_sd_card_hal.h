@@ -68,25 +68,25 @@ class MockSdCardHal : public hal::SdCardHal
         int create_dir_call_count{0};
 
         /** The path argument from the most recent open() call. */
-        const char *last_open_path{nullptr};
+        const char* last_open_path{nullptr};
 
         /** The mode argument from the most recent open() call. */
         hal::FileOpenMode last_open_mode{hal::FileOpenMode::WRITE};
 
         /** The data pointer from the most recent write() call. */
-        const uint8_t *last_write_data{nullptr};
+        const uint8_t* last_write_data{nullptr};
 
         /** The length from the most recent write() call. */
         size_t last_write_len{0};
 
         /** The buffer pointer from the most recent read() call. */
-        uint8_t *last_read_buffer{nullptr};
+        uint8_t* last_read_buffer{nullptr};
 
         /** The length from the most recent read() call. */
         size_t last_read_len{0};
 
         /** The path argument from the most recent create_dir() call. */
-        const char *last_create_dir_path{nullptr};
+        const char* last_create_dir_path{nullptr};
 
         // ============================================================
         // Interface implementation
@@ -98,7 +98,7 @@ class MockSdCardHal : public hal::SdCardHal
             return init_result;
         }
 
-        bool open(const char *path, hal::FileOpenMode mode) override
+        bool open(const char* path, hal::FileOpenMode mode) override
         {
             open_call_count++;
             last_open_path = path;
@@ -106,7 +106,7 @@ class MockSdCardHal : public hal::SdCardHal
             return open_result;
         }
 
-        bool write(const uint8_t *data, size_t len) override
+        bool write(const uint8_t* data, size_t len) override
         {
             write_call_count++;
             last_write_data = data;
@@ -114,7 +114,7 @@ class MockSdCardHal : public hal::SdCardHal
             return write_result;
         }
 
-        size_t read(uint8_t *buffer, size_t len) override
+        size_t read(uint8_t* buffer, size_t len) override
         {
             read_call_count++;
             last_read_buffer = buffer;
@@ -138,7 +138,7 @@ class MockSdCardHal : public hal::SdCardHal
             close_call_count++;
         }
 
-        bool create_dir(const char *path) override
+        bool create_dir(const char* path) override
         {
             create_dir_call_count++;
             last_create_dir_path = path;

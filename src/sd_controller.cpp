@@ -7,7 +7,7 @@ using hal::millis_t;
 // Construction
 // ============================================================
 
-SdController::SdController(TimeService &time, hal::SdCardHal &sd_hal)
+SdController::SdController(TimeService& time, hal::SdCardHal& sd_hal)
     : m_time(time)
     , m_sd_hal(sd_hal)
 {
@@ -125,7 +125,7 @@ peripherals::SdSignal SdController::tick()
     }
 }
 
-void SdController::start_write(const char *path, const uint8_t *data, size_t len)
+void SdController::start_write(const char* path, const uint8_t* data, size_t len)
 {
     m_io_path = path;
     m_write_data = data;
@@ -136,7 +136,7 @@ void SdController::start_write(const char *path, const uint8_t *data, size_t len
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
 
-void SdController::start_read(const char *path, uint8_t *buffer, size_t buffer_size)
+void SdController::start_read(const char* path, uint8_t* buffer, size_t buffer_size)
 {
     m_io_path = path;
     m_read_buffer = buffer;
@@ -148,7 +148,7 @@ void SdController::start_read(const char *path, uint8_t *buffer, size_t buffer_s
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
 
-void SdController::start_create_dir(const char *path)
+void SdController::start_create_dir(const char* path)
 {
     m_io_path = path;
     m_create_dir_result = SdCreateDirResult::SUCCESS;

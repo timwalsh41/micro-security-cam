@@ -4,13 +4,13 @@
 // Construction
 // ============================================================
 
-CameraController::CameraController(hal::CameraHal &hal)
+CameraController::CameraController(hal::CameraHal& hal)
     : m_hal(hal)
 {
 }
 
-CameraController::CameraController(hal::CameraHal &hal,
-                                   const hal::CameraConfig &config)
+CameraController::CameraController(hal::CameraHal& hal,
+                                   const hal::CameraConfig& config)
     : m_hal(hal)
     , m_config(config)
 {

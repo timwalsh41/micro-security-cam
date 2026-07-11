@@ -46,6 +46,14 @@
 - Constants use `CAPITAL_SNAKE_CASE`
 - File names are in `snake_case.cpp`
 - Use Allman-style braces
+- Include a space between keywords and parentheses, e.g. `if (...)` not `if(...)`
+- Align initializer list commas with the initial colon on new lines for each entry, e.g.:
+  ```c++
+  MyClass MyClass(int arg1, double arg2)
+  : m_int1(arg1)
+  , m_double1(arg2)
+  ```
+- Add ampersand/asterisk on the type for pointers/references rather than the parameter/variable, e.g. `MyType& var1`, not `MyType &var1`
 - In classes and structs, indent the access specifier relative to the outer braces for the class definition, and
   then indent the member variables and methods relative to the access specifier, e.g.
   ```c++

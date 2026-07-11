@@ -47,7 +47,7 @@ class SdWriteBuffer
          *
          * @param peripheral Reference to a PeripheralManager used for SD file I/O.
          */
-        explicit SdWriteBuffer(PeripheralManager &peripheral);
+        explicit SdWriteBuffer(PeripheralManager& peripheral);
 
         /**
          * @brief Sets the target file path for subsequent flushes.
@@ -59,7 +59,7 @@ class SdWriteBuffer
          *             valid until flush() or reset().
          * @return true if the buffer was successfully opened.
          */
-        bool open(const char *path);
+        bool open(const char* path);
 
         /**
          * @brief Appends a pre-formatted AVI chunk to the internal buffer.
@@ -73,7 +73,7 @@ class SdWriteBuffer
          * @param chunk_len Length of the chunk in bytes.
          * @return true if the chunk was buffered (or flushed) successfully.
          */
-        bool buffer_frame(const uint8_t *avi_chunk, size_t chunk_len);
+        bool buffer_frame(const uint8_t* avi_chunk, size_t chunk_len);
 
         /**
          * @brief Flushes any remaining buffered data to the SD card.
@@ -116,8 +116,8 @@ class SdWriteBuffer
          */
         bool flush_buffer();
 
-        PeripheralManager &m_peripheral;
-        const char *m_path{nullptr};
+        PeripheralManager& m_peripheral;
+        const char* m_path{nullptr};
         uint8_t m_buffer[RAMSIZE];
         size_t m_high_point{0};
         bool m_open{false};

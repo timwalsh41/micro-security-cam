@@ -70,10 +70,10 @@ class VideoController
          * @param time       Reference to TimeService for frame pacing.
          * @param log        Reference to LoggingService for diagnostics.
          */
-        VideoController(CameraController &cam,
-                        PeripheralManager &peripheral,
-                        TimeService &time,
-                        LoggingService &log);
+        VideoController(CameraController& cam,
+                        PeripheralManager& peripheral,
+                        TimeService& time,
+                        LoggingService& log);
 
         /**
          * @brief Initializes the video controller with the given configuration.
@@ -84,7 +84,7 @@ class VideoController
          * @param config Video recording configuration from ConfigService.
          * @return true if initialization succeeded.
          */
-        bool init(const ConfigData::VideoConfig &config);
+        bool init(const ConfigData::VideoConfig& config);
 
         /**
          * @brief Advances the recording state machine.
@@ -159,7 +159,7 @@ class VideoController
          * @param name Resolution name from VideoConfig.
          * @return Resolution struct with width and height in pixels.
          */
-        static Resolution map_resolution(const char *name);
+        static Resolution map_resolution(const char* name);
 
         /**
          * @brief Estimated average bytes per frame for the current config.
@@ -224,13 +224,13 @@ class VideoController
          *
          * @param path Directory path to create.
          */
-        void create_directory(const char *path);
+        void create_directory(const char* path);
 
         // Dependencies (injected)
-        CameraController &m_camera;
-        PeripheralManager &m_peripheral;
-        TimeService &m_time;
-        LoggingService &m_log;
+        CameraController& m_camera;
+        PeripheralManager& m_peripheral;
+        TimeService& m_time;
+        LoggingService& m_log;
 
         // Owned components
         AviWriter m_avi_writer;

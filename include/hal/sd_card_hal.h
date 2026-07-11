@@ -46,79 +46,79 @@ enum class FileOpenMode : uint8_t
  */
 class SdCardHal
 {
-public:
-    virtual ~SdCardHal() = default;
+    public:
+        virtual ~SdCardHal() = default;
 
-    /**
-     * @brief Initializes the SD card subsystem.
-     *
-     * Performs hardware initialization and detects the card type.
-     *
-     * @return SdInitResult indicating success or the failure reason.
-     */
-    virtual SdInitResult init() = 0;
+        /**
+         * @brief Initializes the SD card subsystem.
+         *
+         * Performs hardware initialization and detects the card type.
+         *
+         * @return SdInitResult indicating success or the failure reason.
+         */
+        virtual SdInitResult init() = 0;
 
-    /**
-     * @brief Opens a file with the specified mode.
-     *
-     * Must only be called when the chip-select pin is asserted.
-     *
-     * @param path The file path to open.
-     * @param mode The open mode (READ or WRITE).
-     * @return true if the file was opened successfully, false otherwise.
-     */
-    virtual bool open(const char *path, FileOpenMode mode) = 0;
+        /**
+         * @brief Opens a file with the specified mode.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         *
+         * @param path The file path to open.
+         * @param mode The open mode (READ or WRITE).
+         * @return true if the file was opened successfully, false otherwise.
+         */
+        virtual bool open(const char* path, FileOpenMode mode) = 0;
 
-    /**
-     * @brief Writes data to the currently open file.
-     *
-     * Must only be called when the chip-select pin is asserted.
-     * The file must have been opened in WRITE mode.
-     *
-     * @param data Pointer to the data buffer to write.
-     * @param len Number of bytes to write.
-     * @return true if all bytes were written successfully, false otherwise.
-     */
-    virtual bool write(const uint8_t *data, size_t len) = 0;
+        /**
+         * @brief Writes data to the currently open file.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         * The file must have been opened in WRITE mode.
+         *
+         * @param data Pointer to the data buffer to write.
+         * @param len Number of bytes to write.
+         * @return true if all bytes were written successfully, false otherwise.
+         */
+        virtual bool write(const uint8_t* data, size_t len) = 0;
 
-    /**
-     * @brief Reads data from the currently open file.
-     *
-     * Must only be called when the chip-select pin is asserted.
-     * The file must have been opened in READ mode.
-     *
-     * @param buffer Pointer to the buffer to read into.
-     * @param len Maximum number of bytes to read.
-     * @return Number of bytes actually read (0 on failure or EOF).
-     */
-    virtual size_t read(uint8_t *buffer, size_t len) = 0;
+        /**
+         * @brief Reads data from the currently open file.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         * The file must have been opened in READ mode.
+         *
+         * @param buffer Pointer to the buffer to read into.
+         * @param len Maximum number of bytes to read.
+         * @return Number of bytes actually read (0 on failure or EOF).
+         */
+        virtual size_t read(uint8_t* buffer, size_t len) = 0;
 
-    /**
-     * @brief Closes the currently open file.
-     *
-     * Must only be called when the chip-select pin is asserted.
-     * Safe to call even if no file is currently open.
-     */
-    virtual void close() = 0;
+        /**
+         * @brief Closes the currently open file.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         * Safe to call even if no file is currently open.
+         */
+        virtual void close() = 0;
 
-    /**
-     * @brief Creates a directory on the SD card.
-     *
-     * Must only be called when the chip-select pin is asserted.
-     * If the directory already exists, this is a no-op that returns true.
-     *
-     * @param path The directory path to create.
-     * @return true if the directory was created (or already existed), false otherwise.
-     */
-    virtual bool create_dir(const char *path) = 0;
+        /**
+         * @brief Creates a directory on the SD card.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         * If the directory already exists, this is a no-op that returns true.
+         *
+         * @param path The directory path to create.
+         * @return true if the directory was created (or already existed), false otherwise.
+         */
+        virtual bool create_dir(const char* path) = 0;
 
-    /**
-     * @brief Checks whether the SD card has been successfully initialized, e.g. hardware
-     *        configured and SD card present.
-     *
-     * @return true if the SD card is initialized and ready, false otherwise.
-     */
-    virtual bool is_initialized() const = 0;
+        /**
+         * @brief Checks whether the SD card has been successfully initialized, e.g. hardware
+         *        configured and SD card present.
+         *
+         * @return true if the SD card is initialized and ready, false otherwise.
+         */
+        virtual bool is_initialized() const = 0;
 };
 
 } // namespace hal

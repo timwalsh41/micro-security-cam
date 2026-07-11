@@ -33,7 +33,7 @@ class CameraHalImpl : public CameraHal
          */
         CameraHalImpl() = default;
 
-        CameraInitResult init(const hal::CameraConfig &config) override;
+        CameraInitResult init(const hal::CameraConfig& config) override;
         void deinit() override;
         CameraFrame capture() override;
         void release() override;
@@ -43,7 +43,7 @@ class CameraHalImpl : public CameraHal
     private:
         bool m_initialized{false};
         bool m_frame_acquired{false};
-        camera_fb_t *m_fb{nullptr};  ///< Retained frame buffer pointer for release()
+        camera_fb_t* m_fb{nullptr};  ///< Retained frame buffer pointer for release()
 };
 
 } // namespace hal

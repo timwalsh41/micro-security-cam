@@ -23,8 +23,8 @@ using peripherals::SdSignal;
  * @return SdSignal::CS_ACTIVE  if CS was asserted.
  * @return SdSignal::IDLE or CS_INACTIVE if CS was not asserted after sufficient ticks.
  */
-static SdSignal tick_until_cs_asserted(RealTimeService &time,
-                                        SdController &ctrl)
+static SdSignal tick_until_cs_asserted(RealTimeService& time,
+                                        SdController& ctrl)
 {
     // PRE_DEACTIVATE_CS requires DEACTIVATE_TIME_MS + 1 ms to transition
     for (millis_t elapsed = 0; elapsed <= SdController::DEACTIVATE_TIME_MS + 1; elapsed++)

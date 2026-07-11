@@ -39,7 +39,7 @@ class PeripheralManager
          * @param time   Reference to a TimeService for time acquisition.
          * @param sd_hal Reference to an SdCardHal for SD card I/O.
          */
-        PeripheralManager(TimeService &time, hal::SdCardHal &sd_hal);
+        PeripheralManager(TimeService& time, hal::SdCardHal& sd_hal);
         ~PeripheralManager() = default;
 
         /**
@@ -97,7 +97,7 @@ class PeripheralManager
          * @param timeout_ms Maximum time in milliseconds.
          * @return SdWriteResult indicating success or failure.
          */
-        SdWriteResult write_file(const char *path, const uint8_t *data,
+        SdWriteResult write_file(const char* path, const uint8_t* data,
                                   size_t len, hal::millis_t timeout_ms);
 
         /**
@@ -109,8 +109,8 @@ class PeripheralManager
          * @param timeout_ms  Maximum time in milliseconds.
          * @return SdReadResult indicating success or failure.
          */
-        SdReadResult read_file(const char *path, uint8_t *buffer,
-                                size_t buffer_size, size_t *bytes_read,
+        SdReadResult read_file(const char* path, uint8_t* buffer,
+                                size_t buffer_size, size_t* bytes_read,
                                 hal::millis_t timeout_ms);
 
         /**
@@ -119,12 +119,12 @@ class PeripheralManager
          * @param timeout_ms Maximum time in milliseconds.
          * @return SdCreateDirResult indicating success or failure.
          */
-        SdCreateDirResult create_dir(const char *path,
+        SdCreateDirResult create_dir(const char* path,
                                      hal::millis_t timeout_ms);
 
     private:
-        TimeService &m_time;
-        hal::SdCardHal &m_sd_hal;
+        TimeService& m_time;
+        hal::SdCardHal& m_sd_hal;
         LedStateMachine m_led;
         SdController m_sd;
 

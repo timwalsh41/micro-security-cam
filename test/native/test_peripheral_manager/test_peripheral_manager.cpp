@@ -19,8 +19,8 @@ using hal::millis_t;
  */
 static bool was_pin_driven_to(uint8_t pin, uint8_t value)
 {
-    const auto &log = get_gpio_log();
-    for (const auto &entry : log)
+    const auto& log = get_gpio_log();
+    for (const auto& entry : log)
     {
         if (entry.first == pin && entry.second == value)
         {
@@ -36,7 +36,7 @@ static bool was_pin_driven_to(uint8_t pin, uint8_t value)
  */
 static int8_t last_pin_value(uint8_t pin)
 {
-    const auto &log = get_gpio_log();
+    const auto& log = get_gpio_log();
     for (int i = static_cast<int>(log.size()) - 1; i >= 0; --i)
     {
         if (log[i].first == pin)
@@ -53,8 +53,8 @@ static int8_t last_pin_value(uint8_t pin)
 static int count_pin_driven_to(uint8_t pin, uint8_t value)
 {
     int count = 0;
-    const auto &log = get_gpio_log();
-    for (const auto &entry : log)
+    const auto& log = get_gpio_log();
+    for (const auto& entry : log)
     {
         if (entry.first == pin && entry.second == value)
         {

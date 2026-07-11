@@ -6,7 +6,7 @@
 namespace hal
 {
 
-CameraInitResult CameraHalImpl::init(const CameraConfig &cam_config)
+CameraInitResult CameraHalImpl::init(const CameraConfig& cam_config)
 {
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
@@ -91,7 +91,7 @@ CameraFrame CameraHalImpl::capture()
         return {nullptr, 0};
     }
 
-    camera_fb_t *fb = esp_camera_fb_get();
+    camera_fb_t* fb = esp_camera_fb_get();
     if (!fb)
     {
         return {nullptr, 0};

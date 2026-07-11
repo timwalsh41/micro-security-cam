@@ -3,7 +3,7 @@
 
 using hal::millis_t;
 
-LedStateMachine::LedStateMachine(TimeService &time)
+LedStateMachine::LedStateMachine(TimeService& time)
     : m_time(time)
 {
 }

@@ -61,7 +61,7 @@ void setup()
   peripheral_manager.blink(250, 250);
   {
     auto now = real_time.now();
-    
+
     while (real_time.now() < (now + 3000))
     {
       peripheral_manager.tick();
@@ -103,8 +103,9 @@ void setup()
   }
 }
 
-void loop() {
-  if(camera_ctrl.is_initialized() && peripheral_manager.is_sd_card_initialized())
+void loop()
+{
+  if (camera_ctrl.is_initialized() && peripheral_manager.is_sd_card_initialized())
   {
     auto now = real_time.now();
 

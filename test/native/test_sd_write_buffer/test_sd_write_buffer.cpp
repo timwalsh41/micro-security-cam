@@ -24,7 +24,7 @@ using hal::millis_t;
  * @param outChunk Output vector containing the formatted chunk.
  */
 static void build_fake_chunk(size_t payloadSize, uint8_t pattern,
-                              std::vector<uint8_t> &outChunk)
+                              std::vector<uint8_t>& outChunk)
 {
     // 8-byte AVI chunk header + payload, DWORD-aligned
     size_t rawSize = 8 + payloadSize;

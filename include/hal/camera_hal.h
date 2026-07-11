@@ -33,7 +33,7 @@ enum class CameraInitResult : uint8_t
  */
 struct CameraFrame
 {
-    const uint8_t *data;    ///< Pointer to frame buffer (valid until release())
+    const uint8_t* data;    ///< Pointer to frame buffer (valid until release())
     size_t len;             ///< Length in bytes
 };
 
@@ -99,7 +99,7 @@ class CameraHal
          * @param config Camera configuration parameters.
          * @return CameraInitResult indicating success or failure.
          */
-        virtual CameraInitResult init(const CameraConfig &config) = 0;
+        virtual CameraInitResult init(const CameraConfig& config) = 0;
 
         /**
          * @brief Deinitializes the camera hardware and releases resources.

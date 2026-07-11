@@ -5,7 +5,7 @@
 // Construction
 // ============================================================
 
-SdWriteBuffer::SdWriteBuffer(PeripheralManager &peripheral)
+SdWriteBuffer::SdWriteBuffer(PeripheralManager& peripheral)
     : m_peripheral(peripheral)
 {
 }
@@ -14,7 +14,7 @@ SdWriteBuffer::SdWriteBuffer(PeripheralManager &peripheral)
 // Lifecycle
 // ============================================================
 
-bool SdWriteBuffer::open(const char *path)
+bool SdWriteBuffer::open(const char* path)
 {
     if (!path)
     {
@@ -28,7 +28,7 @@ bool SdWriteBuffer::open(const char *path)
     return true;
 }
 
-bool SdWriteBuffer::buffer_frame(const uint8_t *avi_chunk, size_t chunk_len)
+bool SdWriteBuffer::buffer_frame(const uint8_t* avi_chunk, size_t chunk_len)
 {
     if (!m_open || !avi_chunk || chunk_len == 0)
     {

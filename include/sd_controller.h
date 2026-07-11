@@ -74,7 +74,7 @@ class SdController
          * @param time   Reference to a TimeService used for timing.
          * @param sd_hal Reference to an SdCardHal used for hardware I/O.
          */
-        explicit SdController(TimeService &time, hal::SdCardHal &sd_hal);
+        explicit SdController(TimeService& time, hal::SdCardHal& sd_hal);
 
         /**
          * @brief Advances the state machine and returns the desired CS signal.
@@ -106,7 +106,7 @@ class SdController
          * @param data Pointer to the data buffer to write.
          * @param len  Number of bytes to write.
          */
-        void start_write(const char *path, const uint8_t *data, size_t len);
+        void start_write(const char* path, const uint8_t* data, size_t len);
 
         /**
          * @brief Initiates a non-blocking read operation.
@@ -122,7 +122,7 @@ class SdController
          * @param buffer      Pointer to the buffer to read data into.
          * @param buffer_size Maximum number of bytes the buffer can hold.
          */
-        void start_read(const char *path, uint8_t *buffer, size_t buffer_size);
+        void start_read(const char* path, uint8_t* buffer, size_t buffer_size);
 
         /**
          * @brief Initiates a non-blocking directory creation operation.
@@ -136,7 +136,7 @@ class SdController
          *
          * @param path The directory path to create.
          */
-        void start_create_dir(const char *path);
+        void start_create_dir(const char* path);
 
         /**
          * @brief Returns whether the state machine is in IDLE state.
@@ -211,8 +211,8 @@ class SdController
             CREATE_DIR
         };
 
-        TimeService &m_time;
-        hal::SdCardHal &m_sd_hal;
+        TimeService& m_time;
+        hal::SdCardHal& m_sd_hal;
 
         SdState m_state{SdState::IDLE};
         hal::millis_t m_last_state_change_ms{0};
@@ -221,15 +221,15 @@ class SdController
         SdOperation m_operation{SdOperation::WRITE};
 
         // Shared I/O parameters
-        const char *m_io_path{nullptr};
+        const char* m_io_path{nullptr};
 
         // Write-specific parameters
-        const uint8_t *m_write_data{nullptr};
+        const uint8_t* m_write_data{nullptr};
         size_t m_write_len{0};
         SdWriteResult m_write_result{SdWriteResult::SUCCESS};
 
         // Read-specific parameters
-        uint8_t *m_read_buffer{nullptr};
+        uint8_t* m_read_buffer{nullptr};
         size_t m_read_buffer_size{0};
         size_t m_bytes_read{0};
         SdReadResult m_read_result{SdReadResult::SUCCESS};

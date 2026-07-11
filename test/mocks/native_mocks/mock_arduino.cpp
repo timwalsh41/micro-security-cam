@@ -34,7 +34,7 @@ void digitalWrite(uint8_t pin, uint8_t value)
     gpio_log.push_back(std::make_pair(pin, value));
 }
 
-std::vector<std::pair<uint8_t, uint8_t>> &get_gpio_log()
+std::vector<std::pair<uint8_t, uint8_t>>& get_gpio_log()
 {
     return gpio_log;
 }

@@ -13,7 +13,7 @@ AviWriter::AviWriter()
 // Lifecycle
 // ============================================================
 
-bool AviWriter::open(const char *path, uint16_t fps, uint16_t width, uint16_t height)
+bool AviWriter::open(const char* path, uint16_t fps, uint16_t width, uint16_t height)
 {
     if (m_open)
     {
@@ -35,7 +35,7 @@ bool AviWriter::open(const char *path, uint16_t fps, uint16_t width, uint16_t he
     return true;
 }
 
-bool AviWriter::write_frame(const uint8_t *jpeg_data, size_t jpeg_len)
+bool AviWriter::write_frame(const uint8_t* jpeg_data, size_t jpeg_len)
 {
     if (!m_open || !jpeg_data || jpeg_len == 0)
     {
@@ -117,7 +117,7 @@ uint32_t AviWriter::file_size() const
            static_cast<uint32_t>(m_index_entries.size() * INDEX_ENTRY_SIZE);
 }
 
-const char *AviWriter::path() const
+const char* AviWriter::path() const
 {
     return m_path;
 }
@@ -274,7 +274,7 @@ void AviWriter::build_index()
     for (size_t i = 0; i < m_index_entries.size(); i++)
     {
         size_t offset = CHUNK_HEADER_SIZE + (i * INDEX_ENTRY_SIZE);
-        const IndexEntry &entry = m_index_entries[i];
+        const IndexEntry& entry = m_index_entries[i];
 
         write_u32(m_index_buffer, offset, 0x00dc);          // ckid
         write_u32(m_index_buffer, offset + 4, 0);           // dwFlags
@@ -292,7 +292,7 @@ size_t AviWriter::dword_align(size_t size) const
     return (size + 3) & ~static_cast<size_t>(3);
 }
 
-void AviWriter::write_u32(std::vector<uint8_t> &buf, size_t offset, uint32_t value) const
+void AviWriter::write_u32(std::vector<uint8_t>& buf, size_t offset, uint32_t value) const
 {
     if (offset + 4 <= buf.size())
     {
@@ -300,7 +300,7 @@ void AviWriter::write_u32(std::vector<uint8_t> &buf, size_t offset, uint32_t val
     }
 }
 
-void AviWriter::write_u16(std::vector<uint8_t> &buf, size_t offset, uint16_t value) const
+void AviWriter::write_u16(std::vector<uint8_t>& buf, size_t offset, uint16_t value) const
 {
     if (offset + 2 <= buf.size())
     {
@@ -308,7 +308,7 @@ void AviWriter::write_u16(std::vector<uint8_t> &buf, size_t offset, uint16_t val
     }
 }
 
-void AviWriter::write_four_cc(std::vector<uint8_t> &buf, size_t offset,
+void AviWriter::write_four_cc(std::vector<uint8_t>& buf, size_t offset,
                             const char fourcc[4]) const
 {
     if (offset + 4 <= buf.size())

@@ -8,7 +8,8 @@
 static constexpr size_t MAX_MSG_LENGTH = LoggingService::MAX_LOG_LINE_LENGTH - 64;
 
 LoggingService::LoggingService(hal::LogBackend& backend, TimeService& time)
-    : m_backend(backend), m_time(time)
+    : m_backend(backend)
+    , m_time(time)
 {
 }
 

@@ -37,78 +37,78 @@ enum class CameraCaptureResult : uint8_t
  */
 class CameraController
 {
-public:
-    /**
-     * @brief Constructs a CameraController with default configuration.
-     * @param hal Reference to a CameraHal used for hardware I/O.
-     */
-    explicit CameraController(hal::CameraHal &hal);
+    public:
+        /**
+         * @brief Constructs a CameraController with default configuration.
+         * @param hal Reference to a CameraHal used for hardware I/O.
+         */
+        explicit CameraController(hal::CameraHal& hal);
 
-    /**
-     * @brief Constructs a CameraController with custom configuration.
-     * @param hal    Reference to a CameraHal used for hardware I/O.
-     * @param config Custom camera configuration parameters.
-     */
-    CameraController(hal::CameraHal &hal, const hal::CameraConfig &config);
+        /**
+         * @brief Constructs a CameraController with custom configuration.
+         * @param hal    Reference to a CameraHal used for hardware I/O.
+         * @param config Custom camera configuration parameters.
+         */
+        CameraController(hal::CameraHal& hal, const hal::CameraConfig& config);
 
-    /**
-     * @brief Initializes the camera with configuration suitable for this board.
-     *
-     * Queries PSRAM availability via the HAL and adjusts frame size,
-     * quality, and buffer count accordingly. The configuration values
-     * come from the CameraConfig provided at construction time.
-     *
-     * @return hal::CameraInitResult indicating success or failure.
-     */
-    hal::CameraInitResult init();
+        /**
+         * @brief Initializes the camera with configuration suitable for this board.
+         *
+         * Queries PSRAM availability via the HAL and adjusts frame size,
+         * quality, and buffer count accordingly. The configuration values
+         * come from the CameraConfig provided at construction time.
+         *
+         * @return hal::CameraInitResult indicating success or failure.
+         */
+        hal::CameraInitResult init();
 
-    /**
-     * @brief Deinitializes the camera hardware and releases resources.
-     *
-     * Safe to call even if the camera is not initialized.
-     */
-    void deinit();
+        /**
+         * @brief Deinitializes the camera hardware and releases resources.
+         *
+         * Safe to call even if the camera is not initialized.
+         */
+        void deinit();
 
-    /**
-     * @brief Captures a photo frame.
-     *
-     * After a successful capture, the frame data is available via
-     * get_frame() until release_frame() is called.
-     *
-     * @return CameraCaptureResult indicating success or failure.
-     */
-    CameraCaptureResult capture_frame();
+        /**
+         * @brief Captures a photo frame.
+         *
+         * After a successful capture, the frame data is available via
+         * get_frame() until release_frame() is called.
+         *
+         * @return CameraCaptureResult indicating success or failure.
+         */
+        CameraCaptureResult capture_frame();
 
-    /**
-     * @brief Returns the most recently captured frame.
-     *
-     * Valid until release_frame() is called. If no frame has been
-     * captured, returns a CameraFrame with data == nullptr.
-     *
-     * @return The captured CameraFrame.
-     */
-    hal::CameraFrame get_frame() const;
+        /**
+         * @brief Returns the most recently captured frame.
+         *
+         * Valid until release_frame() is called. If no frame has been
+         * captured, returns a CameraFrame with data == nullptr.
+         *
+         * @return The captured CameraFrame.
+         */
+        hal::CameraFrame get_frame() const;
 
-    /**
-     * @brief Releases the frame buffer back to the camera hardware.
-     *
-     * Must be called after the frame data is no longer needed.
-     * Safe to call even when no frame is currently acquired.
-     */
-    void release_frame();
+        /**
+         * @brief Releases the frame buffer back to the camera hardware.
+         *
+         * Must be called after the frame data is no longer needed.
+         * Safe to call even when no frame is currently acquired.
+         */
+        void release_frame();
 
-    /**
-     * @brief Whether the camera was successfully initialized.
-     * @return true if initialized, false otherwise.
-     */
-    bool is_initialized() const;
+        /**
+         * @brief Whether the camera was successfully initialized.
+         * @return true if initialized, false otherwise.
+         */
+        bool is_initialized() const;
 
-private:
-    hal::CameraHal &m_hal;
-    hal::CameraConfig m_config;
-    bool m_initialized{false};
-    bool m_frame_acquired{false};
-    hal::CameraFrame m_current_frame{nullptr, 0};
+    private:
+        hal::CameraHal& m_hal;
+        hal::CameraConfig m_config;
+        bool m_initialized{false};
+        bool m_frame_acquired{false};
+        hal::CameraFrame m_current_frame{nullptr, 0};
 };
 
 #endif // CAMERA_CONTROLLER_H

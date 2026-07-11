@@ -43,7 +43,7 @@
  */
 struct AviBytes
 {
-    const uint8_t *data;    ///< Pointer to byte data
+    const uint8_t* data;    ///< Pointer to byte data
     size_t len;             ///< Number of bytes
 };
 
@@ -62,7 +62,7 @@ class AviWriter
         /**
          * @brief Initializes the AVI writer for a new recording.
          *
-         * Generates the 310-byte AVI header template with the given
+         * Generates the 224-byte AVI header template with the given
          * recording parameters. The path is stored as metadata only —
          * no file I/O is performed.
          *
@@ -72,7 +72,7 @@ class AviWriter
          * @param height Frame height in pixels.
          * @return true if the writer was successfully initialized.
          */
-        bool open(const char *path, uint16_t fps, uint16_t width, uint16_t height);
+        bool open(const char* path, uint16_t fps, uint16_t width, uint16_t height);
 
         /**
          * @brief Formats a JPEG frame as an AVI chunk.
@@ -85,7 +85,7 @@ class AviWriter
          * @param jpeg_len  Length of JPEG data in bytes.
          * @return true if the frame was formatted successfully.
          */
-        bool write_frame(const uint8_t *jpeg_data, size_t jpeg_len);
+        bool write_frame(const uint8_t* jpeg_data, size_t jpeg_len);
 
         /**
          * @brief Finalizes the AVI with actual frame count and file size.
@@ -126,7 +126,7 @@ class AviWriter
          * @brief Returns the file path passed to open().
          * @return Path string, or nullptr if not open.
          */
-        const char *path() const;
+        const char* path() const;
 
         /**
          * @brief Returns the initial AVI header bytes.
@@ -192,21 +192,21 @@ class AviWriter
         /**
          * @brief Writes a 32-bit little-endian value into a byte buffer.
          */
-        void write_u32(std::vector<uint8_t> &buf, size_t offset, uint32_t value) const;
+        void write_u32(std::vector<uint8_t>& buf, size_t offset, uint32_t value) const;
 
         /**
          * @brief Writes a 16-bit little-endian value into a byte buffer.
          */
-        void write_u16(std::vector<uint8_t> &buf, size_t offset, uint16_t value) const;
+        void write_u16(std::vector<uint8_t>& buf, size_t offset, uint16_t value) const;
 
         /**
          * @brief Writes a FourCC (4-byte identifier) into a byte buffer.
          */
-        void write_four_cc(std::vector<uint8_t> &buf, size_t offset,
+        void write_four_cc(std::vector<uint8_t>& buf, size_t offset,
                            const char fourcc[4]) const;
 
         bool m_open{false};
-        const char *m_path{nullptr};
+        const char* m_path{nullptr};
         uint16_t m_fps{0};
         uint16_t m_width{0};
         uint16_t m_height{0};

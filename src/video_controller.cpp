@@ -6,10 +6,10 @@
 // Construction
 // ============================================================
 
-VideoController::VideoController(CameraController &cam,
-                                 PeripheralManager &peripheral,
-                                 TimeService &time,
-                                 LoggingService &log)
+VideoController::VideoController(CameraController& cam,
+                                 PeripheralManager& peripheral,
+                                 TimeService& time,
+                                 LoggingService& log)
     : m_camera(cam)
     , m_peripheral(peripheral)
     , m_time(time)
@@ -22,7 +22,7 @@ VideoController::VideoController(CameraController &cam,
 // Initialization
 // ============================================================
 
-bool VideoController::init(const ConfigData::VideoConfig &config)
+bool VideoController::init(const ConfigData::VideoConfig& config)
 {
     m_config = config;
 
@@ -42,7 +42,7 @@ bool VideoController::init(const ConfigData::VideoConfig &config)
 // Resolution mapping
 // ============================================================
 
-VideoController::Resolution VideoController::map_resolution(const char *name)
+VideoController::Resolution VideoController::map_resolution(const char* name)
 {
     if (!name)
     {
@@ -302,7 +302,7 @@ void VideoController::close_clip()
     // Buffer all accumulated frame chunks
     for (size_t i = 0; i < m_frame_chunks.size(); i++)
     {
-        const FrameChunk &chunk = m_frame_chunks[i];
+        const FrameChunk& chunk = m_frame_chunks[i];
         m_sd_buffer.buffer_frame(chunk.data.data(), chunk.data.size());
     }
 
@@ -364,7 +364,7 @@ void VideoController::capture_and_write_frame()
 // Directory creation
 // ============================================================
 
-void VideoController::create_directory(const char *path)
+void VideoController::create_directory(const char* path)
 {
     m_peripheral.create_dir(path, 1000);
 }
