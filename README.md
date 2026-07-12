@@ -1,6 +1,6 @@
 # ESP32 Photo Camera
 
-A still photo camera demo for the **Seeed XIAO ESP32S3 Sense**, capturing JPEG images at a configurable interval and saving them to a MicroSD card. An LED provides visual status feedback.
+A still photo and MJPEG video camera for the **Seeed XIAO ESP32S3 Sense**, capturing JPEG images and recording video to a MicroSD card. An LED provides visual status feedback.
 
 Built with the Arduino framework and PlatformIO.
 
@@ -80,6 +80,13 @@ password=WebPass
 
 [camera]
 capture_interval_ms=20000
+
+[video]
+fps=10
+resolution=VGA
+clip_duration_s=60
+max_file_size_mb=0
+jpeg_quality=10
 ```
 
 ### Sections and Keys
@@ -93,6 +100,11 @@ capture_interval_ms=20000
 | `[web]` | `port` | integer | `80` | HTTP server port (1–65535) |
 | `[web]` | `password` | string | `""` | Web interface password |
 | `[camera]` | `capture_interval_ms` | integer | `20000` | Time between captures in ms |
+| `[video]` | `fps` | integer | `10` | Video frame rate (1–30) |
+| `[video]` | `resolution` | string | `VGA` | Frame resolution (see table below) |
+| `[video]` | `clip_duration_s` | integer | `60` | Max clip length in seconds (0 = no limit) |
+| `[video]` | `max_file_size_mb` | integer | `0` | Max clip file size in MB (0 = no limit) |
+| `[video]` | `jpeg_quality` | integer | `10` | JPEG quality (0–63, lower = better) |
 
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
 
@@ -144,7 +156,7 @@ Follow steps 4–7 above (skip the struct and enum additions).
 
 ## Debugging
 
-The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/Debugging.md](docs/Debugging.md) for the full GDB workflow and PlatformIO debug configuration.
+The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/DEBUGGING.md](docs/DEBUGGING.md) for the full GDB workflow and PlatformIO debug configuration.
 
 ## VSCode IntelliSense for Tests
 
@@ -180,7 +192,26 @@ pio test -e native
 
 Since PlatformIO regularly rewrites the `c_cpp_properties.json` (e.g. on project changes, updates to `platformio.ini`, etc.), **the `fix_test_intellisense.sh` script must be re-run as needed** to ensure the configurations are up to date.
 
+## Video Recording
+
+The firmware records MJPEG video to the SD card in standard AVI containers.
+
+### How It Works
+
+- Frames are captured from the camera at the configured FPS and written to an AVI file.
+- Clips are automatically rotated when `clip_duration_s` or `max_file_size_mb` is reached.
+- Files are stored in date-stamped directories: `/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`.
+- The complete AVI is buffered in RAM and written to SD in a single flush at clip end, ensuring valid AVI files.
+
+### LED Feedback During Recording
+
+| State | LED Pattern | Meaning |
+|-------|-------------|---------|
+| Recording | Fast blink (200ms on / 200ms off) | Video being recorded |
+| Stopping | Single pulse (500ms) | Clip boundary — old clip closing, new clip opening |
+| Idle | Photo capture pulse or off | Not recording video |
+
 ## Documentation
 
 - [System Design](docs/SYSTEM_DESIGN.md) — Architecture, HAL pattern, and component overview
-- [Debugging](docs/Debugging.md) — USB-JTAG setup, GDB workflow, and VSCode debug integration
+- [Debugging](docs/DEBUGGING.md) — USB-JTAG setup, GDB workflow, and VSCode debug integration

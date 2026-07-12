@@ -4,48 +4,48 @@ This document describes the architecture and key components of the ESP32 Photo C
 
 ## Overview
 
-This project is a still photo camera built on the **Seeed XIAO ESP32S3 Sense**, which includes an onboard OV2640 camera and MicroSD card slot. The firmware captures JPEG images at a configurable interval and saves them to the SD card, while an LED provides visual status feedback.
+This project is a still photo and video camera built on the **Seeed XIAO ESP32S3 Sense** platform, which includes an onboard OV2640 camera and MicroSD card slot. The firmware captures JPEG images at a configurable interval and records MJPEG video in AVI containers to the SD card, while an LED provides visual status feedback.
 
 The design follows a layered architecture that separates hardware access from application logic, enabling thorough unit testing on a native host machine without any hardware dependencies.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│            Application  (main.cpp)              │
-│  setup() / loop() — wires components, runs      │
-│  the capture-and-save cycle                     │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                  Application  (main.cpp)                    │
+│  setup() / loop() — wires components, runs the              │
+│  photo capture cycle and video recording state machine      │
+└─────────────────────────────────────────────────────────────┘
                          │
                          ▼
-┌─────────────────────────────────────────────────┐
-│           Service / Controller Layer            │
-│  CameraController       LedStateMachine         │
-│  SdWriteController      PinArbitrator           │
-│  TimeService            LoggingService          │
-│  ConfigService          IniParser               │
-│  PeripheralManager  (facade / composition root) │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                Service / Controller Layer                   │
+│  CameraController    VideoController   LedStateMachine      │
+│  SdController        AviWriter         PinArbitrator        │
+│  SdWriteBuffer       TimeService       LoggingService       │
+│  ConfigService       IniParser                              │
+│  PeripheralManager  (facade / composition root)             │
+└─────────────────────────────────────────────────────────────┘
                          │
                          ▼
-┌─────────────────────────────────────────────────┐
-│        Hardware Abstraction Layer (HAL)         │
-│  CameraHal       SdCardHal      LogBackend      │
-│  GpioHal         TimeHal                         │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                Hardware Abstraction Layer (HAL)             │
+│  CameraHal       SdCardHal      LogBackend                  │
+│  GpioHal         TimeHal                                    │
+└─────────────────────────────────────────────────────────────┘
                          │
                          ▼
-┌─────────────────────────────────────────────────┐
-│   Arduino Libraries & ESP32 Hardware            │
-│  esp_camera   SD.h   GPIO   Serial              │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│              Arduino Libraries & ESP32 Hardware             │
+│  esp_camera   SD_MMC.h   GPIO   Serial                      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Principles
 
 - **Dependency Injection**: All service-layer classes accept HAL interfaces through constructor parameters, making them decoupled from any specific hardware implementation.
-- **Single Responsibility**: Each class owns exactly one concern — the LED state machine handles only LED timing, the SD write controller handles only the CS protocol, etc.
-- **Tick-Driven State Machines**: LED and SD card control are implemented as non-blocking state machines advanced by periodic `tick()` calls from the main loop.
+- **Single Responsibility**: Each class owns exactly one concern — the LED state machine handles only LED timing, the SD write controller handles only the chip select (CS) protocol, etc.
+- **Tick-Driven State Machines**: Service controls are implemented as non-blocking state machines advanced by periodic `tick()` calls from the main loop or higher level services.
 - **Testability via Abstractions**: Abstract HAL interfaces allow full unit testing of service-layer logic on a native host (macOS/Linux) using mock implementations, with no ESP32 hardware required.
 
 ---
@@ -111,25 +111,34 @@ A pure state machine with no hardware side effects. Operates in four modes:
 
 The `tick()` method advances the state machine and returns the desired LED state (`true` = on, `false` = off). Callers are responsible for applying the result to a GPIO pin. Uses an injected `TimeService` for all timing, enabling deterministic testing with mock time.
 
-### SdWriteController
+### SdController
 
-**File**: `include/sd_write_controller.h`
+**File**: `include/sd_controller.h`
 
-Manages the SD card write lifecycle with a chip-select (CS) timing protocol. Owns a state machine that sequences CS assertion and de-assertion around file I/O:
+Manages the SD card I/O lifecycle with a chip-select (CS) timing protocol. Supports read, write, and directory creation operations. Owns a state machine that sequences CS assertion and de-assertion around file I/O:
 
 ```
-IDLE → PRE_DEACTIVATE_CS → ACTIVATE_CS → WRITING → STOP_WRITE → POST_DEACTIVATE_CS → IDLE
+IDLE → PRE_DEACTIVATE_CS → ACTIVATE_CS → IO_ACTIVE → END_IO → POST_DEACTIVATE_CS → IDLE
 ```
 
-The `tick()` method returns an `SdSignal` (`IDLE`, `CS_ACTIVE`, or `CS_INACTIVE`) that describes what the shared pin should do. When `IDLE`, the LED's request wins. When `CS_ACTIVE` or `CS_INACTIVE`, the SD card overrides the LED.
+The `tick()` method returns an `SdSignal` (`IDLE`, `CS_ACTIVE`, or `CS_INACTIVE`) that describes what the shared pin should do. When `IDLE`, the LED's request wins. When `CS_ACTIVE` or `CS_INACTIVE`, the SD card overrides the LED. This arbitration between LED and SD card chip select is handled in the `PeripheralManager` (specifically via the `PinArbitrator`).
 
-Provides both non-blocking (`start_write()` + repeated `tick()`) and blocking (`write_file()` with timeout) write APIs. Hardware I/O is delegated to an injected `SdCardHal`.
+### Non-Blocking API
+
+- `start_write(path, data, len)` — initiates a write operation.
+- `start_read(path, buffer, buffer_size)` — initiates a read operation.
+- `start_create_dir(path)` — initiates a directory creation.
+- `is_idle()` — returns `true` when the state machine has returned to `IDLE`.
+- `get_write_result()` / `get_read_result()` / `get_create_dir_result()` / `get_bytes_read()` — result accessors after the cycle completes.
+- `init_card()` — delegates to `SdCardHal::init()`.
+
+The `PeripheralManager` wraps these non-blocking primitives with a blocking convenience API (`write_file()`, `read_file()`, `create_dir()`) that loops `tick()` + `is_idle()` with a timeout. Hardware I/O is delegated to an injected `SdCardHal`.
 
 ### PinArbitrator
 
 **File**: `include/pin_arbitrator.h`
 
-A static utility class that resolves conflicts when the LED and SD chip-select share the same physical pin (GPIO 21 on this board). Both LED-on and CS-active are active-LOW.
+A static utility class that resolves conflicts when the LED and SD chip-select share the same physical pin (GPIO 21 on the ESP32S3 Sense). Both LED-on and CS-active are active-LOW.
 
 Arbitration rules:
 - `SdSignal::IDLE` → LED's request is granted.
@@ -175,6 +184,13 @@ password=webpass
 
 [camera]
 capture_interval_ms=15000
+
+[video]
+fps=10
+resolution=VGA
+clip_duration_s=60
+max_file_size_mb=0
+jpeg_quality=10
 ```
 
 - Sections are denoted by `[name]`
@@ -185,7 +201,7 @@ capture_interval_ms=15000
 - Whitespace around keys, values, and section headers is trimmed
 - Unknown sections and keys are silently ignored
 - Values are truncated to `CONFIG_FIELD_MAX_LENGTH - 1` (63) characters
-- Integer values (port, capture_interval_ms) are validated with range checking
+- Integer values (`port`, `capture_interval_ms`, `fps`, `jpeg_quality`) are validated with range checking
 
 ### API
 
@@ -202,17 +218,22 @@ struct ConfigData
     struct ApConfig     { char ssid[64]; char password[64]; };
     struct WebConfig    { uint16_t port; char password[64]; };
     struct CameraConfig { uint32_t capture_interval_ms; };
+    struct VideoConfig  { uint16_t fps; char resolution[64];
+                          uint16_t clip_duration_s;
+                          uint16_t max_file_size_mb;
+                          uint8_t jpeg_quality; };
 
     WifiConfig wifi;
     ApConfig ap;
     WebConfig web;
     CameraConfig camera;
+    VideoConfig video;
 };
 ```
 
 ### Testability
 
-Pure logic with no hardware dependencies. Testable natively with 35 unit tests covering defaults, parsing, edge cases, comments, whitespace, malformed input, and serialization round-trips.
+Pure logic with no hardware dependencies. Testable natively with 48 unit tests covering defaults, parsing, edge cases, comments, whitespace, malformed input, video config parsing, and serialization round-trips.
 
 ---
 
@@ -307,6 +328,213 @@ Fully testable on native via `MockCameraHal`, which provides configurable return
 
 ---
 
+## VideoController
+
+**Files**: `include/video_controller.h`, `src/video_controller.cpp`
+
+### Responsibility
+
+Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture, AVI container formatting, and buffered SD writing into a recording session. Operates as a cooperative-polling service driven by `tick()` from the main loop.
+
+### Dependencies
+
+- `CameraController &` — for frame capture (capture/get/release cycle).
+- `PeripheralManager &` — for SD file I/O (all writes routed through pin arbitration).
+- `TimeService &` — for frame pacing (elapsed time checks).
+- `LoggingService &` — for diagnostic output.
+- `AviWriter` — owned; formats AVI byte streams in memory.
+- `SdWriteBuffer` — owned; accumulates and flushes data to SD.
+
+### State Machine
+
+*Ensure window is wide enough for this diagram to render properly*
+
+```
+                                   start_recording()              clip limit / stop_recording()
+      ┌──────────┐ ──────────────────────────────────► ┌───────────┐ ────────────────────►  ┌───────────┐
+      │   IDLE   │ ◄───────────────────────────────── ◆│ RECORDING │ ◄─────────────────── ◆ │  STOPPING │
+      └──────────┘  explicit stop (via STOPPING)       └───────────┘  auto-rotate (new clip)└───────────┘
+```
+
+- **IDLE** — Not recording. Awaits `start_recording()`.
+- **RECORDING** — Actively capturing and writing frames at the configured FPS. Clip auto-rotates when duration, file size, or max frame limit is reached.
+- **STOPPING** — Closing current clip (flushing AVI to SD). Transitions to RECORDING (auto-rotate) or IDLE (explicit stop).
+
+### AVI Write Strategy: Buffer-All-At-Close
+
+The complete AVI (header + all frame chunks + index) is accumulated in RAM during recording, then written to SD in a single flush at clip end. This produces correct AVI files with the header at byte offset 0. Frame chunks are copied from `AviWriter::last_frame_chunk()` into an internal vector during recording so they can be replayed at close.
+
+### RAM Budget
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `CLIP_BUFFER_RAM_SIZE` | 4 MB | RAM budget for frame accumulation |
+| `avg_bytes_per_frame()` | Config-dependent | Estimated from resolution and JPEG quality |
+| `max_frames()` | Derived | `CLIP_BUFFER_RAM_SIZE / avg_bytes_per_frame()` |
+
+### File Naming
+
+Files are written to the SD card with the pattern:
+```
+/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
+```
+
+Date and time are derived from `millis()` using a simplified calendar model (not a full RTC-based calendar).
+
+### Clip Rotation
+
+When a clip reaches `clip_duration_s`, `max_file_size_mb`, or `max_frames()`, the clip is closed and a new one is opened automatically (unless recording was explicitly stopped). This enables unattended recording without creating unbounded files or overloading buffers.
+
+### Recording Sequence Diagram
+
+The following diagram shows the continuous recording flow, including normal frame capture and the clip rotation path:
+
+```plantuml
+@startuml
+title Continuous Video Recording Flow
+
+participant "main.cpp" as main
+participant "VideoController" as VC
+participant "CameraController" as CAM
+participant "AviWriter" as AVI
+participant "SdWriteBuffer" as BUF
+database "SD Card" as SD
+
+== Normal Frame Capture (non-blocking) ==
+
+main -> VC : tick()
+VC -> VC : state == RECORDING ?\nframe interval elapsed ?
+
+alt frame interval NOT elapsed
+    VC --> main : return (idle tick)
+else frame interval elapsed
+    VC -> CAM : capture_frame()
+    CAM --> VC : SUCCESS
+    VC -> CAM : get_frame()
+    CAM --> VC : jpeg data
+    VC -> AVI : write_frame()
+    AVI --> VC : last_frame_chunk()
+    VC -> VC : copy chunk to\nm_frame_chunks[]
+    VC -> CAM : release_frame()
+    VC -> VC : m_frames_recorded++
+    VC -> VC : check clip limits
+end
+
+VC --> main
+
+== Clip Rotation (auto-rotate) ==
+
+note over VC : clip limit reached\n(state -> STOPPING)
+
+main -> VC : tick()
+VC -> VC : close_clip()
+VC -> AVI : close()\n(patch header + build index)
+AVI --> VC : patched header, index
+
+loop each accumulated frame chunk
+    VC -> BUF : buffer_frame(chunk)
+end
+
+VC -> BUF : buffer_frame(index)
+BUF -> SD : flush to SD
+
+note right of SD #FFDDDD : BLOCKING\n~1-2 s per clip\n(no frames captured)
+
+BUF -> BUF : reset()
+VC -> VC : open new clip\nstate -> RECORDING
+
+VC --> main
+
+@enduml
+```
+
+**Recording is blocked during clip close.** The `close_clip()` method runs synchronously inside `tick()`, buffering the patched header, all accumulated frame chunks, and the index to `SdWriteBuffer`, then flushing everything to the SD card in one shot. No camera frames are captured during this window.
+
+The blocking duration is bounded by `CLIP_BUFFER_RAM_SIZE` (4 MB). At the default VGA / 10 fps / quality 10 configuration, each frame averages ~60 KB, yielding ~68 frames per clip (~6.8 s). Flushing ~4 MB to a typical Class 10 SD card (2–5 MB/s) takes approximately **1–2 seconds** per clip boundary.
+
+This means there is a brief recording gap at each clip transition. For applications requiring gapless recording, future work could adopt a double-buffering strategy (write the next clip's frames while the current clip flushes) or stream frames directly to SD during recording.
+
+### Testability
+
+Fully testable on native via `MockCameraHal`, `MockSdCardHal`, and `MockLogBackend`. 26 unit tests cover state transitions, frame pacing, clip rotation, error handling, and resolution mapping.
+
+---
+
+## AviWriter
+
+**Files**: `include/avi_writer.h`, `src/avi_writer.cpp`
+
+### Responsibility
+
+A format-only utility class that builds AVI file structures in memory. Does not perform any I/O — callers extract the formatted bytes through accessor methods and handle file writing through their own I/O layer.
+
+### AVI File Layout
+
+```
+RIFF header
+└─ LIST hdrl
+   ├─ avih (main AVI header)
+   └─ LIST strl
+      ├─ strh (video stream header: MJPEG, FPS)
+      └─ strf (BITMAPINFOHEADER)
+└─ LIST movi
+   └─ Frame chunks (0x00dc + size + JPEG data + DWORD padding)
+└─ idx1 (frame index: chunk ID, flags, offset, size per frame)
+```
+
+### Lifecycle
+
+```
+open() → write_frame() × N → close()
+```
+
+- `open(path, fps, width, height)` — generates a 224-byte AVI header template.
+- `write_frame(jpeg_data, jpeg_len)` — formats a JPEG frame as an AVI chunk with DWORD-aligned padding.
+- `close()` — patches the header with final frame count and file size, builds the frame index.
+
+### Key Design Points
+
+- The AVI header is generated once at `open()` and patched at `close()` with final statistics (RIFF size, frame count, movi list size).
+- Each frame chunk includes an 8-byte header (0x00dc marker + data size), the JPEG data, and 0-3 bytes of zero-padding for DWORD alignment.
+- The frame index (`idx1`) accumulates 16-byte entries in RAM (one per frame).
+
+### Testability
+
+Pure format logic with no hardware or I/O dependencies. 62 unit tests verify every byte of the AVI header, chunk format, DWORD alignment, index structure, and edge cases.
+
+---
+
+## SdWriteBuffer
+
+**Files**: `include/sd_write_buffer.h`, `src/sd_write_buffer.cpp`
+
+### Responsibility
+
+Accumulates small byte chunks into a RAM buffer and flushes them to the SD card in larger, sector-aligned blocks. Reduces the number of individual SD write transactions (each of which incurs the full CS assertion/deassertion timing overhead) by batching multiple frames into a single write.
+
+### Dependencies
+
+- `PeripheralManager &` — all SD card I/O routes through PeripheralManager to ensure proper pin arbitration between the LED and SD chip-select on the shared GPIO21.
+
+### Buffer Design
+
+- Internal buffer size is `RAMSIZE` (default 8 KB, a multiple of the SD sector size).
+- When the buffer reaches `RAMSIZE`, it is flushed synchronously to the SD card.
+- Chunks larger than `RAMSIZE` are written directly to SD, bypassing the buffer.
+- The Arduino SD library opens files in append mode (`FILE_WRITE`), so multiple flushes to the same path correctly append data.
+
+### Lifecycle
+
+```
+open(path) → buffer_frame() × N → flush() → reset()
+```
+
+### Testability
+
+Testable on native via `PeripheralManager` backed by `MockSdCardHal`. 28 unit tests cover buffering, auto-flush thresholds, oversized chunks, flush behavior, data integrity, and failure handling.
+
+---
+
 ## PeripheralManager
 
 **Files**: `include/peripheral_manager.h`, `src/peripheral_manager.cpp`
@@ -320,20 +548,21 @@ Acts as the **composition root and facade** for all peripheral sub-components. W
 - `RealTimeService` — time source for all sub-components.
 - `LedStateMachine` — pure LED state machine logic.
 - `SdCardHalImpl` — SD card HAL implementation (CS on GPIO 21).
-- `SdWriteController` — SD write controller with CS timing protocol.
+- `SdController` — SD card I/O controller with CS timing protocol (read, write, directory creation).
 
 ### Key Methods
 
 - **`init()`** — Configures GPIO, initializes the LED state machine to OFF.
-- **`init_sd_card()`** — Initializes SD card hardware via the SdWriteController.
+- **`init_sd_card()`** — Initializes SD card hardware via the SdController.
 - **`tick()`** — The central method, called periodically (~5 ms) from the main loop:
   1. Ticks the `LedStateMachine` → gets desired LED state.
-  2. Ticks the `SdWriteController` → gets the `SdSignal`.
+  2. Ticks the `SdController` → gets the `SdSignal`.
   3. Feeds both into `PinArbitrator::resolve()` → gets the final pin state.
   4. Applies the result to GPIO 21 via `GpioHal`.
 - **LED convenience**: `turn_led_on()`, `turn_led_off()`, `pulse_led(ms)`, `blink(on_ms, off_ms)` — delegate to `LedStateMachine::set_mode()`.
-- **SD convenience**: `write_file(path, data, len, timeout_ms)` — delegates to `SdController::write_file()`.
-- **SD read**: `read_file(path, buffer, max_len, bytes_read, timeout_ms)` — reads a file from SD into the provided buffer.
+- **SD convenience**: `write_file(path, data, len, timeout_ms)` — starts a non-blocking write via `SdController::start_write()`, then loops `tick()` until idle or timeout.
+- **SD read**: `read_file(path, buffer, max_len, bytes_read, timeout_ms)` — starts a non-blocking read via `SdController::start_read()`, then loops `tick()` until idle or timeout.
+- **SD directory**: `create_dir(path, timeout_ms)` — starts a non-blocking directory creation via `SdController::start_create_dir()`, then loops `tick()` until idle or timeout.
 
 ### Shared Pin Protocol
 
@@ -349,12 +578,22 @@ The `setup()` function initializes Serial, the PeripheralManager, camera, SD car
 
 After SD card initialization, the firmware reads `/config.ini` from the SD card into a stack-allocated buffer and passes it to `ConfigService::load()` for parsing. If the file is missing or empty, sensible defaults are used.
 
-The `loop()` function runs on a 5 ms tick for the PeripheralManager and a configurable interval for camera captures (default 20 seconds, overridable via the `[camera]` section of the config file). Each capture cycle:
+The `VideoController` is initialized with the `[video]` configuration and starts recording automatically.
+
+The `loop()` function runs on a 5 ms tick for the PeripheralManager, advances the `VideoController` state machine, and runs a configurable interval for still photo captures (default 20 seconds, overridable via the `[camera]` section of the config file). Each photo capture cycle:
 
 1. `camera_ctrl.capture_frame()` — acquire a frame from the camera.
 2. `camera_ctrl.get_frame()` — access the JPEG data.
 3. `peripheral_manager.write_file()` — write to SD with a 1-second timeout.
 4. `camera_ctrl.release_frame()` — release the buffer back to the camera.
+
+### LED Feedback During Recording
+
+LED behavior during video recording is controlled in `main.cpp` based on `VideoController::state()`:
+
+- **RECORDING** — Fast blink (200ms on / 200ms off).
+- **STOPPING** — Pulse (500ms) at clip boundaries.
+- **IDLE** — LED controlled by other logic (e.g. photo capture pulse).
 
 ---
 
@@ -374,14 +613,18 @@ Tests live under `test/` in environment-specific subfolders:
 ```
 test/
   native/                           ← Native unit tests (Unity framework)
-    test_camera_controller/
-    test_config_service/
-    test_ini_parser/
-    test_led_state_machine/
-    test_logging_service/
-    test_pin_arbitrator/
-    test_sd_write_controller/
-    test_time_service/
+    test_avi_writer/                ← AVI container format tests (62 tests)
+    test_camera_controller/         ← Camera lifecycle tests
+    test_config_service/            ← ConfigService loading & defaults
+    test_ini_parser/                ← INI parser including video config
+    test_led_state_machine/         ← LED state machine tests
+    test_logging_service/           ← Logging output tests
+    test_peripheral_manager/        ← Peripheral manager facade tests
+    test_pin_arbitrator/            ← Pin conflict resolution tests
+    test_sd_controller/             ← SD write controller tests
+    test_sd_write_buffer/           ← SD write buffering tests (28 tests)
+    test_time_service/              ← Time service tests
+    test_video_controller/          ← Video recording orchestration (26 tests)
   hardware/                         ← ESP32 integration tests
   mocks/
     native_mocks/                   ← Mock HAL classes + mock Arduino
