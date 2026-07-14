@@ -66,6 +66,7 @@
           int m_my_variable;  
   };
   ``
+- In documentation markdowns, enclose all symbols and filenames in `backticks`
 
 # Other
 
