@@ -145,6 +145,12 @@ void loop()
                 break;
         }
 
+        if (now > 40000 && video_controller.is_recording())
+        {
+            video_controller.stop_recording();
+            logger.info("MAIN", "Stopped recording");
+        }
+
         if (TimeService::elapsed_ms(last_capture_time_ms, now) >= camera_capture_interval_ms)
         {
             if (!video_controller.is_recording())

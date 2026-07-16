@@ -63,7 +63,7 @@ peripherals::SdSignal SdController::tick()
                 }
             }
             else if (!m_sd_hal.open(m_io_path,
-                m_operation == SdOperation::READ ? hal::FileOpenMode::READ : hal::FileOpenMode::WRITE))
+                m_operation == SdOperation::READ ? hal::FileOpenMode::READ : hal::FileOpenMode::APPEND))
             {
                 if (m_operation == SdOperation::WRITE)
                 {

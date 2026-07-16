@@ -32,7 +32,18 @@ SdInitResult SdCardHalImpl::init()
 
 bool SdCardHalImpl::open(const char* path, hal::FileOpenMode mode)
 {
-    m_file = SD.open(path, mode == hal::FileOpenMode::READ ? FILE_READ : FILE_WRITE);
+    if (mode == hal::FileOpenMode::READ)
+    {
+        m_file = SD.open(path, FILE_READ);
+    }
+    else if (mode == hal::FileOpenMode::APPEND)
+    {
+        m_file = SD.open(path, FILE_APPEND);
+    }
+    else
+    {
+        m_file = SD.open(path, FILE_WRITE);
+    }
     m_file_open = m_file ? true : false;
     return m_file_open;
 }

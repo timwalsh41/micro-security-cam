@@ -32,7 +32,8 @@ enum class SdInitResult : uint8_t
 enum class FileOpenMode : uint8_t
 {
     READ,               ///< Open file for reading
-    WRITE               ///< Open file for writing (truncates if exists)
+    WRITE,              ///< Open file for writing (truncates if exists)
+    APPEND              ///< Open file for writing (preserves existing content)
 };
 
 /**

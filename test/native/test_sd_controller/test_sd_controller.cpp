@@ -188,7 +188,7 @@ void test_writing_performs_io_and_moves_to_stop()
     // Verify HAL was called correctly
     TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
     TEST_ASSERT_EQUAL_STRING("/test.bin", sd_hal.last_open_path);
-    TEST_ASSERT_EQUAL(hal::FileOpenMode::WRITE, sd_hal.last_open_mode);
+    TEST_ASSERT_EQUAL(hal::FileOpenMode::APPEND, sd_hal.last_open_mode);
     TEST_ASSERT_EQUAL_INT(1, sd_hal.write_call_count);
     TEST_ASSERT_EQUAL(data, sd_hal.last_write_data);
     TEST_ASSERT_EQUAL_UINT32(3, sd_hal.last_write_len);
@@ -314,7 +314,7 @@ void test_full_write_cycle_state_sequence()
     // Verify HAL calls
     TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
     TEST_ASSERT_EQUAL_STRING("/photo.dat", sd_hal.last_open_path);
-    TEST_ASSERT_EQUAL(hal::FileOpenMode::WRITE, sd_hal.last_open_mode);
+    TEST_ASSERT_EQUAL(hal::FileOpenMode::APPEND, sd_hal.last_open_mode);
     TEST_ASSERT_EQUAL_INT(1, sd_hal.write_call_count);
     TEST_ASSERT_EQUAL(data, sd_hal.last_write_data);
     TEST_ASSERT_EQUAL_UINT32(4, sd_hal.last_write_len);
@@ -375,7 +375,7 @@ void test_end_to_end_write_success()
     // Verify HAL was called correctly
     TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
     TEST_ASSERT_EQUAL_STRING("/test.bin", sd_hal.last_open_path);
-    TEST_ASSERT_EQUAL(hal::FileOpenMode::WRITE, sd_hal.last_open_mode);
+    TEST_ASSERT_EQUAL(hal::FileOpenMode::APPEND, sd_hal.last_open_mode);
     TEST_ASSERT_EQUAL_INT(1, sd_hal.write_call_count);
     TEST_ASSERT_EQUAL(data, sd_hal.last_write_data);
     TEST_ASSERT_EQUAL_UINT32(5, sd_hal.last_write_len);

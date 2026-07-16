@@ -1,6 +1,6 @@
 # System Orchestration Plan
 
-Unified plan for full-featured capabilities (network, streaming, audio, motion trigger, timelapse) and system orchestration (command handling, mode switching, scheduling). This document lays out the system architecture, composition, data flows, and interfaces. Many detailed design decisions are left for implementation; some are explicitly called out in the detailed description of the plan slices. When implementing the components of this plan, ensure that style guidelines in `AGENTS.md` are followed explicitly.
+Unified plan for full-featured capabilities (network, streaming, audio, motion trigger, timelapse) and system orchestration (command handling, mode switching, scheduling). This document lays out the system architecture, composition, data flows, and interfaces. Many detailed design decisions are left for implementation; some are explicitly called out in the detailed description of the plan slices. Each slice is meant to be self-contained, leaving the system in a runnable state with updated tests, all tests passing, and system documentation (`README.md`, `SYSTEM_DESIGN.md`) updated accordingly. When implementing the components of this plan, ensure that style guidelines in `AGENTS.md` are followed explicitly. Any major deviations from this plan should be documented here - when doing so, do not record a history of what changed or why, just update the plan and record design rationale as appropriate.
 
 ## Table of Contents
 

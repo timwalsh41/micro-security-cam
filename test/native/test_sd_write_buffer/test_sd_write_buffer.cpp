@@ -375,7 +375,7 @@ void test_flush_writes_to_sd()
     TEST_ASSERT_EQUAL_UINT32(0, buf.buffered_bytes());
     TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
     TEST_ASSERT_EQUAL_STRING("/test.avi", sd_hal.last_open_path);
-    TEST_ASSERT_EQUAL(hal::FileOpenMode::WRITE, sd_hal.last_open_mode);
+    TEST_ASSERT_EQUAL(hal::FileOpenMode::APPEND, sd_hal.last_open_mode);
 
     // Verify the data written matches the chunk
     TEST_ASSERT_EQUAL_INT(1, sd_hal.write_call_count);
