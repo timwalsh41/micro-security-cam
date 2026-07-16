@@ -38,6 +38,8 @@ class HardwareSerial
         void print(uint32_t n) { std::cout << n; }
         void println(const String& s) { std::cout << s << std::endl; }
         void println(uint32_t n) { std::cout << n << std::endl; }
+        void write(const char* buffer, const size_t size) { std::cout << buffer << std::endl; }
+        void flush() { } 
 };
 
 extern HardwareSerial Serial;

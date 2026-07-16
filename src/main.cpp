@@ -1,4 +1,5 @@
 #include "hal/time_hal.h"
+#include "platform_initializer.h"
 #include "hal/camera_hal_impl.h"
 #include "hal/serial_log_backend.h"
 #include "hal/sd_card_hal_impl.h"
@@ -30,6 +31,7 @@ PeripheralManager peripheral_manager{real_time, sd_hal};
 hal::CameraHalImpl camera_hal;
 CameraController camera_ctrl{camera_hal};
 VideoController video_controller{camera_ctrl, peripheral_manager, real_time, logger};
+PlatformInitializer platform_init;
 millis_t last_peripheral_tick_time_ms = 0;
 millis_t camera_capture_interval_ms = constants::DEFAULT_CAMERA_CAPTURE_INTERVAL_MS;
 
@@ -54,6 +56,8 @@ void take_photo(uint32_t image_count)
 
 void setup()
 {
+    platform_init.init();
+
     // add delay for PlatformIO terminal to connect
     real_time.delay_ms(5000);
 
@@ -106,6 +110,7 @@ void setup()
 
     // Initialize video controller and start recording
     video_controller.init(config_service.config().video);
+    /*
     if (video_controller.start_recording())
     {
         logger.info("MAIN", "Video recording started");
@@ -114,6 +119,7 @@ void setup()
     {
         logger.warn("MAIN", "Video recording failed to start");
     }
+    */
 }
 
 void loop()

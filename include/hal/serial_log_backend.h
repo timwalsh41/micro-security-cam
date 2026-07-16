@@ -2,6 +2,7 @@
 #define SERIAL_LOG_BACKEND_H
 
 #include "log_backend.h"
+#include <cstddef>
 
 /**
  * @file serial_log_backend.h
@@ -21,6 +22,13 @@ namespace hal
 class SerialLogBackend : public LogBackend
 {
     public:
+        /**
+         * @brief Maximum length of a formatted log message (including null terminator).
+         * 
+         * Must match LoggingService::MAX_LOG_LINE_LENGTH
+         */
+        static constexpr size_t MAX_LOG_LINE_LENGTH = 256;
+
         /**
          * @brief Constructor
          *

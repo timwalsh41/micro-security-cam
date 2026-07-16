@@ -41,9 +41,6 @@ enum class FileOpenMode : uint8_t
  * @brief Abstract interface for SD card hardware operations.
  *
  * Provides a mockable abstraction over the SD card library (SD.h).
- * The SdController owns the chip-select (CS) pin timing protocol;
- * therefore file operations (open/write/read/close) MUST only be
- * called when the CS pin is asserted by the controller.
  */
 class SdCardHal
 {

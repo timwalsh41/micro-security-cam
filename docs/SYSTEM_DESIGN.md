@@ -73,7 +73,8 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
 | `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/close) |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
-| `SerialLogBackend` | Arduino `Serial.println()` |
+| `SerialLogBackend` | Arduino `Serial.write()` — writes formatted log lines only. `Serial.begin()` called in constructor. |
+| `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
 
 ### Mock Implementations (Native Tests)
 
