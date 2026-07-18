@@ -50,8 +50,8 @@ bool AviWriter::write_frame(const uint8_t* jpeg_data, size_t jpeg_len)
     // Build frame chunk: marker(4) + size(4) + data + padding
     m_frame_chunk.resize(aligned_size);
 
-    // Write chunk marker: stream 0, compressed video = 0x00dc
-    write_u32(m_frame_chunk, 0, 0x00dc);
+    // Write chunk ID: stream 0, compressed video = "00dc" FourCC
+    write_four_cc(m_frame_chunk, 0, "00dc");
 
     // Write data size (JPEG only, not including header or padding)
     write_u32(m_frame_chunk, 4, static_cast<uint32_t>(jpeg_len));
@@ -186,7 +186,7 @@ void AviWriter::build_header()
     write_u32(m_header, 32, 1000000u / m_fps);  // dwMicroSecPerFrame
     // dwMaxBytesPerSec = 0 (offset 36)
     // dwPaddingGranularity = 0 (offset 40)
-    write_u32(m_header, 44, 0x10);  // dwFlags = AVIF_HASINDEX
+    write_u32(m_header, 44, 0x910);  // dwFlags = AVIF_HASINDEX | AVIF_WASCAPKEYFRAME | AVIF_TRUSTCKTYPE
     // dwTotalFrames patched at close() (offset 48)
     // dwInitialFrames = 0 (offset 52)
     write_u32(m_header, 56, 1);  // dwStreams = 1
@@ -207,14 +207,15 @@ void AviWriter::build_header()
     write_four_cc(m_header, 112, "MJPG");  // handler: Motion JPEG
     // dwFlags = 0 (offset 116)
     // wPriority = 0 (offset 120)
-    // wInitialFrames = 0 (offset 122)
-    write_u32(m_header, 124, 1);  // dwScale
-    write_u32(m_header, 128, m_fps);  // dwRate = fps * scale
-    // dwStart = 0 (offset 132)
-    // dwLength patched at close() (offset 136)
-    // dwSuggestedBufferSize = 0 (offset 140)
-    write_u32(m_header, 144, 0xFFFFFFFF);  // dwQuality = default (-1)
-    // dwSampleSize = 0 (offset 148)
+    // wLanguage = 0 (offset 122)
+    // dwInitialFrames = 0 (offset 124)
+    write_u32(m_header, 128, 1);  // dwScale
+    write_u32(m_header, 132, m_fps);  // dwRate
+    // dwStart = 0 (offset 136)
+    // dwLength patched at close (offset 140)
+    // dwSuggestedBufferSize = 0 (offset 144)
+    write_u32(m_header, 148, 0xFFFFFFFF);  // dwQuality = default (-1)
+    // dwSampleSize = 0 (offset 152)
 
     // ---- strf (Stream Format: BITMAPINFOHEADER) ----
     write_four_cc(m_header, 164, "strf");
@@ -276,8 +277,8 @@ void AviWriter::build_index()
         size_t offset = CHUNK_HEADER_SIZE + (i * INDEX_ENTRY_SIZE);
         const IndexEntry& entry = m_index_entries[i];
 
-        write_u32(m_index_buffer, offset, 0x00dc);          // ckid
-        write_u32(m_index_buffer, offset + 4, 0);           // dwFlags
+        write_four_cc(m_index_buffer, offset, "00dc");     // ckid
+        write_u32(m_index_buffer, offset + 4, 0x10);       // dwFlags = AVIIF_KEYFRAME
         write_u32(m_index_buffer, offset + 8, entry.offset); // dwOffset
         write_u32(m_index_buffer, offset + 12, entry.size);  // dwSize
     }

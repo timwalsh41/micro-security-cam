@@ -182,7 +182,7 @@ void test_header_strh_rate()
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     AviBytes hdr = writer.header();
-    TEST_ASSERT_EQUAL_UINT32(10, read_u32(hdr.data, 128));
+    TEST_ASSERT_EQUAL_UINT32(10, read_u32(hdr.data, 132));
 }
 
 /**
@@ -284,7 +284,7 @@ void test_header_strh_quality()
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     AviBytes hdr = writer.header();
-    TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFF, read_u32(hdr.data, 144));
+    TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFF, read_u32(hdr.data, 148));
 }
 
 /**
@@ -295,7 +295,21 @@ void test_header_strh_sample_size()
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
     AviBytes hdr = writer.header();
-    TEST_ASSERT_EQUAL_UINT32(0, read_u32(hdr.data, 148));
+    TEST_ASSERT_EQUAL_UINT32(0, read_u32(hdr.data, 152));
+}
+
+/**
+ * @brief Header has correct avih dwFlags.
+ *
+ * AVIF_HASINDEX = 0x10, AVIF_WASCAPKEYFRAME = 0x100,
+ * AVIF_TRUSTCKTYPE = 0x800 → combined = 0x910.
+ */
+void test_header_avih_flags()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    AviBytes hdr = writer.header();
+    TEST_ASSERT_EQUAL_UINT32(0x910, read_u32(hdr.data, 44));
 }
 
 // ============================================================
@@ -367,7 +381,7 @@ void test_write_frame_increments_count()
 // ============================================================
 
 /**
- * @brief Frame chunk starts with 0x00dc marker.
+ * @brief Frame chunk starts with "00dc" FourCC marker.
  */
 void test_frame_chunk_marker()
 {
@@ -378,7 +392,7 @@ void test_frame_chunk_marker()
     writer.write_frame(jpeg, sizeof(jpeg));
 
     AviBytes chunk = writer.last_frame_chunk();
-    TEST_ASSERT_EQUAL_UINT32(0x00dc, read_u32(chunk.data, 0));
+    assert_four_cc(chunk, 0, "00dc");
 }
 
 /**
@@ -617,7 +631,7 @@ void test_close_patches_strh_frame_count()
     writer.close();
 
     AviBytes hdr = writer.patched_header();
-    TEST_ASSERT_EQUAL_UINT32(1, read_u32(hdr.data, 136));
+    TEST_ASSERT_EQUAL_UINT32(1, read_u32(hdr.data, 140));
 }
 
 /**
@@ -717,7 +731,7 @@ void test_index_has_correct_size_field()
 }
 
 /**
- * @brief Index entries have correct chunk ID (0x00dc).
+ * @brief Index entries have correct "00dc" FourCC chunk ID.
  */
 void test_index_entries_chunk_id()
 {
@@ -730,13 +744,13 @@ void test_index_entries_chunk_id()
 
     AviBytes idx = writer.index();
     // First entry starts at offset 8 (after idx1 header)
-    TEST_ASSERT_EQUAL_UINT32(0x00dc, read_u32(idx.data, 8));
+    assert_four_cc(idx, 8, "00dc");
 }
 
 /**
- * @brief Index entries have zero flags.
+ * @brief Index entries have AVIIF_KEYFRAME flag set.
  */
-void test_index_entries_zero_flags()
+void test_index_entries_keyframe_flag()
 {
     AviWriter writer;
     writer.open("/test.avi", 10, 640, 480);
@@ -746,7 +760,8 @@ void test_index_entries_zero_flags()
     writer.close();
 
     AviBytes idx = writer.index();
-    TEST_ASSERT_EQUAL_UINT32(0, read_u32(idx.data, 12));
+    // AVIIF_KEYFRAME = 0x10
+    TEST_ASSERT_EQUAL_UINT32(0x10, read_u32(idx.data, 12));
 }
 
 // ============================================================
@@ -772,7 +787,7 @@ void test_single_frame()
     // Verify header frame count patched
     AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(1, read_u32(hdr.data, 48));
-    TEST_ASSERT_EQUAL_UINT32(1, read_u32(hdr.data, 136));
+    TEST_ASSERT_EQUAL_UINT32(1, read_u32(hdr.data, 140));
 
     // Verify index has exactly one entry
     AviBytes idx = writer.index();
@@ -841,7 +856,7 @@ void test_different_fps()
 
     AviBytes hdr = writer.header();
     TEST_ASSERT_EQUAL_UINT32(1000000u / 15, read_u32(hdr.data, 32));  // ~66666
-    TEST_ASSERT_EQUAL_UINT32(15, read_u32(hdr.data, 128));
+    TEST_ASSERT_EQUAL_UINT32(15, read_u32(hdr.data, 132));
 }
 
 /**
@@ -904,7 +919,7 @@ void test_many_frames()
     // Verify frame count patched in header
     AviBytes hdr = writer.patched_header();
     TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, read_u32(hdr.data, 48));
-    TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, read_u32(hdr.data, 136));
+    TEST_ASSERT_EQUAL_UINT32(NUM_FRAMES, read_u32(hdr.data, 140));
 
     // Verify index has correct number of entries
     AviBytes idx = writer.index();
@@ -945,7 +960,7 @@ void test_multiple_open_close_cycles()
     TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());  // Counter reset
     TEST_ASSERT_TRUE(writer.is_open());
     TEST_ASSERT_EQUAL_STRING("/test2.avi", writer.path());
-    TEST_ASSERT_EQUAL_UINT32(15, read_u32(writer.header().data, 128));  // New FPS
+    TEST_ASSERT_EQUAL_UINT32(15, read_u32(writer.header().data, 132));  // New FPS
 
     uint8_t jpeg2[50];
     memset(jpeg2, 0xA2, sizeof(jpeg2));
@@ -1065,6 +1080,7 @@ int main()
     RUN_TEST(test_header_strf_size);
     RUN_TEST(test_header_strh_quality);
     RUN_TEST(test_header_strh_sample_size);
+    RUN_TEST(test_header_avih_flags);
 
     // write_frame() basic
     RUN_TEST(test_write_frame_before_open_returns_false);
@@ -1102,7 +1118,7 @@ int main()
     RUN_TEST(test_index_has_idx1_marker);
     RUN_TEST(test_index_has_correct_size_field);
     RUN_TEST(test_index_entries_chunk_id);
-    RUN_TEST(test_index_entries_zero_flags);
+    RUN_TEST(test_index_entries_keyframe_flag);
 
     // Edge cases
     RUN_TEST(test_single_frame);

@@ -22,7 +22,7 @@
  *         ├─ strh (video stream header: MJPEG, FPS)
  *         └─ strf (BITMAPINFOHEADER)
  *   └─ LIST movi
- *      └─ Frame chunks (0x00dc + size + JPEG data + padding)
+ *      └─ Frame chunks ("00dc" FourCC + size + JPEG data + padding)
  *   └─ idx1 (frame index: chunk ID, flags, offset, size per frame)
  * @endcode
  *
@@ -77,7 +77,7 @@ class AviWriter
         /**
          * @brief Formats a JPEG frame as an AVI chunk.
          *
-         * Builds a chunk with the 0x00dc marker, frame data size, JPEG
+         * Builds a chunk with the "00dc" FourCC, frame data size, JPEG
          * data, and DWORD-alignment padding. The formatted bytes are
          * available via last_frame_chunk() until the next write_frame() call.
          *
@@ -181,7 +181,7 @@ class AviWriter
         static constexpr size_t HDRL_LIST_SIZE_OFFSET = 16;
         static constexpr size_t AVIH_FRAME_COUNT_OFFSET = 48;
         static constexpr size_t STRL_LIST_SIZE_OFFSET = 92;
-        static constexpr size_t STRH_FRAME_COUNT_OFFSET = 136;
+        static constexpr size_t STRH_FRAME_COUNT_OFFSET = 140;
         static constexpr size_t MOVI_LIST_SIZE_OFFSET = 216;
 
         void build_header();
