@@ -59,9 +59,10 @@ void PeripheralManager::blink(millis_t on_ms, millis_t off_ms)
 }
 
 SdWriteResult PeripheralManager::write_file(const char* path, const uint8_t* data,
-                                             size_t len, millis_t timeout_ms)
+                                             size_t len, millis_t timeout_ms,
+                                             hal::FileOpenMode mode)
 {
-    m_sd.start_write(path, data, len);
+    m_sd.start_write(path, data, len, mode);
 
     millis_t start_time = m_time.now();
 

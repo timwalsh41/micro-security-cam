@@ -23,6 +23,7 @@ bool SdWriteBuffer::open(const char* path)
 
     // Discard any previously buffered data
     m_high_point = 0;
+    m_first_write = true;
     m_path = path;
     m_open = true;
     return true;
@@ -48,7 +49,8 @@ bool SdWriteBuffer::buffer_frame(const uint8_t* avi_chunk, size_t chunk_len)
         }
 
         // Write the oversized chunk directly to SD (bypassing the buffer)
-        SdWriteResult result = m_peripheral.write_file(m_path, avi_chunk, chunk_len, 5000);
+        SdWriteResult result = m_peripheral.write_file(m_path, avi_chunk, chunk_len, 5000,
+                                                        hal::FileOpenMode::APPEND);
         return (result == SdWriteResult::SUCCESS);
     }
 
@@ -124,8 +126,13 @@ bool SdWriteBuffer::flush_buffer()
         return true;
     }
 
-    SdWriteResult result = m_peripheral.write_file(m_path, m_buffer, m_high_point, 5000);
+    hal::FileOpenMode mode = m_first_write
+        ? hal::FileOpenMode::WRITE
+        : hal::FileOpenMode::APPEND;
+    SdWriteResult result = m_peripheral.write_file(
+        m_path, m_buffer, m_high_point, 5000, mode);
     m_high_point = 0;
+    m_first_write = false;
 
     return (result == SdWriteResult::SUCCESS);
 }

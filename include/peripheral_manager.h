@@ -98,7 +98,8 @@ class PeripheralManager
          * @return SdWriteResult indicating success or failure.
          */
         SdWriteResult write_file(const char* path, const uint8_t* data,
-                                  size_t len, hal::millis_t timeout_ms);
+                                  size_t len, hal::millis_t timeout_ms,
+                                  hal::FileOpenMode mode = hal::FileOpenMode::WRITE);
 
         /**
          * @brief Performs a synchronous SD card read with a timeout.

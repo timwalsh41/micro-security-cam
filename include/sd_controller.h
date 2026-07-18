@@ -105,8 +105,10 @@ class SdController
          * @param path The file path to write to.
          * @param data Pointer to the data buffer to write.
          * @param len  Number of bytes to write.
+         * @param mode The file open mode (WRITE to truncate, APPEND to preserve).
          */
-        void start_write(const char* path, const uint8_t* data, size_t len);
+        void start_write(const char* path, const uint8_t* data, size_t len,
+                         hal::FileOpenMode mode = hal::FileOpenMode::APPEND);
 
         /**
          * @brief Initiates a non-blocking read operation.
@@ -219,6 +221,9 @@ class SdController
 
         /** The current I/O operation type. */
         SdOperation m_operation{SdOperation::WRITE};
+
+        /** Open mode for the current write operation. */
+        hal::FileOpenMode m_open_mode{hal::FileOpenMode::APPEND};
 
         // Shared I/O parameters
         const char* m_io_path{nullptr};

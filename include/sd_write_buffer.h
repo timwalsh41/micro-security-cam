@@ -121,6 +121,7 @@ class SdWriteBuffer
         uint8_t m_buffer[RAMSIZE];
         size_t m_high_point{0};
         bool m_open{false};
+        bool m_first_write{true};
 };
 
 #endif // SD_WRITE_BUFFER_H

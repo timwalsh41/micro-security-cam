@@ -110,7 +110,6 @@ void setup()
 
     // Initialize video controller and start recording
     video_controller.init(config_service.config().video);
-    /*
     if (video_controller.start_recording())
     {
         logger.info("MAIN", "Video recording started");
@@ -119,7 +118,6 @@ void setup()
     {
         logger.warn("MAIN", "Video recording failed to start");
     }
-    */
 }
 
 void loop()

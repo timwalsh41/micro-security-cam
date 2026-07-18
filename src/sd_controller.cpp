@@ -63,7 +63,7 @@ peripherals::SdSignal SdController::tick()
                 }
             }
             else if (!m_sd_hal.open(m_io_path,
-                m_operation == SdOperation::READ ? hal::FileOpenMode::READ : hal::FileOpenMode::APPEND))
+                m_operation == SdOperation::READ ? hal::FileOpenMode::READ : m_open_mode))
             {
                 if (m_operation == SdOperation::WRITE)
                 {
@@ -125,13 +125,15 @@ peripherals::SdSignal SdController::tick()
     }
 }
 
-void SdController::start_write(const char* path, const uint8_t* data, size_t len)
+void SdController::start_write(const char* path, const uint8_t* data, size_t len,
+                               hal::FileOpenMode mode)
 {
     m_io_path = path;
     m_write_data = data;
     m_write_len = len;
     m_write_result = SdWriteResult::SUCCESS;
     m_operation = SdOperation::WRITE;
+    m_open_mode = mode;
 
     set_state(SdState::PRE_DEACTIVATE_CS);
 }
