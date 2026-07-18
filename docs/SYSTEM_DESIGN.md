@@ -399,12 +399,25 @@ participant "VideoController" as VC
 participant "CameraController" as CAM
 participant "AviWriter" as AVI
 participant "SdWriteBuffer" as BUF
+participant "PeripheralManager" as PM
+participant "SdController" as SDC
 database "SD Card" as SD
+
+== Recording Start ==
+
+main -> VC : start_recording()
+VC -> VC : open_clip()
+VC -> AVI : open(path, fps, w, h)
+note right: Generates 224-byte\nAVI header template
+VC -> BUF : open(path)
+note right: Resets m_high_point = 0\nm_first_write = true
+note right: m_frame_chunks.clear()\nm_frames_recorded = 0
+VC -> VC : state = RECORDING
+VC --> main : return true
 
 == Normal Frame Capture (non-blocking) ==
 
 main -> VC : tick()
-VC -> VC : state == RECORDING ?\nframe interval elapsed ?
 
 alt frame interval NOT elapsed
     VC --> main : return (idle tick)
@@ -413,37 +426,116 @@ else frame interval elapsed
     CAM --> VC : SUCCESS
     VC -> CAM : get_frame()
     CAM --> VC : jpeg data
-    VC -> AVI : write_frame()
+    VC -> AVI : write_frame(jpeg_data, len)
+    note right: Wraps JPEG as 0x00dc\nAVI chunk with padding
     AVI --> VC : last_frame_chunk()
-    VC -> VC : copy chunk to\nm_frame_chunks[]
+    VC -> VC : copy chunk to m_frame_chunks[]
     VC -> CAM : release_frame()
-    VC -> VC : m_frames_recorded++
-    VC -> VC : check clip limits
+    VC -> VC : m_frames_recorded++\nm_file_size += chunk.len
+    VC -> VC : check clip limits\n(duration, size, max_frames)
+    alt clip limit reached
+        VC -> VC : state = STOPPING
+    end
 end
 
 VC --> main
 
-== Clip Rotation (auto-rotate) ==
+== Clip Rotation (blocking flush to SD) ==
 
-note over VC : clip limit reached\n(state -> STOPPING)
+note over VC : clip limit reached\n(state = STOPPING)
 
 main -> VC : tick()
 VC -> VC : close_clip()
-VC -> AVI : close()\n(patch header + build index)
-AVI --> VC : patched header, index
+VC -> AVI : close()
+note right: Patches header with\nfinal RIFF size,\nframe count, movie size\n+ builds idx1 index
 
-loop each accumulated frame chunk
-    VC -> BUF : buffer_frame(chunk)
+== buffer patched header (224 B) ==
+
+VC -> BUF : buffer_frame(header, 224)
+note right: < RAMSIZE (8 KB)\n→ stays in RAM buffer\nm_first_write = true
+
+== first frame chunk (oversized > 8 KB) ==
+
+VC -> BUF : buffer_frame(chunk, ~89 KB)
+note right #FFAAAA: Exceeds RAMSIZE\npending header in buffer:\ntrigger flush_buffer()
+
+BUF -> BUF : flush_buffer()\nm_first_write = true → WRITE
+note right #AAFFAA: First write to file →\nhal::FileOpenMode::WRITE\n(truncates if exists)
+BUF -> PM : write_file(path, 224 B, 5000, WRITE)
+
+PM -> SDC : start_write(path, data, 224, WRITE)
+
+note right of SDC : Blocking tick() loop:\nSdController state machine\nPRE_DEACTIVATE_CS →\nACTIVATE_CS → IO_ACTIVE\n→ END_IO → POST_\nDEACTIVATE_CS → IDLE\n(CS timing protocol)
+
+loop until SDC.is_idle()
+    PM -> PM : tick() → SDC.tick()\n+ PinArbitrator.resolve()
+    PM -> SDC : tick()
 end
 
-VC -> BUF : buffer_frame(index)
-BUF -> SD : flush to SD
+SDC -> SD : open(path, FILE_WRITE)\nwrite(header, 224)\nclose()
+SD --> SDC
+SDC --> PM : is_idle()\nget_write_result()
+PM --> BUF : SUCCESS\nm_first_write = false
 
-note right of SD #FFDDDD : BLOCKING\n~1-2 s per clip\n(no frames captured)
+== first frame chunk (direct write) ==
 
-BUF -> BUF : reset()
-VC -> VC : open new clip\nstate -> RECORDING
+BUF -> PM : write_file(path, chunk, ~89 KB, 5000, APPEND)
+note right #AAFFAA: m_first_write = false →\nhal::FileOpenMode::APPEND\n(appends to existing data)
 
+PM -> SDC : start_write(path, data, len, APPEND)
+loop until SDC.is_idle()
+    PM -> SDC : tick()
+end
+SDC -> SD : open(path, FILE_APPEND)\nwrite(frame_chunk)\nclose()
+SD --> SDC
+SDC --> PM
+PM --> BUF : SUCCESS
+
+== remaining frame chunks 2..68 (all oversized) ==
+
+note over BUF : m_high_point = 0 →\nno flush needed\n→ direct write_file(APPEND)
+
+loop for each of frames 2..68
+    VC -> BUF : buffer_frame(chunk, ~89 KB)
+    BUF -> PM : write_file(path, chunk, ~89 KB, 5000, APPEND)
+    note right #AAFFAA: hal::FileOpenMode::APPEND
+
+    PM -> SDC : start_write(path, data, len, APPEND)
+    loop until SDC.is_idle()
+        PM -> SDC : tick()
+    end
+    SDC -> SD : open(FILE_APPEND)\nwrite(chunk) + close()
+    SD --> SDC
+    PM --> BUF : SUCCESS
+end
+
+== buffer + flush frame index ==
+
+VC -> BUF : buffer_frame(index, ~1088 B)
+note right: < RAMSIZE →\nstays in RAM buffer
+
+BUF -> BUF : flush() → flush_buffer()
+BUF -> PM : write_file(path, index, ~1088, 5000, APPEND)
+note right #AAFFAA: hal::FileOpenMode::APPEND
+
+PM -> SDC : start_write() + tick() cycle
+SDC -> SD : open(FILE_APPEND)\nwrite(index) + close()
+
+note right of SD #FFDDDD : BLOCKING ~17 s per clip\n(70 SD transactions:\n1× WRITE + 69× APPEND\nat ~250 ms each)
+
+SD --> SDC
+PM --> BUF : SUCCESS
+
+== auto-rotate: open next clip ==
+
+VC -> BUF : reset()
+note right: m_first_write reset\nfor next clip
+
+VC -> VC : open_clip() [auto-rotate]
+VC -> AVI : open(new path, fps, w, h)
+VC -> BUF : open(new path)
+note right: m_first_write = true
+VC -> VC : state = RECORDING
 VC --> main
 
 @enduml
@@ -451,9 +543,13 @@ VC --> main
 
 **Recording is blocked during clip close.** The `close_clip()` method runs synchronously inside `tick()`, buffering the patched header, all accumulated frame chunks, and the index to `SdWriteBuffer`, then flushing everything to the SD card in one shot. No camera frames are captured during this window.
 
-The blocking duration is bounded by `CLIP_BUFFER_RAM_SIZE` (4 MB). At the default VGA / 10 fps / quality 10 configuration, each frame averages ~60 KB, yielding ~68 frames per clip (~6.8 s). Flushing ~4 MB to a typical Class 10 SD card (2–5 MB/s) takes approximately **1–2 seconds** per clip boundary.
+**Write mode protocol:** `SdWriteBuffer` tracks a `m_first_write` flag. On the first call to `flush_buffer()` after `open()`, the flag is `true` and `hal::FileOpenMode::WRITE` is used (truncates/overwrites the file). All subsequent writes use `hal::FileOpenMode::APPEND` to append data to the existing file. This ensures a freshly-written AVI file starts with the `RIFF` header at byte offset 0, even if a file from a previous run with the same name exists on the SD card.
 
-This means there is a brief recording gap at each clip transition. For applications requiring gapless recording, future work could adopt a double-buffering strategy (write the next clip's frames while the current clip flushes) or stream frames directly to SD during recording.
+**Oversized chunk bypass:** Frame chunks (~89 KB at VGA) exceed the `SdWriteBuffer::RAMSIZE` (8 KB). For each such chunk, `buffer_frame()` flushes any pending RAM data first, then writes the large chunk directly to SD via `PeripheralManager::write_file()`, bypassing the ring buffer. This means each frame triggers its own SD transaction rather than batching. At ~68 frames per clip (VGA / quality 10), this results in approximately 70 SD transactions per clip close (1× WRITE for the patched header, 68× APPEND for frame chunks, 1× APPEND for the index).
+
+The blocking duration is bounded by `CLIP_BUFFER_RAM_SIZE` (4 MB) and the per-transaction overhead. At the default VGA / 10 fps / quality 10 configuration, each frame averages ~60 KB, yielding ~68 frames per clip (~6.8 s). Each SD transaction takes ~200–300 ms (open/write/close + CS timing protocol), so closing a clip takes approximately **15–20 seconds**. This is a known limitation of the buffer-all-at-close strategy with oversized chunks.
+
+For applications requiring gapless recording, future work could adopt a double-buffering strategy (write the next clip's frames while the current clip flushes) or stream frames directly to SD during recording.
 
 ### Testability
 
