@@ -3,12 +3,19 @@
 #include "hal/camera_hal_impl.h"
 #include "hal/serial_log_backend.h"
 #include "hal/sd_card_hal_impl.h"
+#include "hal/wifi_hal_impl.h"
+#include "hal/web_server_hal_impl.h"
 #include "camera_controller.h"
 #include "video_controller.h"
 #include "time_service.h"
 #include "logging_service.h"
 #include "peripheral_manager.h"
 #include "config_service.h"
+#include "wifi_service.h"
+#include "web_server_service.h"
+#include "command_handler.h"
+#include "web_command_transport.h"
+#include "system_orchestrator.h"
 
 using hal::millis_t;
 
@@ -19,9 +26,7 @@ namespace constants
     constexpr millis_t PERIPHERAL_MANAGER_TICK_TIME_MS = 5;
 }
 
-millis_t last_capture_time_ms = 0; // Last image time
-uint32_t image_count = 1;          // File counter
-
+// --- Core services (always present) ---
 RealTimeService real_time;
 hal::SerialLogBackend log_backend;
 LoggingService logger{log_backend, real_time};
@@ -32,7 +37,21 @@ hal::CameraHalImpl camera_hal;
 CameraController camera_ctrl{camera_hal};
 VideoController video_controller{camera_ctrl, peripheral_manager, real_time, logger};
 PlatformInitializer platform_init;
+
+// --- Slice 1: WiFi, Web, Commands, Orchestrator ---
+hal::WifiHalImpl wifi_hal_impl;
+hal::WebServerHalImpl web_server_hal_impl;
+WifiService wifi_service{wifi_hal_impl, logger};
+CommandHandler command_handler{logger};
+WebCommandTransport web_transport{web_server_hal_impl, command_handler};
+WebServerService web_server_service{web_server_hal_impl, logger};
+SystemOrchestrator system_orchestrator{
+    video_controller, camera_ctrl, command_handler,
+    real_time, config_service, logger};
+
 millis_t last_peripheral_tick_time_ms = 0;
+millis_t last_capture_time_ms = 0;
+uint32_t image_count = 1;
 millis_t camera_capture_interval_ms = constants::DEFAULT_CAMERA_CAPTURE_INTERVAL_MS;
 
 void take_photo(uint32_t image_count)
@@ -58,7 +77,7 @@ void setup()
 {
     platform_init.init();
 
-    // add delay for PlatformIO terminal to connect
+    // Add delay for PlatformIO terminal to connect
     real_time.delay_ms(5000);
 
     logger.info("MAIN", "Starting initialization");
@@ -76,14 +95,7 @@ void setup()
     }
     peripheral_manager.turn_led_off();
 
-    hal::CameraInitResult cam_result = camera_ctrl.init();
-    if (cam_result != hal::CameraInitResult::SUCCESS)
-    {
-        logger.error("MAIN", "Camera initialization failed");
-        return;
-    }
-    logger.info("MAIN", "Camera initialized");
-
+    // --- Initialize SD card ---
     if (peripheral_manager.init_sd_card() != hal::SdInitResult::SUCCESS)
     {
         logger.error("MAIN", "SD initialization failed");
@@ -91,7 +103,7 @@ void setup()
     }
     logger.info("MAIN", "SD initialized");
 
-    // Load config from SD card
+    // --- Load config FIRST (needs SD card) ---
     uint8_t config_buf[ConfigService::CONFIG_BUFFER_SIZE];
     size_t bytes_read = 0;
     peripheral_manager.read_file(ConfigService::DEFAULT_CONFIG_PATH,
@@ -101,23 +113,47 @@ void setup()
                 bytes_read, ConfigService::CONFIG_BUFFER_SIZE);
     config_service.load(config_buf, bytes_read);
 
-    // Apply config values
+    // --- Initialize camera with config-driven settings ---
+    CameraImageConfig cam_image_config;
+    cam_image_config.resolution = config_service.config().camera.resolution;
+    cam_image_config.jpeg_quality = config_service.config().camera.jpeg_quality;
+    ResolvedCameraParams cam_params = build_camera_config(
+        cam_image_config, camera_hal.has_psram(), logger);
+    hal::CameraInitResult cam_result = camera_ctrl.init(cam_params);
+    if (cam_result != hal::CameraInitResult::SUCCESS)
+    {
+        logger.error("MAIN", "Camera initialization failed");
+        return;
+    }
+    logger.info("MAIN", "Camera initialized (%ux%u)",
+                cam_params.width, cam_params.height);
+
+    // --- Initialize video controller with validated dimensions ---
+    video_controller.init(config_service.config().video,
+                          cam_params.width, cam_params.height);
+
+    // --- Apply capture interval from config ---
     if (config_service.config().camera.capture_interval_ms > 0)
     {
         camera_capture_interval_ms = config_service.config().camera.capture_interval_ms;
         logger.info("MAIN", "Capture interval: %u ms", camera_capture_interval_ms);
     }
 
-    // Initialize video controller and start recording
-    video_controller.init(config_service.config().video);
-    if (video_controller.start_recording())
-    {
-        logger.info("MAIN", "Video recording started");
-    }
-    else
-    {
-        logger.warn("MAIN", "Video recording failed to start");
-    }
+    // --- Initialize WiFi ---
+    wifi_service.init(config_service.config().wifi,
+                      config_service.config().ap,
+                      30);
+
+    // --- Initialize web server ---
+    web_server_service.init(config_service.config().web);
+
+    // --- Initialize orchestrator (registers commands) ---
+    system_orchestrator.init();
+
+    // --- Register web command routes (after all commands are registered) ---
+    web_transport.register_routes(config_service.config().web.password);
+
+    logger.info("MAIN", "Initialization complete");
 }
 
 void loop()
@@ -135,6 +171,15 @@ void loop()
         // Advance video recording state machine
         video_controller.tick();
 
+        // Poll command transports (web, serial)
+        command_handler.tick();
+
+        // Process HTTP requests
+        web_server_service.handle_client();
+
+        // Orchestrator tick (schedule evaluation, mode transitions)
+        system_orchestrator.tick();
+
         // LED feedback: video state takes precedence over photo capture
         switch (video_controller.state())
         {
@@ -147,12 +192,6 @@ void loop()
             case RecordingState::IDLE:
                 // LED controlled by other logic below
                 break;
-        }
-
-        if (now > 40000 && video_controller.is_recording())
-        {
-            video_controller.stop_recording();
-            logger.info("MAIN", "Stopped recording");
         }
 
         if (TimeService::elapsed_ms(last_capture_time_ms, now) >= camera_capture_interval_ms)

@@ -99,12 +99,18 @@ jpeg_quality=10
 | `[ap]` | `password` | string | `""` | Access point password |
 | `[web]` | `port` | integer | `80` | HTTP server port (1–65535) |
 | `[web]` | `password` | string | `""` | Web interface password |
+| `[web]` | `max_streams` | integer | `4` | Max concurrent streams (1–4) |
 | `[camera]` | `capture_interval_ms` | integer | `20000` | Time between captures in ms |
+| `[camera]` | `resolution` | string | `VGA` | Still photo resolution (see table below) |
+| `[camera]` | `jpeg_quality` | integer | `10` | Still photo JPEG quality (0–63, lower = better) |
+| `[camera]` | `grab_mode` | hex | `0xFF` | Camera grab mode (0x00 = when empty, 0xFF = latest) |
 | `[video]` | `fps` | integer | `10` | Video frame rate (1–30) |
 | `[video]` | `resolution` | string | `VGA` | Frame resolution (see table below) |
 | `[video]` | `clip_duration_s` | integer | `60` | Max clip length in seconds (0 = no limit) |
 | `[video]` | `max_file_size_mb` | integer | `0` | Max clip file size in MB (0 = no limit) |
 | `[video]` | `jpeg_quality` | integer | `10` | JPEG quality (0–63, lower = better) |
+| `[video]` | `audio_enabled` | bool | `false` | Enable audio recording |
+| `[video]` | `mic_gain` | integer | `2` | Microphone gain (1–8) |
 
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
 
@@ -153,6 +159,30 @@ Follow steps 4–7 above (skip the struct and enum additions).
 | `UXGA` | `FRAMESIZE_UXGA` | 1600×1200 |
 
 ---
+
+## Web Interface
+
+When WiFi is configured, the camera provides a web interface for status and control.
+
+### Connection
+
+1. The camera first attempts to connect to the configured STA (station) WiFi network.
+2. If STA connection fails within 30 seconds, it falls back to AP (access point) mode with the configured AP SSID/password.
+3. The IP address is logged at startup and available via the serial monitor.
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/` | No | Built-in HTML status page |
+| GET | `/status` | Yes | JSON status (recording state, frame count, file size) |
+| GET | `/control?cmd=start` | Yes | Start video recording |
+| GET | `/control?cmd=stop` | Yes | Stop video recording |
+| GET | `/control?cmd=photo` | Yes | Capture a still photo |
+
+### Authentication
+
+If a web password is configured in `config.ini`, all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled.
 
 ## Debugging
 

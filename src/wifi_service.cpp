@@ -1,0 +1,76 @@
+#include "wifi_service.h"
+#include "hal/time_hal.h"
+#include <cstdio>
+
+/**
+ * @file wifi_service.cpp
+ * @brief WiFi lifecycle service implementation with STA+AP fallback.
+ */
+
+/**
+ * @brief Polling interval in milliseconds during STA connection wait.
+ */
+static constexpr hal::millis_t POLL_INTERVAL_MS = 1000;
+
+WifiService::WifiService(hal::WifiHal& hal, LoggingService& log)
+    : m_hal(hal)
+    , m_log(log)
+{
+}
+
+void WifiService::init(const ConfigData::WifiConfig& sta,
+                       const ConfigData::ApConfig& ap,
+                       uint16_t timeout_secs)
+{
+    m_log.info("Wifi", "Initializing WiFi...");
+
+    // Set WiFi mode to STA (station) only initially
+    m_hal.mode(true, false);
+
+    // Attempt STA connection
+    m_log.info("Wifi", "Connecting to STA network: %s", sta.ssid);
+    m_hal.begin_sta(sta.ssid, sta.password);
+
+    // Poll until connected or timeout
+    uint16_t elapsed_secs = 0;
+    while (elapsed_secs < timeout_secs)
+    {
+        hal::delay_ms(POLL_INTERVAL_MS);
+
+        if (m_hal.status() == hal::WifiStatus::CONNECTED)
+        {
+            m_connected = true;
+            m_log.info("Wifi", "STA connected successfully. IP: %s",
+                       m_hal.local_ip());
+            return;
+        }
+
+        elapsed_secs++;
+        m_log.debug("Wifi", "Waiting for STA connection... (%u/%u)",
+                     elapsed_secs, timeout_secs);
+    }
+
+    // STA connection timed out, fall back to AP mode
+    m_log.warn("Wifi", "STA connection timed out after %u seconds, "
+               "falling back to AP mode", timeout_secs);
+
+    // Switch to AP mode
+    m_hal.mode(false, true);
+    m_hal.begin_ap(ap.ssid, ap.password);
+
+    m_log.info("Wifi", "AP started. SSID: %s, IP: %s",
+               ap.ssid, m_hal.local_ip());
+
+    // Note: In AP mode, m_connected remains false as we are not
+    // connected to a network as a station.
+}
+
+bool WifiService::is_connected() const
+{
+    return m_connected;
+}
+
+const char* WifiService::local_ip() const
+{
+    return m_hal.local_ip();
+}

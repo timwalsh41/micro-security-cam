@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "video_controller.h"
+#include "camera_controller.h"
 #include "mock_camera_hal.h"
 #include "mock_sd_card_hal.h"
 #include "mock_log_backend.h"
@@ -54,7 +55,7 @@ struct TestFixture
         config.clip_duration_s = TEST_CLIP_DURATION_S;
         config.max_file_size_mb = 0;
         config.jpeg_quality = 10;
-        video.init(config);
+        video.init(config, TEST_WIDTH, TEST_HEIGHT);
     }
 
     /**
@@ -293,7 +294,7 @@ void test_clip_closes_at_max_frames()
     config.clip_duration_s = 0;
     config.max_file_size_mb = 0;
     config.jpeg_quality = 10;
-    f.video.init(config);
+    f.video.init(config, TEST_WIDTH, TEST_HEIGHT);
 
     set_mock_millis(1000);
     f.video.start_recording();
@@ -335,7 +336,7 @@ void test_clip_closes_at_file_size_limit()
     config.clip_duration_s = 0;   // No duration limit
     config.max_file_size_mb = 1;  // 1 MB limit
     config.jpeg_quality = 10;
-    f.video.init(config);
+    f.video.init(config, TEST_WIDTH, TEST_HEIGHT);
 
     set_mock_millis(1000);
     f.video.start_recording();
@@ -688,55 +689,88 @@ void test_rapid_ticks_stability()
 }
 
 // ============================================================
-// Map resolution
+// build_camera_config resolution mapping
 // ============================================================
 
+MockLogBackend cam_log_backend;
+RealTimeService cam_time;
+LoggingService cam_logger{cam_log_backend, cam_time};
+
 /**
- * @brief map_resolution returns correct dimensions for known names.
+ * @brief build_camera_config returns correct dimensions for known names.
  */
-void test_map_resolution_known_names()
+void test_build_camera_config_known_names()
 {
-    auto vga = VideoController::map_resolution("VGA");
+    CameraImageConfig user_config;
+    user_config.jpeg_quality = 10;
+
+    user_config.resolution = "VGA";
+    auto vga = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(640, vga.width);
     TEST_ASSERT_EQUAL_UINT16(480, vga.height);
 
-    auto hd = VideoController::map_resolution("HD");
+    user_config.resolution = "HD";
+    auto hd = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(1280, hd.width);
     TEST_ASSERT_EQUAL_UINT16(720, hd.height);
 
-    auto qvga = VideoController::map_resolution("QVGA");
+    user_config.resolution = "QVGA";
+    auto qvga = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(320, qvga.width);
     TEST_ASSERT_EQUAL_UINT16(240, qvga.height);
 
-    auto qqvga = VideoController::map_resolution("QQVGA");
+    user_config.resolution = "QQVGA";
+    auto qqvga = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(160, qqvga.width);
     TEST_ASSERT_EQUAL_UINT16(120, qqvga.height);
 
-    auto svga = VideoController::map_resolution("SVGA");
+    user_config.resolution = "SVGA";
+    auto svga = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(800, svga.width);
     TEST_ASSERT_EQUAL_UINT16(600, svga.height);
 
-    auto xga = VideoController::map_resolution("XGA");
+    user_config.resolution = "XGA";
+    auto xga = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(1024, xga.width);
     TEST_ASSERT_EQUAL_UINT16(768, xga.height);
 
-    auto uxga = VideoController::map_resolution("UXGA");
+    user_config.resolution = "UXGA";
+    auto uxga = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(1600, uxga.width);
     TEST_ASSERT_EQUAL_UINT16(1200, uxga.height);
 }
 
 /**
- * @brief map_resolution returns VGA for unknown names.
+ * @brief build_camera_config returns VGA for unknown names.
  */
-void test_map_resolution_unknown_defaults_to_vga()
+void test_build_camera_config_unknown_defaults_to_vga()
 {
-    auto res = VideoController::map_resolution("UNKNOWN");
+    CameraImageConfig user_config;
+    user_config.resolution = "UNKNOWN";
+    user_config.jpeg_quality = 10;
+    auto res = build_camera_config(user_config, true, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(640, res.width);
     TEST_ASSERT_EQUAL_UINT16(480, res.height);
+}
 
-    auto res_null = VideoController::map_resolution(nullptr);
-    TEST_ASSERT_EQUAL_UINT16(640, res_null.width);
-    TEST_ASSERT_EQUAL_UINT16(480, res_null.height);
+/**
+ * @brief build_camera_config caps resolution without PSRAM.
+ */
+void test_build_camera_config_psram_guard()
+{
+    CameraImageConfig user_config;
+    user_config.resolution = "UXGA";
+    user_config.jpeg_quality = 10;
+
+    // Without PSRAM, UXGA should be capped to SVGA
+    auto no_psram = build_camera_config(user_config, false, cam_logger);
+    TEST_ASSERT_EQUAL_UINT16(800, no_psram.width);
+    TEST_ASSERT_EQUAL_UINT16(600, no_psram.height);
+
+    // With PSRAM, UXGA should remain
+    auto with_psram = build_camera_config(user_config, true, cam_logger);
+    TEST_ASSERT_EQUAL_UINT16(1600, with_psram.width);
+    TEST_ASSERT_EQUAL_UINT16(1200, with_psram.height);
 }
 
 // ============================================================
@@ -793,9 +827,10 @@ int main()
     RUN_TEST(test_clip_close_with_sd_write_failure);
     RUN_TEST(test_frame_capture_failure_during_recording);
 
-    // Resolution mapping
-    RUN_TEST(test_map_resolution_known_names);
-    RUN_TEST(test_map_resolution_unknown_defaults_to_vga);
+    // build_camera_config resolution mapping
+    RUN_TEST(test_build_camera_config_known_names);
+    RUN_TEST(test_build_camera_config_unknown_defaults_to_vga);
+    RUN_TEST(test_build_camera_config_psram_guard);
 
     return UNITY_END();
 }

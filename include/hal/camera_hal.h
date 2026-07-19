@@ -54,6 +54,9 @@ struct CameraConfig
     /** Frame size enum value when PSRAM is not available (FRAMESIZE_SVGA = 9). */
     uint8_t frame_size_no_psram{9};
 
+    /** Frame size enum value when PSRAM is available (FRAMESIZE_UXGA = 5). */
+    uint8_t frame_size_with_psram{5};
+
     /** Number of frame buffers when PSRAM is present. */
     uint8_t fb_count_with_psram{2};
 

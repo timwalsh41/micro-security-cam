@@ -79,12 +79,15 @@ class VideoController
          * @brief Initializes the video controller with the given configuration.
          *
          * Must be called before start_recording(). Stores the config and
-         * logs video settings at INFO level.
+         * validated dimensions, logs video settings at INFO level.
          *
          * @param config Video recording configuration from ConfigService.
+         * @param width  Validated pixel width from build_camera_config().
+         * @param height Validated pixel height from build_camera_config().
          * @return true if initialization succeeded.
          */
-        bool init(const ConfigData::VideoConfig& config);
+        bool init(const ConfigData::VideoConfig& config,
+                  uint16_t width, uint16_t height);
 
         /**
          * @brief Advances the recording state machine.
@@ -145,27 +148,10 @@ class VideoController
         uint32_t file_size() const;
 
         /**
-         * @brief Resolution dimensions mapped from a config string.
-         */
-        struct Resolution
-        {
-            uint16_t width;
-            uint16_t height;
-        };
-
-        /**
-         * @brief Maps a resolution string (e.g. "VGA") to width/height.
-         *
-         * @param name Resolution name from VideoConfig.
-         * @return Resolution struct with width and height in pixels.
-         */
-        static Resolution map_resolution(const char* name);
-
-        /**
          * @brief Estimated average bytes per frame for the current config.
          *
-         * Computed from the active resolution and JPEG quality settings.
-         * Used by max_frames() as a RAM-safety backstop.
+         * Computed from the stored dimensions (set by init()) and JPEG
+         * quality settings. Used by max_frames() as a RAM-safety backstop.
          *
          * @return Estimated bytes per frame.
          */
@@ -248,6 +234,8 @@ class VideoController
         uint32_t m_frames_recorded{0};
         uint32_t m_file_size{0};
         ConfigData::VideoConfig m_config{};
+        uint16_t m_width{640};    ///< Validated capture width in pixels
+        uint16_t m_height{480};   ///< Validated capture height in pixels
 
         // Generated file path for the current clip
         char m_file_path[64]{};

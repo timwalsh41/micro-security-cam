@@ -22,43 +22,22 @@ VideoController::VideoController(CameraController& cam,
 // Initialization
 // ============================================================
 
-bool VideoController::init(const ConfigData::VideoConfig& config)
+bool VideoController::init(const ConfigData::VideoConfig& config,
+                           uint16_t width, uint16_t height)
 {
     m_config = config;
+    m_width = width;
+    m_height = height;
 
-    // Compute frame interval from FPS (fps >= 1 guaranteed by IniParser)
     m_frame_interval_ms = (m_config.fps > 0)
                               ? (1000u / m_config.fps)
                               : 0;
 
-    m_log.info("VIDEO", "Init: %ufps %s, clip %us, quality %u",
-               m_config.fps, m_config.resolution,
+    m_log.info("VIDEO", "Init: %ufps %ux%u, clip %us, quality %u",
+               m_config.fps, m_width, m_height,
                m_config.clip_duration_s, m_config.jpeg_quality);
 
     return true;
-}
-
-// ============================================================
-// Resolution mapping
-// ============================================================
-
-VideoController::Resolution VideoController::map_resolution(const char* name)
-{
-    if (!name)
-    {
-        return {640, 480};  // VGA default
-    }
-
-    // String comparison using case-insensitive matching
-    if (strcasecmp(name, "QQVGA") == 0) return {160, 120};
-    if (strcasecmp(name, "QVGA") == 0)  return {320, 240};
-    if (strcasecmp(name, "VGA") == 0)   return {640, 480};
-    if (strcasecmp(name, "SVGA") == 0)  return {800, 600};
-    if (strcasecmp(name, "XGA") == 0)   return {1024, 768};
-    if (strcasecmp(name, "HD") == 0)    return {1280, 720};
-    if (strcasecmp(name, "UXGA") == 0)  return {1600, 1200};
-
-    return {640, 480};  // VGA fallback for unknown names
 }
 
 // ============================================================
@@ -67,8 +46,7 @@ VideoController::Resolution VideoController::map_resolution(const char* name)
 
 uint32_t VideoController::avg_bytes_per_frame() const
 {
-    Resolution res = map_resolution(m_config.resolution);
-    uint32_t pixels = static_cast<uint32_t>(res.width) * res.height;
+    uint32_t pixels = static_cast<uint32_t>(m_width) * m_height;
 
     // Base bytes-per-pixel decreases with resolution (JPEG spatial redundancy)
     float bpp_base;
@@ -257,8 +235,6 @@ void VideoController::open_clip()
     uint32_t month = (day_of_year / 30) + 1;
     uint32_t day = (day_of_year % 30) + 1;
 
-    Resolution res = map_resolution(m_config.resolution);
-
     // Build directory path: /YYYYMMDD
     char dir_path[16];
     snprintf(dir_path, sizeof(dir_path), "/%04u%02u%02u",
@@ -272,10 +248,10 @@ void VideoController::open_clip()
              "/%04u%02u%02u/%04u%02u%02u_%02u%02u%02u_%ux%u_%ufps.avi",
              year, month, day,
              year, month, day, hh, mm, ss,
-             res.width, res.height, m_config.fps);
+             m_width, m_height, m_config.fps);
 
     // Open AVI writer
-    m_avi_writer.open(m_file_path, m_config.fps, res.width, res.height);
+    m_avi_writer.open(m_file_path, m_config.fps, m_width, m_height);
 
     // Open SD write buffer
     m_sd_buffer.open(m_file_path);

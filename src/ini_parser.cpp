@@ -214,6 +214,20 @@ ConfigData IniParser::parse(const char* content, size_t length)
                                    ? val_len
                                    : CONFIG_FIELD_MAX_LENGTH - 1);
                     }
+                    else if (key_len == 11 && strncasecmp(key_start, "max_streams", 11) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        if (parsed >= 1 && parsed <= 4)
+                        {
+                            config.web.max_streams = static_cast<uint8_t>(parsed);
+                        }
+                    }
                     break;
                 }
                 case Section::CAMERA:
@@ -229,6 +243,42 @@ ConfigData IniParser::parse(const char* content, size_t length)
                         val_buf[copy_len] = '\0';
                         config.camera.capture_interval_ms =
                             static_cast<uint32_t>(strtoul(val_buf, nullptr, 10));
+                    }
+                    else if (key_len == 10 &&
+                             strncasecmp(key_start, "resolution", 10) == 0)
+                    {
+                        size_t copy_len = val_len < CONFIG_FIELD_MAX_LENGTH - 1
+                                              ? val_len
+                                              : CONFIG_FIELD_MAX_LENGTH - 1;
+                        memcpy(config.camera.resolution, val_start, copy_len);
+                        config.camera.resolution[copy_len] = '\0';
+                    }
+                    else if (key_len == 12 &&
+                             strncasecmp(key_start, "jpeg_quality", 12) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        if (parsed <= 63)
+                        {
+                            config.camera.jpeg_quality = static_cast<uint8_t>(parsed);
+                        }
+                    }
+                    else if (key_len == 9 &&
+                             strncasecmp(key_start, "grab_mode", 9) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        uint32_t parsed = strtoul(val_buf, nullptr, 16);
+                        config.camera.grab_mode = static_cast<uint8_t>(parsed);
                     }
                     break;
                 }
@@ -297,6 +347,33 @@ ConfigData IniParser::parse(const char* content, size_t length)
                             config.video.jpeg_quality = static_cast<uint8_t>(parsed);
                         }
                     }
+                    else if (key_len == 13 &&
+                             strncasecmp(key_start, "audio_enabled", 13) == 0)
+                    {
+                        if (val_len == 4 && strncasecmp(val_start, "true", 4) == 0)
+                        {
+                            config.video.audio_enabled = true;
+                        }
+                        else if (val_len == 5 && strncasecmp(val_start, "false", 5) == 0)
+                        {
+                            config.video.audio_enabled = false;
+                        }
+                    }
+                    else if (key_len == 8 &&
+                             strncasecmp(key_start, "mic_gain", 8) == 0)
+                    {
+                        char val_buf[16];
+                        size_t copy_len = val_len < sizeof(val_buf) - 1
+                                              ? val_len
+                                              : sizeof(val_buf) - 1;
+                        memcpy(val_buf, val_start, copy_len);
+                        val_buf[copy_len] = '\0';
+                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        if (parsed >= 1 && parsed <= 8)
+                        {
+                            config.video.mic_gain = static_cast<uint8_t>(parsed);
+                        }
+                    }
                     break;
                 }
                 case Section::NONE:
@@ -355,11 +432,26 @@ size_t IniParser::serialize(const ConfigData& data,
     write("password=");
     write(data.web.password);
     write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.web.max_streams);
+    write("max_streams=");
+    write(num_buf);
+    write("\n");
 
     // [camera]
     write("[camera]\n");
     snprintf(num_buf, sizeof(num_buf), "%u", data.camera.capture_interval_ms);
     write("capture_interval_ms=");
+    write(num_buf);
+    write("\n");
+    write("resolution=");
+    write(data.camera.resolution);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.camera.jpeg_quality);
+    write("jpeg_quality=");
+    write(num_buf);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%02x", data.camera.grab_mode);
+    write("grab_mode=");
     write(num_buf);
     write("\n");
 
@@ -382,6 +474,13 @@ size_t IniParser::serialize(const ConfigData& data,
     write("\n");
     snprintf(num_buf, sizeof(num_buf), "%u", data.video.jpeg_quality);
     write("jpeg_quality=");
+    write(num_buf);
+    write("\n");
+    write("audio_enabled=");
+    write(data.video.audio_enabled ? "true" : "false");
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.video.mic_gain);
+    write("mic_gain=");
     write(num_buf);
     write("\n");
 

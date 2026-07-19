@@ -28,7 +28,7 @@ CameraInitResult CameraHalImpl::init(const CameraConfig& cam_config)
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
-    config.frame_size = FRAMESIZE_UXGA;
+    config.frame_size = static_cast<framesize_t>(cam_config.frame_size_with_psram);
     config.pixel_format = PIXFORMAT_JPEG;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = cam_config.jpeg_quality_no_psram;

@@ -65,6 +65,7 @@ struct ConfigData
     {
         uint16_t port{80};
         char password[CONFIG_FIELD_MAX_LENGTH]{};
+        uint8_t max_streams{4};
     };
 
     /**
@@ -73,6 +74,9 @@ struct ConfigData
     struct CameraConfig
     {
         uint32_t capture_interval_ms{20000};
+        char resolution[CONFIG_FIELD_MAX_LENGTH]{"VGA"};
+        uint8_t jpeg_quality{10};
+        uint8_t grab_mode{0xFF};
     };
 
     /**
@@ -89,6 +93,8 @@ struct ConfigData
         uint16_t clip_duration_s{60};
         uint16_t max_file_size_mb{0};
         uint8_t jpeg_quality{10};
+        bool audio_enabled{false};
+        uint8_t mic_gain{2};
     };
 
     WifiConfig wifi;

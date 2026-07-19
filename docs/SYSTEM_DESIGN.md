@@ -14,7 +14,16 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                  Application  (main.cpp)                    │
 │  setup() / loop() — wires components, runs the              │
-│  photo capture cycle and video recording state machine      │
+│  photo capture cycle, video recording state machine,        │
+│  and web server request handling                            │
+└─────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Orchestration / Command Layer                  │
+│  SystemOrchestrator  (top-level coordinator)                │
+│  CommandHandler      (protocol-agnostic dispatch)           │
+│  WebCommandTransport (HTTP → CommandHandler bridge)         │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -24,6 +33,7 @@ The design follows a layered architecture that separates hardware access from ap
 │  SdController        AviWriter         PinArbitrator        │
 │  SdWriteBuffer       TimeService       LoggingService       │
 │  ConfigService       IniParser                              │
+│  WifiService         WebServerService                       │
 │  PeripheralManager  (facade / composition root)             │
 └─────────────────────────────────────────────────────────────┘
                          │
@@ -31,13 +41,14 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                Hardware Abstraction Layer (HAL)             │
 │  CameraHal       SdCardHal      LogBackend                  │
-│  GpioHal         TimeHal                                    │
+│  GpioHal         TimeHal        WifiHal                     │
+│  WebServerHal                                               │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Arduino Libraries & ESP32 Hardware             │
-│  esp_camera   SD_MMC.h   GPIO   Serial                      │
+│  esp_camera   SD_MMC.h   GPIO   Serial   WiFi   WebServer   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,6 +86,51 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
 | `SerialLogBackend` | Arduino `Serial.write()` — writes formatted log lines only. `Serial.begin()` called in constructor. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
+
+### WifiHal
+
+**File**: `include/hal/wifi_hal.h`
+
+Abstract interface for WiFi operations. Provides STA/AP mode selection, connection management, and status queries.
+
+| Method | Purpose |
+|--------|---------|
+| `mode(sta, ap)` | Set WiFi mode (station, access point, or both) |
+| `begin_sta(ssid, password)` | Connect to a WiFi network as a station |
+| `begin_ap(ssid, password)` | Start an access point |
+| `status()` | Return connection status as a `WifiStatus` enum (`CONNECTED`, `DISCONNECTED`, etc.) |
+| `local_ip()` | Return the assigned IP address |
+| `disconnect()` | Disconnect from the network |
+| `is_connected()` | Return whether the device is connected |
+
+**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library.
+
+**Mock**: `MockWifiHal` (`test/mocks/native_mocks/mock_wifi_hal.h`) provides configurable return values (`begin_sta_result`, `status_result` of type `WifiStatus`, `connected_result`, `ip_buffer`) and call tracking (`begin_sta_call_count`, `begin_ap_call_count`, etc.).
+
+### WebServerHal
+
+**File**: `include/hal/web_server_hal.h`
+
+Abstract interface for HTTP server operations. Provides route registration, request inspection, and response sending.
+
+| Method | Purpose |
+|--------|---------|
+| `begin(port)` | Start the HTTP server on the given port |
+| `on(uri, method, handler)` | Register a route handler (plain function pointer) |
+| `handle_client()` | Process pending HTTP requests |
+| `stop()` | Stop the server |
+| `uri()` | Get the current request URI |
+| `method()` | Get the current request HTTP method |
+| `arg(name)` | Get a query parameter value |
+| `header(name)` | Get a request header value |
+| `auth_header()` | Get the `Authorization` header |
+| `send(code, type, content)` | Send a complete HTTP response |
+| `send_header(code, type, length)` | Send a response header (chunked mode) |
+| `send_content(data, len)` | Send response body content |
+
+**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps the Arduino `WebServer` library. Uses a raw pointer (`new`/`delete`) for the server instance.
+
+**Mock**: `MockWebServerHal` (`test/mocks/native_mocks/mock_web_server_hal.h`) provides configurable return values and records registered routes and responses.
 
 ### Mock Implementations (Native Tests)
 
@@ -217,12 +273,18 @@ struct ConfigData
 {
     struct WifiConfig   { char ssid[64]; char password[64]; };
     struct ApConfig     { char ssid[64]; char password[64]; };
-    struct WebConfig    { uint16_t port; char password[64]; };
-    struct CameraConfig { uint32_t capture_interval_ms; };
+    struct WebConfig    { uint16_t port; char password[64];
+                          uint8_t max_streams{4}; };
+    struct CameraConfig { uint32_t capture_interval_ms;
+                          char resolution[64]{"VGA"};
+                          uint8_t jpeg_quality{10};
+                          uint8_t grab_mode{0xFF}; };
     struct VideoConfig  { uint16_t fps; char resolution[64];
                           uint16_t clip_duration_s;
                           uint16_t max_file_size_mb;
-                          uint8_t jpeg_quality; };
+                          uint8_t jpeg_quality;
+                          bool audio_enabled{false};
+                          uint8_t mic_gain{2}; };
 
     WifiConfig wifi;
     ApConfig ap;
@@ -234,7 +296,7 @@ struct ConfigData
 
 ### Testability
 
-Pure logic with no hardware dependencies. Testable natively with 48 unit tests covering defaults, parsing, edge cases, comments, whitespace, malformed input, video config parsing, and serialization round-trips.
+Pure logic with no hardware dependencies. Testable natively with coverage for defaults, parsing, edge cases, comments, whitespace, malformed input, video config parsing, and serialization round-trips.
 
 ---
 
@@ -270,7 +332,13 @@ In `main.cpp`, after SD card initialization:
 1. A stack-allocated buffer of `CONFIG_BUFFER_SIZE` bytes is created.
 2. `PeripheralManager::read_file()` reads `/config.ini` from the SD card.
 3. `ConfigService::load()` parses the buffer and logs the result.
-4. `camera_capture_interval_ms` is updated from the parsed config.
+4. `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution + JPEG quality from config) into validated `ResolvedCameraParams` with PSRAM guards applied.
+5. `CameraController::init(ResolvedCameraParams)` initializes the camera with the validated config.
+6. `VideoController::init(config, width, height)` stores the validated dimensions.
+7. `camera_capture_interval_ms` is updated from the parsed config.
+8. `WifiService::init()` connects to STA or falls back to AP.
+9. `WebServerService::init()` starts the HTTP server.
+10. `SystemOrchestrator::init()` registers command handlers.
 
 ### Write Pattern
 
@@ -294,7 +362,189 @@ This keeps ConfigService thin (no PeripheralManager dependency) while enabling f
 
 ### Testability
 
-Testable natively with 15 unit tests using `MockLogBackend` for log verification and `RealTimeService` for time. Tests cover defaults, loading, mutable access, and reload behavior.
+Testable natively using `MockLogBackend` for log verification and `RealTimeService` for time. Tests cover defaults, loading, mutable access, and reload behavior.
+
+---
+
+## Network & Command Layer
+
+These components add WiFi connectivity, a web-based control interface, a protocol-agnostic command dispatch framework, and a top-level system coordinator.
+
+### WifiService
+
+**Files**: `include/wifi_service.h`, `src/wifi_service.cpp`
+
+#### Responsibility
+
+Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls back to AP (access point) mode on timeout. Reconnection strategy is encapsulated here for future evolution.
+
+#### Dependencies
+
+- `WifiHal &` — abstract WiFi hardware interface (injected via constructor).
+- `LoggingService &` — for diagnostic output.
+
+#### Lifecycle
+
+```
+init(sta_config, ap_config, timeout_secs)
+  → mode(STA)
+  → begin_sta(ssid, password)
+  → poll status() every 1s until connected or timeout
+  → if timeout: mode(AP), begin_ap(ssid, password)
+```
+
+#### Key Methods
+
+- `init(sta, ap, timeout_secs)` — connects to the configured STA network. If not connected within `timeout_secs`, falls back to AP mode.
+- `is_connected()` — returns `true` if connected as a station.
+- `local_ip()` — returns the current IP address (STA or AP).
+
+#### Testability
+
+Fully testable on native via `MockWifiHal`. Tests cover STA success, timeout fallback, quick-connect, and connection state reflection.
+
+### WebServerService
+
+**Files**: `include/web_server_service.h`, `src/web_server_service.cpp`
+
+#### Responsibility
+
+Manages HTTP route registration, HTTP Basic authentication, and the main `handle_client()` loop. Routes are registered during `init()`.
+
+#### Dependencies
+
+- `WebServerHal &` — abstract HTTP server interface (injected via constructor).
+- `LoggingService &` — for diagnostic output.
+- `CommandHandler &` — optional; set via `set_command_handler()` for `/status` and `/control` routes.
+
+#### Routes
+
+| Method | Path | Handler | Auth | Description |
+|--------|------|---------|------|-------------|
+| GET | `/` | `handle_index()` | No | Returns a built-in HTML status page |
+| GET | `/status` | `handle_status()` | Yes | Returns JSON status via CommandHandler |
+| GET | `/control` | `handle_control()` | Yes | Dispatches commands via CommandHandler |
+
+#### Authentication
+
+If a web password is configured, the service checks the `Authorization` header against the expected `Basic base64(user:pass)` value. If no password is configured, authentication is skipped.
+
+#### Static Trampolines
+
+Because `WebServerHal::on()` takes a plain `void(*)()` function pointer (lambdas with captures cannot convert), the service uses a static instance pointer with static callback methods. This is a known pattern required by the Arduino `WebServer` API.
+
+### CommandHandler
+
+**Files**: `include/command_handler.h`, `src/command_handler.cpp`
+
+#### Responsibility
+
+Protocol-agnostic command dispatch framework. Transports (web, serial) feed requests in; handlers registered by the orchestrator process them. The handler is protocol-agnostic — changing from text to binary requires only a new transport.
+
+#### Architecture
+
+```
+Transport (HTTP, Serial, etc.)
+  → has_request() / read_request()
+  → CommandHandler::tick()
+    → dispatch(code, payload)
+      → registered handler fn
+    → send_response(result, data)
+```
+
+#### Command Codes
+
+| Code | Command | Description |
+|------|---------|-------------|
+| `0x01` | `GET_STATUS` | Return system status as JSON |
+| `0x10` | `START_RECORDING` | Begin video recording |
+| `0x11` | `STOP_RECORDING` | Stop video recording |
+| `0x12` | `TAKE_PHOTO` | Capture a still photo |
+| `0x20` | `SET_CONFIG` | Update configuration |
+| `0x21` | `GET_CONFIG` | Return current configuration |
+| `0x30` | `SET_TIME` | Set the Unix time offset |
+
+#### Key Design Points
+
+- **Fixed-size arrays**: Handlers and transports use fixed-size arrays (`MAX_HANDLERS = 16`, `MAX_TRANSPORTS = 4`) rather than dynamic allocation.
+- **Tick-driven**: `tick()` polls all registered transports, dispatches pending requests, and sends responses back through the transport.
+- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (256) byte buffer for the handler to write response data.
+
+#### Testability
+
+Fully testable on native via `MockCommandTransport`. Tests cover dispatch, registration, unrecognized codes, tick polling, multiple handlers, and response buffers.
+
+### WebCommandTransport
+
+**Files**: `include/web_command_transport.h`, `src/web_command_transport.cpp`
+
+#### Responsibility
+
+Bridges HTTP routes to `CommandHandler::dispatch()`. Each registered command becomes a thin HTTP endpoint.
+
+#### Routes
+
+| Method | Path | Query Param | Description |
+|--------|------|-------------|-------------|
+| GET | `/status` | `cmd` (optional) | Returns status or dispatches command |
+| GET | `/control` | `cmd` | Dispatches command |
+
+#### Command Mapping
+
+| Query Value | CommandCode |
+|-------------|-------------|
+| (none) | `GET_STATUS` |
+| `start` | `START_RECORDING` |
+| `stop` | `STOP_RECORDING` |
+| `photo` | `TAKE_PHOTO` |
+| `config` | `GET_CONFIG` |
+
+#### Static Trampolines
+
+Like `WebServerService`, this class uses a static instance pointer with static callback methods because `WebServerHal::on()` requires plain function pointers.
+
+### SystemOrchestrator
+
+**Files**: `include/system_orchestrator.h`, `src/system_orchestrator.cpp`
+
+#### Responsibility
+
+Top-level system coordinator and command router.
+
+#### Dependencies
+
+- `VideoController &` — for recording control.
+- `CameraController &` — for photo capture.
+- `CommandHandler &` — for command registration.
+- `TimeService &` — for time operations.
+- `ConfigService &` — for configuration access.
+- `LoggingService &` — for diagnostic output.
+
+#### Registered Commands
+
+| Command | Handler | Description |
+|---------|---------|-------------|
+| `GET_STATUS` | `handle_get_status()` | Returns JSON with recording state, frame count, file size |
+| `START_RECORDING` | `handle_start_recording()` | Delegates to `VideoController::start_recording()` |
+| `STOP_RECORDING` | `handle_stop_recording()` | Delegates to `VideoController::stop_recording()` |
+| `TAKE_PHOTO` | `handle_take_photo()` | Captures a frame, logs size, releases (file write deferred) |
+| `SET_TIME` | `handle_set_time()` | Reads 4-byte uint32 payload, calls `TimeService::set_unix_offset()` |
+| `SET_CONFIG` | `handle_set_config()` | Returns `INVALID_STATE` (not yet implemented) |
+
+#### Lifecycle
+
+```
+init()
+  → register_commands()  // registers 6 handlers with CommandHandler
+  → log initialization
+
+tick()
+  → (empty — reserved for future use)
+```
+
+#### Testability
+
+Fully testable on native via mock HALs and services. Tests cover command registration, status JSON, recording delegation, photo capture, time setting, and tick stability.
 
 ---
 
@@ -321,7 +571,26 @@ The controller tracks state via `m_initialized` and `m_frame_acquired` flags. Ca
 
 ### Configuration
 
-During `init()`, the controller queries PSRAM availability via the HAL and selects appropriate quality and frame buffer settings from the `CameraConfig`. Two constructors allow either default or custom configuration.
+Two `init()` overloads are available:
+
+1. `init()` — queries PSRAM availability via the HAL and selects appropriate quality and frame buffer settings from the `CameraConfig` provided at construction.
+2. `init(const ResolvedCameraParams&)` — uses pre-resolved parameters from `build_camera_config()`, which translates user-facing `CameraImageConfig` (resolution string + JPEG quality) into validated HAL config with PSRAM guards applied.
+
+### Resolution Mapping
+
+The free function `build_camera_config()` (`include/camera_controller.h`) provides the authoritative resolution mapping, replacing the former `VideoController::map_resolution()`:
+
+| Config String | `framesize_t` | Resolution |
+|--------------|---------------|------------|
+| `QQVGA` | `FRAMESIZE_QQVGA` | 160×120 |
+| `QVGA` | `FRAMESIZE_QVGA` | 320×240 |
+| `VGA` | `FRAMESIZE_VGA` | 640×480 |
+| `SVGA` | `FRAMESIZE_SVGA` | 800×600 |
+| `XGA` | `FRAMESIZE_XGA` | 1024×768 |
+| `HD` | `FRAMESIZE_HD` | 1280×720 |
+| `UXGA` | `FRAMESIZE_UXGA` | 1600×1200 |
+
+PSRAM guards: Without PSRAM, resolution is capped at SVGA (800×600) and JPEG quality is floored at 12.
 
 ### Testability
 
@@ -551,9 +820,20 @@ The blocking duration is bounded by `CLIP_BUFFER_RAM_SIZE` (4 MB) and the per-tr
 
 For applications requiring gapless recording, future work could adopt a double-buffering strategy (write the next clip's frames while the current clip flushes) or stream frames directly to SD during recording.
 
+### Init Signature
+
+The `init()` method accepts validated pixel dimensions directly:
+
+```c++
+bool init(const ConfigData::VideoConfig& config,
+          uint16_t width, uint16_t height);
+```
+
+Width and height come from `build_camera_config()` (called in `main.cpp` before `VideoController::init()`). This decouples `VideoController` from resolution string parsing and makes it compatible with future mode switching.
+
 ### Testability
 
-Fully testable on native via `MockCameraHal`, `MockSdCardHal`, and `MockLogBackend`. 26 unit tests cover state transitions, frame pacing, clip rotation, error handling, and resolution mapping.
+Fully testable on native via `MockCameraHal`, `MockSdCardHal`, and `MockLogBackend`. Tests cover state transitions, frame pacing, clip rotation, error handling, and `build_camera_config()` resolution mapping.
 
 ---
 
@@ -597,7 +877,7 @@ open() → write_frame() × N → close()
 
 ### Testability
 
-Pure format logic with no hardware or I/O dependencies. 62 unit tests verify every byte of the AVI header, chunk format, DWORD alignment, index structure, and edge cases.
+Pure format logic with no hardware or I/O dependencies. Tests verify every byte of the AVI header, chunk format, DWORD alignment, index structure, and edge cases.
 
 ---
 
@@ -628,7 +908,7 @@ open(path) → buffer_frame() × N → flush() → reset()
 
 ### Testability
 
-Testable on native via `PeripheralManager` backed by `MockSdCardHal`. 28 unit tests cover buffering, auto-flush thresholds, oversized chunks, flush behavior, data integrity, and failure handling.
+Testable on native via `PeripheralManager` backed by `MockSdCardHal`. Tests cover buffering, auto-flush thresholds, oversized chunks, flush behavior, data integrity, and failure handling.
 
 ---
 
@@ -671,26 +951,26 @@ GPIO 21 is shared between the LED (active LOW) and the SD card chip-select (acti
 
 **File**: `src/main.cpp`
 
-The `setup()` function initializes Serial, the PeripheralManager, camera, SD card, and config service in sequence. The camera initialization is PSRAM-aware. An LED blink pattern provides visual feedback during startup.
+The `setup()` function composes all system components in a layered initialization sequence. Global instances are declared at file scope, organized into two groups:
 
-After SD card initialization, the firmware reads `/config.ini` from the SD card into a stack-allocated buffer and passes it to `ConfigService::load()` for parsing. If the file is missing or empty, sensible defaults are used.
+1. **Core services** — always present: `RealTimeService`, `LoggingService`, `ConfigService`, `PeripheralManager`, `CameraController`, `VideoController`, `PlatformInitializer`.
+2. **Network & command services** — WiFi, web, commands, orchestrator: `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SystemOrchestrator`.
 
-The `VideoController` is initialized with the `[video]` configuration and starts recording automatically.
+### Initialization Sequence
 
-The `loop()` function runs on a 5 ms tick for the PeripheralManager, advances the `VideoController` state machine, and runs a configurable interval for still photo captures (default 20 seconds, overridable via the `[camera]` section of the config file). Each photo capture cycle:
+1. **Platform init** — `PlatformInitializer::init()` configures Serial and basic hardware.
+2. **Peripheral init** — `PeripheralManager::init()` sets up GPIO, LED, and pin arbitration. A 3-second LED blink provides visual startup feedback.
+3. **SD card init** — `PeripheralManager::init_sd_card()` mounts the SD card. If this fails, `setup()` returns early.
+4. **Config load** — Reads `/config.ini` from SD into a stack buffer, then calls `ConfigService::load()`. Missing or empty files result in sensible defaults.
+5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which validates dimensions and applies PSRAM-aware frame size limits. The camera is initialized with these validated parameters.
+6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step.
+7. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
+8. **Web server init** — `WebServerService::init()` registers HTTP routes (`/`, `/status`, `/control`). The `WebCommandTransport` is added to the `CommandHandler`, and the web server's command handler reference is set.
+9. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers (GET_STATUS, START_RECORDING, STOP_RECORDING, TAKE_PHOTO, SET_TIME, SET_CONFIG).
 
-1. `camera_ctrl.capture_frame()` — acquire a frame from the camera.
-2. `camera_ctrl.get_frame()` — access the JPEG data.
-3. `peripheral_manager.write_file()` — write to SD with a 1-second timeout.
-4. `camera_ctrl.release_frame()` — release the buffer back to the camera.
+### Main Loop
 
-### LED Feedback During Recording
-
-LED behavior during video recording is controlled in `main.cpp` based on `VideoController::state()`:
-
-- **RECORDING** — Fast blink (200ms on / 200ms off).
-- **STOPPING** — Pulse (500ms) at clip boundaries.
-- **IDLE** — LED controlled by other logic (e.g. photo capture pulse).
+The `loop()` function runs on regular intervals to tick the major services to handle commands and events.
 
 ---
 
@@ -710,8 +990,9 @@ Tests live under `test/` in environment-specific subfolders:
 ```
 test/
   native/                           ← Native unit tests (Unity framework)
-    test_avi_writer/                ← AVI container format tests (62 tests)
+    test_avi_writer/                ← AVI container format tests
     test_camera_controller/         ← Camera lifecycle tests
+    test_command_handler/           ← Command dispatch framework
     test_config_service/            ← ConfigService loading & defaults
     test_ini_parser/                ← INI parser including video config
     test_led_state_machine/         ← LED state machine tests
@@ -719,9 +1000,11 @@ test/
     test_peripheral_manager/        ← Peripheral manager facade tests
     test_pin_arbitrator/            ← Pin conflict resolution tests
     test_sd_controller/             ← SD write controller tests
-    test_sd_write_buffer/           ← SD write buffering tests (28 tests)
+    test_sd_write_buffer/           ← SD write buffering tests
+    test_system_orchestrator/       ← System orchestrator commands
     test_time_service/              ← Time service tests
-    test_video_controller/          ← Video recording orchestration (26 tests)
+    test_video_controller/          ← Video recording orchestration
+    test_wifi_service/              ← WiFi lifecycle tests
   hardware/                         ← ESP32 integration tests
   mocks/
     native_mocks/                   ← Mock HAL classes + mock Arduino
