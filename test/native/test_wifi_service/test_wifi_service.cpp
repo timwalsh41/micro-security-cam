@@ -31,7 +31,7 @@ struct TestFixture
 
     TestFixture()
         : logger(log_backend, time)
-        , wifi(wifi_hal, logger)
+        , wifi(wifi_hal, time, logger)
     {
     }
 };
@@ -185,7 +185,7 @@ void test_init_sta_quick_connect()
     MockLogBackend log_backend;
     RealTimeService time;
     LoggingService logger(log_backend, time);
-    WifiService wifi(hal, logger);
+    WifiService wifi(hal, time, logger);
 
     strcpy(hal.ip_buffer, "10.0.0.99");
 

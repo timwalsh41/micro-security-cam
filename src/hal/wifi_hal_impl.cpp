@@ -10,7 +10,7 @@
 namespace hal
 {
 
-bool WifiHalImpl::mode(bool sta, bool ap)
+void WifiHalImpl::mode(bool sta, bool ap)
 {
     if (sta && ap)
     {
@@ -28,22 +28,19 @@ bool WifiHalImpl::mode(bool sta, bool ap)
     {
         WiFi.mode(WIFI_OFF);
     }
-    return true;
 }
 
-bool WifiHalImpl::begin_sta(const char* ssid, const char* password)
+void WifiHalImpl::begin_sta(const char* ssid, const char* password)
 {
     WiFi.begin(ssid, password);
-    return true;
 }
 
-bool WifiHalImpl::begin_ap(const char* ssid, const char* password)
+void WifiHalImpl::begin_ap(const char* ssid, const char* password)
 {
     WiFi.softAP(ssid, password);
     strncpy(m_ip_buffer, WiFi.softAPIP().toString().c_str(),
             sizeof(m_ip_buffer) - 1);
     m_ip_buffer[sizeof(m_ip_buffer) - 1] = '\0';
-    return true;
 }
 
 WifiStatus WifiHalImpl::status() const

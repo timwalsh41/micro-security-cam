@@ -1,5 +1,4 @@
 #include "wifi_service.h"
-#include "hal/time_hal.h"
 #include <cstdio>
 
 /**
@@ -12,8 +11,9 @@
  */
 static constexpr hal::millis_t POLL_INTERVAL_MS = 1000;
 
-WifiService::WifiService(hal::WifiHal& hal, LoggingService& log)
+WifiService::WifiService(hal::WifiHal& hal, TimeService& time, LoggingService& log)
     : m_hal(hal)
+    , m_time(time)
     , m_log(log)
 {
 }
@@ -32,11 +32,13 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
     m_hal.begin_sta(sta.ssid, sta.password);
 
     // Poll until connected or timeout
-    uint16_t elapsed_secs = 0;
-    while (elapsed_secs < timeout_secs)
+    hal::millis_t start_ms = m_time.now();
+    hal::millis_t elapsed_ms = 0;
+    
+    do
     {
-        hal::delay_ms(POLL_INTERVAL_MS);
-
+        m_time.delay_ms(POLL_INTERVAL_MS);
+        
         if (m_hal.status() == hal::WifiStatus::CONNECTED)
         {
             m_connected = true;
@@ -45,10 +47,10 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
             return;
         }
 
-        elapsed_secs++;
-        m_log.debug("Wifi", "Waiting for STA connection... (%u/%u)",
-                     elapsed_secs, timeout_secs);
-    }
+        elapsed_ms = m_time.elapsed_ms(start_ms, m_time.now());
+        m_log.debug("Wifi", "Waiting for STA connection... (%u ms/%u ms)",
+                     elapsed_ms, timeout_secs*1000);
+    } while (elapsed_ms < timeout_secs*1000);
 
     // STA connection timed out, fall back to AP mode
     m_log.warn("Wifi", "STA connection timed out after %u seconds, "

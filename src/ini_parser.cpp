@@ -13,6 +13,56 @@ ConfigData IniParser::defaults()
     return ConfigData{};
 }
 
+// ============================================================
+// Helper methods for key/value parsing
+// ============================================================
+
+bool IniParser::key_match(const char* key_start, size_t key_len, const char* name)
+{
+    size_t name_len = strlen(name);
+    return key_len == name_len && strncasecmp(key_start, name, name_len) == 0;
+}
+
+void IniParser::value_copy(const char* val_start, size_t val_len, char* buf, size_t buf_size)
+{
+    size_t copy_len = val_len < buf_size - 1 ? val_len : buf_size - 1;
+    memcpy(buf, val_start, copy_len);
+    buf[copy_len] = '\0';
+}
+
+void IniParser::get_string_val(const char* val_start, size_t val_len, char* dest, size_t dest_size)
+{
+    size_t copy_len = val_len < dest_size - 1 ? val_len : dest_size - 1;
+    memcpy(dest, val_start, copy_len);
+    dest[copy_len] = '\0';
+}
+
+uint32_t IniParser::get_uint_val(const char* val_start, size_t val_len, bool* valid, int base)
+{
+    char buf[16];
+    value_copy(val_start, val_len, buf, sizeof(buf));
+    char* endptr = nullptr;
+    uint32_t result = strtoul(buf, &endptr, base);
+    if (valid)
+    {
+        *valid = (*endptr == '\0');
+    }
+    return result;
+}
+
+bool IniParser::get_bool_val(const char* val_start, size_t val_len)
+{
+    if (val_len == 4 && strncasecmp(val_start, "true", 4) == 0)
+    {
+        return true;
+    }
+    if (val_len == 5 && strncasecmp(val_start, "false", 5) == 0)
+    {
+        return false;
+    }
+    return false;
+}
+
 ConfigData IniParser::parse(const char* content, size_t length)
 {
     ConfigData config{};
@@ -156,73 +206,46 @@ ConfigData IniParser::parse(const char* content, size_t length)
             {
                 case Section::WIFI:
                 {
-                    if (key_len == 4 && strncasecmp(key_start, "ssid", 4) == 0)
+                    if (key_match(key_start, key_len, "ssid"))
                     {
-                        memcpy(config.wifi.ssid, val_start,
-                               val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                   ? val_len
-                                   : CONFIG_FIELD_MAX_LENGTH - 1);
+                        get_string_val(val_start, val_len, config.wifi.ssid, CONFIG_FIELD_MAX_LENGTH);
                     }
-                    else if (key_len == 8 && strncasecmp(key_start, "password", 8) == 0)
+                    else if (key_match(key_start, key_len, "password"))
                     {
-                        memcpy(config.wifi.password, val_start,
-                               val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                   ? val_len
-                                   : CONFIG_FIELD_MAX_LENGTH - 1);
+                        get_string_val(val_start, val_len, config.wifi.password, CONFIG_FIELD_MAX_LENGTH);
                     }
                     break;
                 }
                 case Section::AP:
                 {
-                    if (key_len == 4 && strncasecmp(key_start, "ssid", 4) == 0)
+                    if (key_match(key_start, key_len, "ssid"))
                     {
-                        memcpy(config.ap.ssid, val_start,
-                               val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                   ? val_len
-                                   : CONFIG_FIELD_MAX_LENGTH - 1);
+                        get_string_val(val_start, val_len, config.ap.ssid, CONFIG_FIELD_MAX_LENGTH);
                     }
-                    else if (key_len == 8 && strncasecmp(key_start, "password", 8) == 0)
+                    else if (key_match(key_start, key_len, "password"))
                     {
-                        memcpy(config.ap.password, val_start,
-                               val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                   ? val_len
-                                   : CONFIG_FIELD_MAX_LENGTH - 1);
+                        get_string_val(val_start, val_len, config.ap.password, CONFIG_FIELD_MAX_LENGTH);
                     }
                     break;
                 }
                 case Section::WEB:
                 {
-                    if (key_len == 4 && strncasecmp(key_start, "port", 4) == 0)
+                    if (key_match(key_start, key_len, "port"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        char* endptr;
-                        uint32_t parsed = static_cast<uint32_t>(strtoul(val_buf, &endptr, 10));
-                        if (*endptr == '\0' && parsed <= UINT16_MAX)
+                        bool valid = false;
+                        uint32_t parsed = get_uint_val(val_start, val_len, &valid);
+                        if (valid && parsed <= UINT16_MAX)
                         {
                             config.web.port = static_cast<uint16_t>(parsed);
                         }
                     }
-                    else if (key_len == 8 && strncasecmp(key_start, "password", 8) == 0)
+                    else if (key_match(key_start, key_len, "password"))
                     {
-                        memcpy(config.web.password, val_start,
-                               val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                   ? val_len
-                                   : CONFIG_FIELD_MAX_LENGTH - 1);
+                        get_string_val(val_start, val_len, config.web.password, CONFIG_FIELD_MAX_LENGTH);
                     }
-                    else if (key_len == 11 && strncasecmp(key_start, "max_streams", 11) == 0)
+                    else if (key_match(key_start, key_len, "max_streams"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        uint32_t parsed = get_uint_val(val_start, val_len);
                         if (parsed >= 1 && parsed <= 4)
                         {
                             config.web.max_streams = static_cast<uint8_t>(parsed);
@@ -232,143 +255,65 @@ ConfigData IniParser::parse(const char* content, size_t length)
                 }
                 case Section::CAMERA:
                 {
-                    if (key_len == 19 &&
-                        strncasecmp(key_start, "capture_interval_ms", 19) == 0)
+                    if (key_match(key_start, key_len, "capture_interval_ms"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        config.camera.capture_interval_ms =
-                            static_cast<uint32_t>(strtoul(val_buf, nullptr, 10));
+                        config.camera.capture_interval_ms = get_uint_val(val_start, val_len);
                     }
-                    else if (key_len == 10 &&
-                             strncasecmp(key_start, "resolution", 10) == 0)
+                    else if (key_match(key_start, key_len, "resolution"))
                     {
-                        size_t copy_len = val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                              ? val_len
-                                              : CONFIG_FIELD_MAX_LENGTH - 1;
-                        memcpy(config.camera.resolution, val_start, copy_len);
-                        config.camera.resolution[copy_len] = '\0';
+                        get_string_val(val_start, val_len, config.camera.resolution, CONFIG_FIELD_MAX_LENGTH);
                     }
-                    else if (key_len == 12 &&
-                             strncasecmp(key_start, "jpeg_quality", 12) == 0)
+                    else if (key_match(key_start, key_len, "jpeg_quality"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        uint32_t parsed = get_uint_val(val_start, val_len);
                         if (parsed <= 63)
                         {
                             config.camera.jpeg_quality = static_cast<uint8_t>(parsed);
                         }
                     }
-                    else if (key_len == 9 &&
-                             strncasecmp(key_start, "grab_mode", 9) == 0)
+                    else if (key_match(key_start, key_len, "grab_mode"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        uint32_t parsed = strtoul(val_buf, nullptr, 16);
-                        config.camera.grab_mode = static_cast<uint8_t>(parsed);
+                        config.camera.grab_mode = static_cast<uint8_t>(get_uint_val(val_start, val_len, nullptr, 16));
                     }
                     break;
                 }
                 case Section::VIDEO:
                 {
-                    if (key_len == 3 &&
-                        strncasecmp(key_start, "fps", 3) == 0)
+                    if (key_match(key_start, key_len, "fps"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        uint32_t parsed = get_uint_val(val_start, val_len);
                         if (parsed >= 1 && parsed <= 30)
                         {
                             config.video.fps = static_cast<uint16_t>(parsed);
                         }
                     }
-                    else if (key_len == 10 &&
-                             strncasecmp(key_start, "resolution", 10) == 0)
+                    else if (key_match(key_start, key_len, "resolution"))
                     {
-                        size_t copy_len = val_len < CONFIG_FIELD_MAX_LENGTH - 1
-                                              ? val_len
-                                              : CONFIG_FIELD_MAX_LENGTH - 1;
-                        memcpy(config.video.resolution, val_start, copy_len);
-                        config.video.resolution[copy_len] = '\0';
+                        get_string_val(val_start, val_len, config.video.resolution, CONFIG_FIELD_MAX_LENGTH);
                     }
-                    else if (key_len == 15 &&
-                             strncasecmp(key_start, "clip_duration_s", 15) == 0)
+                    else if (key_match(key_start, key_len, "clip_duration_s"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        config.video.clip_duration_s =
-                            static_cast<uint16_t>(strtoul(val_buf, nullptr, 10));
+                        config.video.clip_duration_s = static_cast<uint16_t>(get_uint_val(val_start, val_len));
                     }
-                    else if (key_len == 16 &&
-                             strncasecmp(key_start, "max_file_size_mb", 16) == 0)
+                    else if (key_match(key_start, key_len, "max_file_size_mb"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        config.video.max_file_size_mb =
-                            static_cast<uint16_t>(strtoul(val_buf, nullptr, 10));
+                        config.video.max_file_size_mb = static_cast<uint16_t>(get_uint_val(val_start, val_len));
                     }
-                    else if (key_len == 12 &&
-                             strncasecmp(key_start, "jpeg_quality", 12) == 0)
+                    else if (key_match(key_start, key_len, "jpeg_quality"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        uint32_t parsed = get_uint_val(val_start, val_len);
                         if (parsed <= 63)
                         {
                             config.video.jpeg_quality = static_cast<uint8_t>(parsed);
                         }
                     }
-                    else if (key_len == 13 &&
-                             strncasecmp(key_start, "audio_enabled", 13) == 0)
+                    else if (key_match(key_start, key_len, "audio_enabled"))
                     {
-                        if (val_len == 4 && strncasecmp(val_start, "true", 4) == 0)
-                        {
-                            config.video.audio_enabled = true;
-                        }
-                        else if (val_len == 5 && strncasecmp(val_start, "false", 5) == 0)
-                        {
-                            config.video.audio_enabled = false;
-                        }
+                        config.video.audio_enabled = get_bool_val(val_start, val_len);
                     }
-                    else if (key_len == 8 &&
-                             strncasecmp(key_start, "mic_gain", 8) == 0)
+                    else if (key_match(key_start, key_len, "mic_gain"))
                     {
-                        char val_buf[16];
-                        size_t copy_len = val_len < sizeof(val_buf) - 1
-                                              ? val_len
-                                              : sizeof(val_buf) - 1;
-                        memcpy(val_buf, val_start, copy_len);
-                        val_buf[copy_len] = '\0';
-                        uint32_t parsed = strtoul(val_buf, nullptr, 10);
+                        uint32_t parsed = get_uint_val(val_start, val_len);
                         if (parsed >= 1 && parsed <= 8)
                         {
                             config.video.mic_gain = static_cast<uint8_t>(parsed);

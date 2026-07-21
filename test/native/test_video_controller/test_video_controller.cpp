@@ -705,37 +705,37 @@ void test_build_camera_config_known_names()
     user_config.jpeg_quality = 10;
 
     user_config.resolution = "VGA";
-    auto vga = build_camera_config(user_config, true, cam_logger);
+    auto vga = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(640, vga.width);
     TEST_ASSERT_EQUAL_UINT16(480, vga.height);
 
     user_config.resolution = "HD";
-    auto hd = build_camera_config(user_config, true, cam_logger);
+    auto hd = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(1280, hd.width);
     TEST_ASSERT_EQUAL_UINT16(720, hd.height);
 
     user_config.resolution = "QVGA";
-    auto qvga = build_camera_config(user_config, true, cam_logger);
+    auto qvga = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(320, qvga.width);
     TEST_ASSERT_EQUAL_UINT16(240, qvga.height);
 
     user_config.resolution = "QQVGA";
-    auto qqvga = build_camera_config(user_config, true, cam_logger);
+    auto qqvga = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(160, qqvga.width);
     TEST_ASSERT_EQUAL_UINT16(120, qqvga.height);
 
     user_config.resolution = "SVGA";
-    auto svga = build_camera_config(user_config, true, cam_logger);
+    auto svga = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(800, svga.width);
     TEST_ASSERT_EQUAL_UINT16(600, svga.height);
 
     user_config.resolution = "XGA";
-    auto xga = build_camera_config(user_config, true, cam_logger);
+    auto xga = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(1024, xga.width);
     TEST_ASSERT_EQUAL_UINT16(768, xga.height);
 
     user_config.resolution = "UXGA";
-    auto uxga = build_camera_config(user_config, true, cam_logger);
+    auto uxga = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(1600, uxga.width);
     TEST_ASSERT_EQUAL_UINT16(1200, uxga.height);
 }
@@ -748,29 +748,23 @@ void test_build_camera_config_unknown_defaults_to_vga()
     CameraImageConfig user_config;
     user_config.resolution = "UNKNOWN";
     user_config.jpeg_quality = 10;
-    auto res = build_camera_config(user_config, true, cam_logger);
+    auto res = build_camera_config(user_config, cam_logger);
     TEST_ASSERT_EQUAL_UINT16(640, res.width);
     TEST_ASSERT_EQUAL_UINT16(480, res.height);
 }
 
 /**
- * @brief build_camera_config caps resolution without PSRAM.
+ * @brief build_camera_config returns requested dimensions directly.
+ *
  */
-void test_build_camera_config_psram_guard()
+void test_build_camera_config_returns_requested_dims()
 {
     CameraImageConfig user_config;
     user_config.resolution = "UXGA";
     user_config.jpeg_quality = 10;
-
-    // Without PSRAM, UXGA should be capped to SVGA
-    auto no_psram = build_camera_config(user_config, false, cam_logger);
-    TEST_ASSERT_EQUAL_UINT16(800, no_psram.width);
-    TEST_ASSERT_EQUAL_UINT16(600, no_psram.height);
-
-    // With PSRAM, UXGA should remain
-    auto with_psram = build_camera_config(user_config, true, cam_logger);
-    TEST_ASSERT_EQUAL_UINT16(1600, with_psram.width);
-    TEST_ASSERT_EQUAL_UINT16(1200, with_psram.height);
+    auto params = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL_UINT16(1600, params.width);
+    TEST_ASSERT_EQUAL_UINT16(1200, params.height);
 }
 
 // ============================================================
@@ -830,7 +824,7 @@ int main()
     // build_camera_config resolution mapping
     RUN_TEST(test_build_camera_config_known_names);
     RUN_TEST(test_build_camera_config_unknown_defaults_to_vga);
-    RUN_TEST(test_build_camera_config_psram_guard);
+    RUN_TEST(test_build_camera_config_returns_requested_dims);
 
     return UNITY_END();
 }

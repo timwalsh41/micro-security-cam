@@ -2,7 +2,7 @@
 #define WIFI_SERVICE_H
 
 #include "hal/wifi_hal.h"
-#include "hal/time_hal.h"
+#include "time_service.h"
 #include "logging_service.h"
 #include "ini_parser.h"
 
@@ -18,12 +18,13 @@ class WifiService
 {
     public:
         /**
-         * @brief Constructs a WifiService with the given HAL and logger.
+         * @brief Constructs a WifiService with the given dependencies.
          *
          * @param hal  WiFi hardware abstraction layer.
+         * @param time Time service for elapsed/delay operations.
          * @param log  Logging service for status messages.
          */
-        WifiService(hal::WifiHal& hal, LoggingService& log);
+        WifiService(hal::WifiHal& hal, TimeService& time, LoggingService& log);
 
         /**
          * @brief Initializes WiFi with STA mode, falling back to AP.
@@ -50,6 +51,7 @@ class WifiService
 
     private:
         hal::WifiHal& m_hal;
+        TimeService& m_time;
         LoggingService& m_log;
         bool m_connected{false};
 };

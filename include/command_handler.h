@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include "command_transport.h"
 #include "logging_service.h"
 
 /**
@@ -14,46 +15,6 @@
  * by the orchestrator process them. The handler is protocol-agnostic —
  * changing from text to binary requires only a new transport.
  */
-
-/** Command codes — extensible as features land. */
-enum class CommandCode : uint8_t
-{
-    GET_STATUS = 0x01,
-    START_RECORDING = 0x10,
-    STOP_RECORDING = 0x11,
-    TAKE_PHOTO = 0x12,
-    SET_CONFIG = 0x20,
-    GET_CONFIG = 0x21,
-    SET_TIME = 0x30,
-};
-
-/** Result codes returned by command handlers. */
-enum class CommandResult : uint8_t
-{
-    SUCCESS = 0x00,
-    UNRECOGNIZED = 0x01,
-    INVALID_ARGS = 0x02,
-    INVALID_STATE = 0x03,
-    INTERNAL_ERROR = 0xFF,
-};
-
-/**
- * @brief Abstract transport interface.
- *
- * Encapsulates request/response mechanics. Concrete transports
- * (web, serial) implement this interface.
- */
-class CommandTransport
-{
-    public:
-        virtual ~CommandTransport() = default;
-        virtual bool has_request() = 0;
-        virtual void read_request(CommandCode& code,
-                                  const uint8_t*& payload,
-                                  size_t& payload_len) = 0;
-        virtual void send_response(CommandResult code,
-                                   const uint8_t* data, size_t len) = 0;
-};
 
 /** Handler function signature. */
 using CommandHandlerFn = std::function<CommandResult(
@@ -85,7 +46,7 @@ class CommandHandler
         static constexpr size_t MAX_HANDLERS = 16;
         static constexpr size_t MAX_TRANSPORTS = 4;
 
-        static constexpr const char* SUBSYSTEM = "CmdH";
+        static constexpr const char* SUBSYSTEM = "CMDH";
 
         LoggingService& m_log;
 

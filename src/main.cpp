@@ -41,7 +41,7 @@ PlatformInitializer platform_init;
 // --- Slice 1: WiFi, Web, Commands, Orchestrator ---
 hal::WifiHalImpl wifi_hal_impl;
 hal::WebServerHalImpl web_server_hal_impl;
-WifiService wifi_service{wifi_hal_impl, logger};
+WifiService wifi_service{wifi_hal_impl, real_time, logger};
 CommandHandler command_handler{logger};
 WebCommandTransport web_transport{web_server_hal_impl, command_handler};
 WebServerService web_server_service{web_server_hal_impl, logger};
@@ -117,8 +117,7 @@ void setup()
     CameraImageConfig cam_image_config;
     cam_image_config.resolution = config_service.config().camera.resolution;
     cam_image_config.jpeg_quality = config_service.config().camera.jpeg_quality;
-    ResolvedCameraParams cam_params = build_camera_config(
-        cam_image_config, camera_hal.has_psram(), logger);
+    ResolvedCameraParams cam_params = build_camera_config(cam_image_config, logger);
     hal::CameraInitResult cam_result = camera_ctrl.init(cam_params);
     if (cam_result != hal::CameraInitResult::SUCCESS)
     {
@@ -126,11 +125,13 @@ void setup()
         return;
     }
     logger.info("MAIN", "Camera initialized (%ux%u)",
-                cam_params.width, cam_params.height);
+                camera_ctrl.get_params().width,
+                camera_ctrl.get_params().height);
 
     // --- Initialize video controller with validated dimensions ---
     video_controller.init(config_service.config().video,
-                          cam_params.width, cam_params.height);
+                          camera_ctrl.get_params().width,
+                          camera_ctrl.get_params().height);
 
     // --- Apply capture interval from config ---
     if (config_service.config().camera.capture_interval_ms > 0)

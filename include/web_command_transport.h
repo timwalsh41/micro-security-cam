@@ -3,6 +3,7 @@
 
 #include "hal/web_server_hal.h"
 #include "command_handler.h"
+#include "command_transport.h"
 #include "ini_parser.h"
 
 /**
@@ -48,7 +49,7 @@ class WebCommandTransport : public CommandTransport
                            const uint8_t* data, size_t len) override;
 
     private:
-        static constexpr const char* SUBSYSTEM = "WebCmd";
+        static constexpr const char* SUBSYSTEM = "WEBCMD";
 
         hal::WebServerHal& m_web;
         CommandHandler& m_handler;
@@ -82,7 +83,10 @@ class WebCommandTransport : public CommandTransport
          */
         void dispatch_and_respond(CommandCode code);
 
+        /** @brief Handler for GET /status — always dispatches GET_STATUS. */
         void handle_status();
+
+        /** @brief Handler for GET /control — dispatches the command from the "cmd" query param. */
         void handle_control();
 };
 

@@ -12,13 +12,18 @@ namespace hal
 // ============================================================
 
 WebServerHalImpl::WebServerHalImpl()
+    : m_server(nullptr)
 {
-    m_server = new WebServer(80);
+
 }
 
 WebServerHalImpl::~WebServerHalImpl()
 {
-    delete m_server;
+    if (m_server != nullptr)
+    {
+        delete m_server;
+    }
+
     m_server = nullptr;
 }
 
@@ -32,8 +37,10 @@ bool WebServerHalImpl::begin(uint16_t port)
     {
         delete m_server;
     }
+
     m_server = new WebServer(port);
     m_server->begin();
+
     return true;
 }
 
@@ -52,21 +59,17 @@ void WebServerHalImpl::on(const char* uri, HttpMethod method,
 
     // Store the handler pointer and create a wrapper lambda
     // that Arduino WebServer can call. We use a static array
-    // to hold pending handlers during registration.
+    // to keep handler function pointers alive for the Arduino
+    // WebServer lambdas, which capture them by value.
     //
-    // Since Arduino WebServer::on() takes std::function<void()>,
-    // we wrap the raw pointer in a lambda. The lambda captures
-    // the pointer value (copied), so it remains valid as long
-    // as the handler function pointer is valid (i.e. the
-    // WebServerService lifetime).
-    //
-    // Note: this works for up to MAX_ROUTES simultaneous
-    // registrations (the limit of our static storage).
-    static constexpr size_t MAX_ROUTES = 8;
-    static void (*s_handlers[MAX_ROUTES])();
+    // The static array persists for the program lifetime, so
+    // the pointers remain valid for all WebServer callbacks.
+    // If MAX_ROUTES is exceeded, the route is silently not
+    // registered — see WebServerHalImpl::MAX_ROUTES.
+    static void (*s_handlers[WebServerHalImpl::MAX_ROUTES])();
     static size_t s_count = 0;
 
-    if (s_count >= MAX_ROUTES)
+    if (s_count >= WebServerHalImpl::MAX_ROUTES)
     {
         return;
     }
@@ -128,10 +131,6 @@ const char* WebServerHalImpl::arg(const char* name) const
 {
     if (m_server != nullptr && name != nullptr)
     {
-        // Cache the argument name for comparison
-        strncpy(m_arg_name_buf, name, sizeof(m_arg_name_buf) - 1);
-        m_arg_name_buf[sizeof(m_arg_name_buf) - 1] = '\0';
-
         String val = m_server->arg(String(name));
         strncpy(m_arg_value_buf, val.c_str(), ARG_BUF_SIZE - 1);
         m_arg_value_buf[ARG_BUF_SIZE - 1] = '\0';
@@ -144,9 +143,6 @@ const char* WebServerHalImpl::header(const char* name) const
 {
     if (m_server != nullptr && name != nullptr)
     {
-        strncpy(m_header_name_buf, name, sizeof(m_header_name_buf) - 1);
-        m_header_name_buf[sizeof(m_header_name_buf) - 1] = '\0';
-
         String val = m_server->header(String(name));
         strncpy(m_header_value_buf, val.c_str(), HEADER_BUF_SIZE - 1);
         m_header_value_buf[HEADER_BUF_SIZE - 1] = '\0';
@@ -197,6 +193,7 @@ void WebServerHalImpl::send_header(int code, const char* content_type,
     {
         m_server->setContentLength(content_length);
         m_server->sendHeader("Access-Control-Allow-Origin", "*");
+        
         // Store code and type for the subsequent send_content call.
         // Arduino WebServer uses beginResponse for streaming.
         (void)code;

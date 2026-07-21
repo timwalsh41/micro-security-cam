@@ -14,12 +14,21 @@ namespace hal
  * @brief ESP32 concrete implementation of WebServerHal.
  *
  * Wraps the Arduino WebServer library behind the abstract
- * WebServerHal interface. All ESP32-specific code is isolated
+ * WebServerHal interface. All platform-specific code is isolated
  * here; the service layer depends only on the abstract interface.
  */
 class WebServerHalImpl : public WebServerHal
 {
     public:
+        /**
+         * @brief Maximum number of routes that can be registered.
+         *
+         * Route handler function pointers are stored in a static array
+         * to keep them alive for Arduino WebServer lambdas. Exceeding
+         * this limit causes routes to be silently not registered.
+         */
+        static constexpr size_t MAX_ROUTES = 12;
+
         WebServerHalImpl();
         ~WebServerHalImpl();
 
@@ -50,11 +59,10 @@ class WebServerHalImpl : public WebServerHal
         static constexpr size_t ARG_BUF_SIZE = 128;
         static constexpr size_t HEADER_BUF_SIZE = 128;
 
+        /* Mutable buffers to cache the temporary strings returned by Arduino WebServer */
         mutable char m_uri_buf[URI_BUF_SIZE]{};
         mutable char m_arg_value_buf[ARG_BUF_SIZE]{};
-        mutable char m_arg_name_buf[64]{};
         mutable char m_header_value_buf[HEADER_BUF_SIZE]{};
-        mutable char m_header_name_buf[64]{};
         mutable char m_auth_buf[HEADER_BUF_SIZE]{};
 };
 

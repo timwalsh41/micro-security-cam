@@ -4,68 +4,6 @@
 using hal::millis_t;
 
 // ============================================================
-// Calendar conversion
-// ============================================================
-
-static bool is_leap_year(uint16_t year)
-{
-    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-}
-
-Calendar calendar_from_unix(uint32_t unix_time)
-{
-    // Days in each month (index 1 = January)
-    static const uint8_t DAYS_IN_MONTH[] =
-    {
-        0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
-    };
-
-    uint32_t remaining = unix_time;
-
-    // Compute time-of-day
-    uint8_t second = static_cast<uint8_t>(remaining % 60);
-    remaining /= 60;
-    uint8_t minute = static_cast<uint8_t>(remaining % 60);
-    remaining /= 60;
-    uint8_t hour = static_cast<uint8_t>(remaining % 24);
-    uint32_t days = remaining / 24;
-
-    // Compute year
-    uint16_t year = 1970;
-    while (true)
-    {
-        uint16_t days_in_year = is_leap_year(year) ? 366 : 365;
-        if (days < days_in_year)
-        {
-            break;
-        }
-        days -= days_in_year;
-        year++;
-    }
-
-    // Compute month and day
-    uint8_t month = 1;
-    for (uint8_t m = 1; m <= 12; m++)
-    {
-        uint8_t dim = DAYS_IN_MONTH[m];
-        if (m == 2 && is_leap_year(year))
-        {
-            dim = 29;
-        }
-        if (days < dim)
-        {
-            month = m;
-            break;
-        }
-        days -= dim;
-    }
-
-    uint8_t day = static_cast<uint8_t>(days + 1);
-
-    return Calendar{year, month, day, hour, minute, second};
-}
-
-// ============================================================
 // TimeService
 // ============================================================
 
@@ -103,4 +41,22 @@ void RealTimeService::set_unix_offset(uint32_t unix_time, uint32_t system_ms)
 uint32_t RealTimeService::unix_now() const
 {
     return m_unix_offset + (now() - m_system_ms_at_offset) / 1000;
+}
+
+std::tm RealTimeService::localtime() const
+{
+    std::time_t t = static_cast<std::time_t>(unix_now());
+
+    // Note this is not thread-safe, std::localtime(&t) returns a std::tm* — a pointer to a
+    // statically allocated internal buffer (shared between std::localtime and std::gmtime).
+    // The static buffer that std::localtime writes into is shared with std::gmtime, and a
+    // subsequent call to either function will overwrite it. But since we dereference
+    // immediately (*std::localtime(...)) and return a copy, the buffer is only held
+    // momentarily — no issue here for single-threaded applications. However, on a
+    // multitasking system, if another task calls std::localtime concurrently, the data
+    // could be overwritten between the pointer return and the copy. In practice the window
+    // is tiny, but it's a theoretical non-thread-safety concern with this family of
+    // functions. If that ever becomes an issue, the reentrant variant localtime_r (POSIX)
+    // or std::localtime in C++ with a mutex would be the fix.
+    return *std::localtime(&t);
 }

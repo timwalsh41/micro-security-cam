@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "command_handler.h"
+#include "command_transport.h"
 #include "mock_log_backend.h"
 #include "time_service.h"
 #include "logging_service.h"

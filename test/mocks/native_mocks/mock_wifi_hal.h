@@ -19,12 +19,6 @@ class MockWifiHal : public hal::WifiHal
         // Configurable return values (set before calling the method)
         // ============================================================
 
-        /** Value returned by begin_sta(). */
-        bool begin_sta_result{true};
-
-        /** Value returned by begin_ap(). */
-        bool begin_ap_result{true};
-
         /** Value returned by status(). */
         hal::WifiStatus status_result{hal::WifiStatus::CONNECTED};
 
@@ -50,26 +44,23 @@ class MockWifiHal : public hal::WifiHal
         // Interface implementation
         // ============================================================
 
-        bool mode(bool /*sta*/, bool /*ap*/) override
+        void mode(bool /*sta*/, bool /*ap*/) override
         {
             mode_call_count++;
-            return true;
         }
 
-        bool begin_sta(const char* ssid, const char* password) override
+        void begin_sta(const char* ssid, const char* password) override
         {
             begin_sta_call_count++;
             strncpy(last_ssid, ssid, sizeof(last_ssid) - 1);
             strncpy(last_password, password, sizeof(last_password) - 1);
-            return begin_sta_result;
         }
 
-        bool begin_ap(const char* ssid, const char* password) override
+        void begin_ap(const char* ssid, const char* password) override
         {
             begin_ap_call_count++;
             strncpy(last_ssid, ssid, sizeof(last_ssid) - 1);
             strncpy(last_password, password, sizeof(last_password) - 1);
-            return begin_ap_result;
         }
 
         hal::WifiStatus status() const override

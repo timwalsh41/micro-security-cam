@@ -12,10 +12,6 @@
  * @file system_orchestrator.h
  * @brief Top-level system coordinator and command router.
  *
- * Introduced in Slice 1 as a thin command router. Grows through
- * subsequent slices into the full mode coordinator (capture-type
- * state machine, motion callbacks, scheduling).
- *
  * All external commands (web, serial, future schedule) route through
  * this component.
  */
@@ -30,7 +26,7 @@ class SystemOrchestrator
          * @param cmd_handler Reference to CommandHandler for command registration.
          * @param time       Reference to TimeService for time operations.
          * @param config     Reference to ConfigService for configuration.
-         * @param log        Reference to LoggingService for diagnostics.
+         * @param log        Reference to LoggingService for logging.
          */
         SystemOrchestrator(VideoController& video,
                            CameraController& camera,
@@ -50,8 +46,7 @@ class SystemOrchestrator
         /**
          * @brief Periodic tick for future schedule evaluation.
          *
-         * Currently minimal — grows in Slice 7 to evaluate schedules,
-         * manage mode transitions, and enforce min event duration.
+         * Manages schedules and mode transitions.
          */
         void tick();
 

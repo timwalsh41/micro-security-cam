@@ -8,7 +8,7 @@
  * @brief Abstract interface for WiFi hardware operations.
  *
  * Provides a mockable abstraction over the Arduino WiFi library.
- * Concrete ESP32 implementation and native test mock derive from
+ * Concrete platform implementation and native test mock derive from
  * this interface.
  */
 
@@ -48,26 +48,27 @@ class WifiHal
 
         /**
          * @brief Sets the WiFi operating mode.
-         * @param mode STA, AP, or both.
-         * @return true on success.
+         * @param sta Enable station mode.
+         * @param ap  Enable access-point mode.
          */
-        virtual bool mode(bool sta, bool ap) = 0;
+        virtual void mode(bool sta, bool ap) = 0;
 
         /**
-         * @brief Connects to a WiFi network in station mode.
+         * @brief Initiates a WiFi station-mode connection (async).
          * @param ssid     Network name.
          * @param password Network password.
-         * @return true if connection attempt started.
+         *
+         * Connection is asynchronous; poll status() to determine
+         * when the link is established.
          */
-        virtual bool begin_sta(const char* ssid, const char* password) = 0;
+        virtual void begin_sta(const char* ssid, const char* password) = 0;
 
         /**
          * @brief Starts a soft access point.
          * @param ssid     AP name.
          * @param password AP password.
-         * @return true if AP started.
          */
-        virtual bool begin_ap(const char* ssid, const char* password) = 0;
+        virtual void begin_ap(const char* ssid, const char* password) = 0;
 
         /**
          * @brief Returns the current WiFi connection status.

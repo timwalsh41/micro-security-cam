@@ -28,40 +28,21 @@ CameraInitResult CameraHalImpl::init(const CameraConfig& cam_config)
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
-    config.frame_size = static_cast<framesize_t>(cam_config.frame_size_with_psram);
+    config.frame_size = static_cast<framesize_t>(cam_config.frame_size);
     config.pixel_format = PIXFORMAT_JPEG;
-    config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.jpeg_quality = cam_config.jpeg_quality_no_psram;
-    config.fb_count = cam_config.fb_count_no_psram;
+    config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+    config.jpeg_quality = cam_config.jpeg_quality;
+    config.fb_count = cam_config.fb_count;
 
-    // Apply grab mode: sentinel 0xFF means auto-detect based on PSRAM
+    // Resolve grab mode: sentinel 0xFF uses the hardware-recommended default
     if (cam_config.grab_mode == 0xFF)
     {
-        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+        config.grab_mode = static_cast<camera_grab_mode_t>(
+            get_capabilities().recommended_grab_mode);
     }
     else
     {
         config.grab_mode = static_cast<camera_grab_mode_t>(cam_config.grab_mode);
-    }
-
-    // Adjust settings based on PSRAM availability
-    if (config.pixel_format == PIXFORMAT_JPEG)
-    {
-        if (has_psram())
-        {
-            config.jpeg_quality = cam_config.jpeg_quality_with_psram;
-            config.fb_count = cam_config.fb_count_with_psram;
-            // Auto mode uses LATEST with PSRAM; explicit override always takes precedence
-            if (cam_config.grab_mode == 0xFF)
-            {
-                config.grab_mode = CAMERA_GRAB_LATEST;
-            }
-        }
-        else
-        {
-            config.frame_size = static_cast<framesize_t>(cam_config.frame_size_no_psram);
-            config.fb_location = CAMERA_FB_IN_DRAM;
-        }
     }
 
     esp_err_t err = esp_camera_init(&config);
@@ -117,9 +98,18 @@ bool CameraHalImpl::is_initialized() const
     return m_initialized;
 }
 
-bool CameraHalImpl::has_psram() const
+CameraCapabilities CameraHalImpl::get_capabilities() const
 {
-    return psramFound();
+    if (psramFound())
+    {
+        // PSRAM present: UXGA, quality 10, 2 buffers, LATEST grab
+        return {5, 10, 2, 1, 1600, 1200};
+    }
+    else
+    {
+        // No PSRAM: SVGA, quality 12, 1 buffer, WHEN_EMPTY grab
+        return {3, 12, 1, 0, 800, 600};
+    }
 }
 
 } // namespace hal

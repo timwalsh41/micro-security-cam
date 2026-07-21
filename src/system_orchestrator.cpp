@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <cstring>
 
-static constexpr const char* SUBSYSTEM = "SysOrch";
+static constexpr const char* SUBSYSTEM = "ORCH";
 
 SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CameraController& camera,
@@ -27,8 +27,7 @@ void SystemOrchestrator::init()
 
 void SystemOrchestrator::tick()
 {
-    // Placeholder — grows in Slice 7 for schedule evaluation
-    // and mode transitions.
+    // Placeholder — schedule management and mode transitions
 }
 
 void SystemOrchestrator::register_commands()
@@ -145,6 +144,10 @@ CommandResult SystemOrchestrator::handle_take_photo(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* /* response */, size_t& /* responseLen */)
 {
+    // Placeholder implementation - just obtains the camera frame 
+    // and discards it, pending full implementation on VideoController
+    // refactor to own all SD I/O
+
     CameraCaptureResult result = m_camera.capture_frame();
     if (result != CameraCaptureResult::SUCCESS)
     {
@@ -181,6 +184,6 @@ CommandResult SystemOrchestrator::handle_set_config(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* /* response */, size_t& /* responseLen */)
 {
-    // Config update from web deferred to Slice 5.
+    // Placeholder - config update deferred
     return CommandResult::INVALID_STATE;
 }

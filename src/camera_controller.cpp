@@ -39,14 +39,26 @@ const ResolutionEntry RESOLUTION_TABLE[] =
 };
 
 /**
- * @brief Maximum framesize value supported without PSRAM (FRAMESIZE_SVGA = 3).
+ * @brief Resolves a framesize enum value to pixel dimensions.
+ *
+ * @param framesize Framesize enum value to look up.
+ * @param width     [out] Pixel width.
+ * @param height    [out] Pixel height.
+ * @return true if the framesize was found in the resolution table.
  */
-const uint8_t MAX_FRAMESIZE_NO_PSRAM = 3;
-
-/**
- * @brief Minimum JPEG quality (best allowed) without PSRAM.
- */
-const uint8_t MIN_QUALITY_NO_PSRAM = 12;
+bool resolve_dimensions(uint8_t framesize, uint16_t& width, uint16_t& height)
+{
+    for (const ResolutionEntry* entry = RESOLUTION_TABLE; entry->name != nullptr; ++entry)
+    {
+        if (entry->framesize == framesize)
+        {
+            width = entry->width;
+            height = entry->height;
+            return true;
+        }
+    }
+    return false;
+}
 
 } // anonymous namespace
 
@@ -56,7 +68,6 @@ const uint8_t MIN_QUALITY_NO_PSRAM = 12;
 
 ResolvedCameraParams build_camera_config(
     const CameraImageConfig& user_config,
-    bool has_psram,
     LoggingService& log)
 {
     // Default: VGA
@@ -86,37 +97,10 @@ ResolvedCameraParams build_camera_config(
 
     uint8_t jpeg_quality = user_config.jpeg_quality;
 
-    // PSRAM guards
-    if (!has_psram)
-    {
-        if (framesize > MAX_FRAMESIZE_NO_PSRAM)
-        {
-            log.warn("Camera",
-                "No PSRAM: capping resolution from %u to SVGA",
-                static_cast<unsigned>(framesize));
-            framesize = MAX_FRAMESIZE_NO_PSRAM;  // FRAMESIZE_SVGA
-            width = 800;
-            height = 600;
-        }
-
-        if (jpeg_quality < MIN_QUALITY_NO_PSRAM)
-        {
-            log.warn("Camera",
-                "No PSRAM: relaxing JPEG quality from %u to %u",
-                static_cast<unsigned>(jpeg_quality),
-                static_cast<unsigned>(MIN_QUALITY_NO_PSRAM));
-            jpeg_quality = MIN_QUALITY_NO_PSRAM;
-        }
-    }
-
-    // Build HAL config
+    // Build single-valued HAL config (clamping happens in CameraController::init())
     hal::CameraConfig hal_config;
-    hal_config.frame_size_with_psram = framesize;
-    hal_config.jpeg_quality_with_psram = jpeg_quality;
-    hal_config.frame_size_no_psram = (framesize <= MAX_FRAMESIZE_NO_PSRAM)
-        ? framesize : MAX_FRAMESIZE_NO_PSRAM;
-    hal_config.jpeg_quality_no_psram = (jpeg_quality >= MIN_QUALITY_NO_PSRAM)
-        ? jpeg_quality : MIN_QUALITY_NO_PSRAM;
+    hal_config.frame_size = framesize;
+    hal_config.jpeg_quality = jpeg_quality;
 
     ResolvedCameraParams params;
     params.hal_config = hal_config;
@@ -149,16 +133,74 @@ CameraController::CameraController(hal::CameraHal& hal,
 
 hal::CameraInitResult CameraController::init()
 {
+    // Clamp construction-time config against HAL capabilities
+    hal::CameraCapabilities caps = m_hal.get_capabilities();
+
+    if (m_config.frame_size > caps.max_framesize)
+    {
+        m_config.frame_size = caps.max_framesize;
+    }
+    if (m_config.jpeg_quality < caps.min_jpeg_quality)
+    {
+        m_config.jpeg_quality = caps.min_jpeg_quality;
+    }
+    if (m_config.fb_count > caps.max_fb_count)
+    {
+        m_config.fb_count = caps.max_fb_count;
+    }
+
     hal::CameraInitResult result = m_hal.init(m_config);
     m_initialized = (result == hal::CameraInitResult::SUCCESS);
+
+    if (m_initialized)
+    {
+        m_actual_params.hal_config = m_config;
+        m_actual_params.framesize = m_config.frame_size;
+        resolve_dimensions(m_config.frame_size,
+                           m_actual_params.width,
+                           m_actual_params.height);
+    }
+
     return result;
 }
 
 hal::CameraInitResult CameraController::init(const ResolvedCameraParams& params)
 {
     m_config = params.hal_config;
+
+    // Clamp desired config against HAL capabilities
+    hal::CameraCapabilities caps = m_hal.get_capabilities();
+
+    if (m_config.frame_size > caps.max_framesize)
+    {
+        m_config.frame_size = caps.max_framesize;
+    }
+    if (m_config.jpeg_quality < caps.min_jpeg_quality)
+    {
+        m_config.jpeg_quality = caps.min_jpeg_quality;
+    }
+    if (m_config.fb_count > caps.max_fb_count)
+    {
+        m_config.fb_count = caps.max_fb_count;
+    }
+
     hal::CameraInitResult result = m_hal.init(m_config);
     m_initialized = (result == hal::CameraInitResult::SUCCESS);
+
+    if (m_initialized)
+    {
+        m_actual_params.hal_config = m_config;
+        m_actual_params.framesize = m_config.frame_size;
+        if (!resolve_dimensions(m_config.frame_size,
+                                m_actual_params.width,
+                                m_actual_params.height))
+        {
+            // Fallback: use the pre-resolved dimensions from params
+            m_actual_params.width = params.width;
+            m_actual_params.height = params.height;
+        }
+    }
+
     return result;
 }
 
@@ -220,4 +262,9 @@ void CameraController::release_frame()
 bool CameraController::is_initialized() const
 {
     return m_initialized;
+}
+
+const ResolvedCameraParams& CameraController::get_params() const
+{
+    return m_actual_params;
 }

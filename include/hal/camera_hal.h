@@ -38,30 +38,49 @@ struct CameraFrame
 };
 
 /**
+ * @brief Abstract hardware capability limits for camera operation.
+ *
+ * Returned by CameraHal::get_capabilities(). Describes what the
+ * hardware can support regardless of the underlying reason
+ * (PSRAM availability, DRAM limits, board revision, etc.).
+ */
+/**
+ * @brief Default capabilities for systems without PSRAM.
+ */
+struct CameraCapabilities
+{
+    uint8_t max_framesize;          ///< Framesize enum (e.g. FRAMESIZE_SVGA = 3)
+    uint8_t min_jpeg_quality;       ///< Minimum JPEG quality (0-63, lower = better)
+    uint8_t max_fb_count;           ///< Maximum frame buffers
+    uint8_t recommended_grab_mode;  ///< 0=WHEN_EMPTY, 1=LATEST
+    uint16_t max_width;             ///< Max pixel width
+    uint16_t max_height;            ///< Max pixel height
+};
+
+/** PSRAM-present capabilities: UXGA, quality 10, 2 bufs, LATEST grab. */
+constexpr CameraCapabilities PSRAM_CAPABILITIES{5, 10, 2, 1, 1600, 1200};
+
+/** No-PSRAM capabilities: SVGA, quality 12, 1 buf, WHEN_EMPTY grab. */
+constexpr CameraCapabilities NO_PSRAM_CAPABILITIES{3, 12, 1, 0, 800, 600};
+
+/**
  * @brief Configuration parameters for camera initialization.
  *
- * Provides sensible defaults for the Seeed XIAO ESP32S3 board.
- * Consumers can override specific fields as needed.
+ * Single-valued — expresses the caller's intent without PSRAM-specific
+ * fields. The HAL applies hardware-specific adjustments internally;
+ * the CameraController clamps these values against CameraCapabilities
+ * before passing them to init().
  */
 struct CameraConfig
 {
-    /** JPEG quality (0-63, lower = higher quality) when PSRAM is absent. */
-    uint8_t jpeg_quality_no_psram{12};
+    /** JPEG quality (0-63, lower = higher quality). */
+    uint8_t jpeg_quality{12};
 
-    /** JPEG quality (0-63, lower = higher quality) when PSRAM is present. */
-    uint8_t jpeg_quality_with_psram{10};
+    /** Frame size enum value (e.g. FRAMESIZE_SVGA = 3). */
+    uint8_t frame_size{3};
 
-    /** Frame size enum value when PSRAM is not available (FRAMESIZE_SVGA = 9). */
-    uint8_t frame_size_no_psram{9};
-
-    /** Frame size enum value when PSRAM is available (FRAMESIZE_UXGA = 5). */
-    uint8_t frame_size_with_psram{5};
-
-    /** Number of frame buffers when PSRAM is present. */
-    uint8_t fb_count_with_psram{2};
-
-    /** Number of frame buffers when PSRAM is absent. */
-    uint8_t fb_count_no_psram{1};
+    /** Number of frame buffers. */
+    uint8_t fb_count{1};
 
     /**
      * @brief Camera grab mode override.
@@ -69,8 +88,7 @@ struct CameraConfig
      * Controls how the camera driver delivers frames:
      *   - 0 (CAMERA_GRAB_WHEN_EMPTY): Return frame when available, may return stale frame.
      *   - 1 (CAMERA_GRAB_LATEST): Discard buffered frames, return only the freshest frame.
-     *   - 0xFF (default): Auto-detect based on PSRAM availability. When PSRAM is present,
-     *     uses CAMERA_GRAB_LATEST; otherwise uses CAMERA_GRAB_WHEN_EMPTY.
+     *   - 0xFF (default): Auto-detect — uses the HAL's recommended mode.
      *
      * Video recording should use CAMERA_GRAB_LATEST (1) to prevent stale frame delivery
      * during SD write stalls.
@@ -83,8 +101,12 @@ struct CameraConfig
  * @brief Abstract interface for camera hardware operations.
  *
  * Provides a mockable abstraction over the ESP32 camera library
- * (esp_camera.h). The CameraController owns the capture lifecycle;
- * therefore capture() and release() MUST be called in pairs.
+ * (esp_camera.h). Exposes hardware capability limits via
+ * get_capabilities() so the service layer can clamp configuration
+ * without knowing about PSRAM or other board-specific details.
+ *
+ * The CameraController owns the capture lifecycle; therefore
+ * capture() and release() MUST be called in pairs.
  */
 class CameraHal
 {
@@ -95,9 +117,8 @@ class CameraHal
          * @brief Initializes the camera hardware.
          *
          * Performs hardware initialization, configures pins, and
-         * allocates frame buffers. Uses the provided configuration
-         * to set JPEG quality, frame size, and buffer count based
-         * on PSRAM availability.
+         * allocates frame buffers. The config values are assumed to
+         * have been clamped against get_capabilities() by the caller.
          *
          * @param config Camera configuration parameters.
          * @return CameraInitResult indicating success or failure.
@@ -135,14 +156,16 @@ class CameraHal
         virtual bool is_initialized() const = 0;
 
         /**
-         * @brief Checks whether PSRAM is available on the board.
+         * @brief Queries the hardware capability limits for this board.
          *
-         * Used by the CameraController to select appropriate camera
-         * configuration parameters (frame size, quality, buffer count).
+         * Returns abstract capabilities (max resolution, min quality,
+         * max buffers, recommended grab mode) derived from board
+         * characteristics such as PSRAM availability. The CameraController
+         * uses these to clamp user configuration before initialization.
          *
-         * @return true if PSRAM is present, false otherwise.
+         * @return CameraCapabilities struct with hardware limits.
          */
-        virtual bool has_psram() const = 0;
+        virtual CameraCapabilities get_capabilities() const = 0;
 };
 
 } // namespace hal

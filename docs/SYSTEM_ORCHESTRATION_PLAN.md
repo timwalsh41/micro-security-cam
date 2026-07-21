@@ -594,6 +594,8 @@ skinparam ranksep 30
 
 **Demo:** Connect to camera WiFi, open browser to IP address, see status dashboard, start/stop recording from web page. Take a photo remotely. Files named with real timestamps.
 
+> **Photo capture gap (resolved in Slice 3):** In Slice 1, `TAKE_PHOTO` captures a camera frame but does not save it to SD — the photo is logged and discarded. The actual SD write is deferred to Slice 3 when `VideoController::capture_photo()` is introduced as part of the FreeRTOS task refactor, at which point `SystemOrchestrator::handle_take_photo()` is updated to call it. See the Slice 3 Major Modification for the full plumbing.
+
 ### New Interfaces
 
 #### `WifiHal` (`include/hal/wifi_hal.h`)
@@ -840,7 +842,7 @@ struct VideoConfig {
 
 Result: a user setting `resolution=VGA` gets a file named `640x480` but the camera captures at 1600×1200.
 
-**Design — single user-facing config, PSRAM guards downstream:**
+**Design — single user-facing config, capabilities-based clamping in controller:**
 
 ##### New config struct: `CameraImageConfig`
 
@@ -871,43 +873,48 @@ struct ResolvedCameraParams
 
 ResolvedCameraParams build_camera_config(
     const CameraImageConfig& user_config,
-    bool has_psram,
     LoggingService& log);
 ```
 
 The bridge function:
 1. **Maps resolution string → framesize_t + dimensions** using the same mapping as `VideoController::map_resolution()`, but producing an `esp_camera.h` enum value
-2. **Applies PSRAM guards:** If PSRAM is absent, caps frame_size to `FRAMESIZE_SVGA` and adjusts quality upward (less compression = smaller buffers). Logs any deviation from user settings.
-3. **Populates `hal::CameraConfig`** with the resolved values including `frame_size_with_psram` (see below)
-4. **Returns validated dimensions** so downstream consumers (VideoController, AviWriter) use the actual capture dimensions, not independently mapped ones
+2. **Populates `hal::CameraConfig`** with the resolved values
+3. **Returns validated dimensions** so downstream consumers (VideoController, AviWriter) use the actual capture dimensions, not independently mapped ones
 
-##### `hal::CameraConfig` changes
+##### `hal::CameraConfig`
 
 ```cpp
 struct CameraConfig
 {
-    uint8_t jpeg_quality_no_psram{12};
-    uint8_t jpeg_quality_with_psram{10};
-    uint8_t frame_size_no_psram{9};       // FRAMESIZE_SVGA (default, fallback)
-    uint8_t frame_size_with_psram{5};     // FRAMESIZE_UXGA (default)
-    uint8_t fb_count_with_psram{2};
-    uint8_t fb_count_no_psram{1};
-    uint8_t grab_mode{0xFF};
+    uint8_t jpeg_quality{12};
+    uint8_t frame_size{3};        // FRAMESIZE_SVGA (default)
+    uint8_t fb_count{1};
+    uint8_t grab_mode{0xFF};      // 0xFF = auto-select via capabilities
 };
 ```
 
-`CameraHalImpl::init()` uses `frame_size_with_psram` instead of the hardcoded `FRAMESIZE_UXGA`.
+##### Capabilities-based hardware adaptation
 
-##### PSRAM guard logic
+PSRAM awareness is isolated in the HAL layer via a capabilities query rather than distributed across service code. `CameraHal` exposes an abstract `CameraCapabilities` struct:
 
-When PSRAM is **not** available, the bridge function applies these guards and **logs** any deviation:
+```cpp
+struct CameraCapabilities
+{
+    uint8_t max_framesize;        // ESP32 framesize_t
+    uint8_t min_jpeg_quality;     // 0-63, hardware-dependent floor
+    uint8_t max_fb_count;
+    uint8_t recommended_grab_mode; // 0=WHEN_EMPTY, 1=LATEST
+    uint16_t max_width;
+    uint16_t max_height;
+};
+```
 
-| User setting | Guard | Logged message |
-|---|---|---|
-| `resolution` > SVGA (800×600) | Capped to SVGA | `"CAMERA: Resolution capped to SVGA (no PSRAM)"` |
-| `jpeg_quality` < 12 (high quality) | Relaxed to 12 | `"CAMERA: JPEG quality relaxed to 12 (no PSRAM)"` |
+`CameraController::init()` calls `get_capabilities()` and clamps the user-facing config against the returned bounds before passing it to `CameraHal::init()`. This keeps PSRAM decisions in the HAL and makes the controller hardware-agnostic:
+- `frame_size` is capped to `min(max_framesize, requested_framesize)`
+- `jpeg_quality` is clamped to `max(min_jpeg_quality, requested_quality)`
+- `fb_count` is clamped to `min(max_fb_count, requested_fb_count)`
 
-When PSRAM **is** available, user settings are used as-is — no guards applied.
+The HAL sets `fb_location` to `CAMERA_FB_IN_PSRAM` when PSRAM is available (via `psramFound()`) and logs the active configuration. After a successful init, the controller stores the actual resolved parameters accessible via `get_params()`, used by `main.cpp` to pass validated width/height to `VideoController`.
 
 ##### ConfigData changes (Slice 1)
 
@@ -973,13 +980,15 @@ peripheral_manager.read_file(ConfigService::DEFAULT_CONFIG_PATH,
 config_service.load(config_buf, bytes_read);
 
 // 2. Initialize camera with config-driven settings
+//    CameraController::init() clamps config against HAL capabilities
 ResolvedCameraParams cam_params = build_camera_config(
-    config_service.config().camera,
-    camera_hal.has_psram(), logger);
-camera_ctrl.init(/* pass resolved hal_config */);
+    config_service.config().camera, logger);
+camera_ctrl.init(cam_params);
 
 // 3. Wire validated dimensions to video controller
-video_controller.init(config_service.config().video, cam_params.width, cam_params.height);
+video_controller.init(config_service.config().video,
+                      camera_ctrl.get_params().width,
+                      camera_ctrl.get_params().height);
 ```
 
 ##### Validated dimensions flowing downstream
@@ -1029,6 +1038,7 @@ system_orchestrator.tick();  // initially minimal, grows over slices
 
 - Clean build for both environments, all native tests pass
 - On hardware: WiFi connects, web page loads, recording starts/stops from browser
+- Photo command captures a frame; SD save deferred to Slice 3
 - Files named with real timestamps
 
 ---
@@ -1221,6 +1231,12 @@ class VideoController
         // NEW — stream integration
         void set_stream_service(StreamService* svc);  // null = no streaming
 
+**`capture_photo()` implementation:** Opens a raw JPEG file on SD, writes the captured frame bytes directly, and closes the file. All I/O runs within the `capture_task` context (which owns all SD access). The method does NOT use the AVI pipeline — it writes a standalone `.jpg` file.
+
+**`SystemOrchestrator::handle_take_photo()` update required:** Before this slice, `handle_take_photo()` captures a frame and discards it. In Slice 3 it must be updated to call `m_video.capture_photo(path)` instead. The file path is built from the current timestamp using `TimeService::unix_now()` (or `now()` as fallback), e.g. `/photos/YYYYMMDD_HHMMSS.jpg`. The parent directory is created on first use. The orchestrator response should report the saved path on success.
+
+**Concurrency note:** `capture_photo()` is called from the orchestrator (main loop context), not from `capture_task`. It must acquire the `sd_active` mutex before doing SD I/O and release it after, serializing with `capture_task`'s recording/streaming operations. If `capture_task` is actively recording, the photo write waits until the current SD transaction completes. This is acceptable because photo capture is a low-frequency operation.
+
     private:
         // OLD: void tick() — REMOVED
         // NEW: FreeRTOS task-based architecture
@@ -1304,9 +1320,10 @@ video_controller.set_stream_service(&stream_service);
 
 ### Tests
 
-- `test_native/test_video_controller/`: Refactor — test `on_frame_capture()` directly (no task scheduling in native tests)
+- `test_native/test_video_controller/`: Refactor — test `on_frame_capture()` directly (no task scheduling in native tests); add `capture_photo()` test that verifies raw JPEG written to SD
 - `test_native/test_stream_service/`: Stream lifecycle, semaphore patterns, buffer overflow handling
 - Timer ISR simulation via `MockTimerHal::trigger()`
+- `test_native/test_system_orchestrator/`: Update `TAKE_PHOTO` test to verify `capture_photo()` is called on `VideoController` (mock expectation)
 
 ### Verification
 
@@ -1315,6 +1332,7 @@ video_controller.set_stream_service(&stream_service);
 - Simultaneous recording + streaming works
 - Up to `max_streams` concurrent connections
 - Memory stability: 10+ sequential clips
+- `TAKE_PHOTO` command saves `.jpg` file to SD, path reported in response
 
 ---
 
@@ -1858,8 +1876,8 @@ Complete dependency and responsibility summary for all new and significantly mod
 | **TimeService** | 1 | Unix time offset, `unix_now()`, `Calendar` struct |
 | **ConfigData** | 1, 7 | `[camera]` gains `resolution`, `jpeg_quality`, `grab_mode`; new sections (camera_photo, camera_video, motion, timelapse, schedule) |
 | **IniParser** | 1, 7 | Parse new config sections and expanded `[camera]` fields |
-| **CameraHalImpl** | 1 | Replace hardcoded `FRAMESIZE_UXGA` with `frame_size_with_psram` from config; add `has_psram()` accessor |
-| **CameraController** | 1, 7 | Accept `ResolvedCameraParams` in `init()` instead of hardcoded `hal::CameraConfig` defaults |
+| **CameraHalImpl** | 1 | Expose `get_capabilities()` returning `CameraCapabilities` (max framesize, quality floor, fb count) based on PSRAM availability; `init()` uses single-valued `CameraConfig` |
+| **CameraController** | 1, 7 | Clamp user config against `get_capabilities()` in `init()`; expose `get_params()` for validated dimensions |
 
 ### Dependency Injection Patterns
 
@@ -1930,7 +1948,7 @@ PSRAM usage scales with resolution and stream count. The relationship is continu
 
 7. **`CameraController` config is split by capture mode** — `[camera_photo]` holds resolution/quality for still photos; `[camera_video]` holds resolution/quality/fps for video frames. The `[video]` section retains only recording-management fields. The orchestrator re-initializes `CameraController` with the appropriate config section when switching modes. This addresses the existing gap where camera settings are hardcoded rather than config-driven.
 
-8. **Camera config flows through a bridge function, not directly** — `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution string + quality) into a validated `hal::CameraConfig` plus resolved pixel dimensions. PSRAM guards are applied and logged here, not in the HAL. The HAL receives a fully resolved config and applies it without interpretation. This keeps the HAL simple, the guards testable on native, and the user's intent clear at every layer.
+8. **Camera config flows through a bridge function, not directly** — `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution string + quality) into a `hal::CameraConfig` plus resolved pixel dimensions. The HAL exposes `CameraCapabilities` via `get_capabilities()`, and the controller clamps the config against those capabilities at init time. This keeps PSRAM decisions in the HAL, clamping testable on native, and the user's intent clear at every layer.
 
 ---
 

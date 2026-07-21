@@ -86,16 +86,12 @@ void test_init_passes_default_config()
     ctrl.init();
 
     hal::CameraConfig expected;
-    TEST_ASSERT_EQUAL_UINT8(expected.jpeg_quality_no_psram,
-                            hal.last_init_config.jpeg_quality_no_psram);
-    TEST_ASSERT_EQUAL_UINT8(expected.jpeg_quality_with_psram,
-                            hal.last_init_config.jpeg_quality_with_psram);
-    TEST_ASSERT_EQUAL_UINT8(expected.fb_count_with_psram,
-                            hal.last_init_config.fb_count_with_psram);
-    TEST_ASSERT_EQUAL_UINT8(expected.fb_count_no_psram,
-                            hal.last_init_config.fb_count_no_psram);
-    TEST_ASSERT_EQUAL_UINT8(expected.frame_size_no_psram,
-                            hal.last_init_config.frame_size_no_psram);
+    TEST_ASSERT_EQUAL_UINT8(expected.jpeg_quality,
+                            hal.last_init_config.jpeg_quality);
+    TEST_ASSERT_EQUAL_UINT8(expected.frame_size,
+                            hal.last_init_config.frame_size);
+    TEST_ASSERT_EQUAL_UINT8(expected.fb_count,
+                            hal.last_init_config.fb_count);
     TEST_ASSERT_EQUAL_UINT8(expected.grab_mode,
                             hal.last_init_config.grab_mode);
 }
@@ -105,28 +101,126 @@ void test_init_passes_default_config()
 // ============================================================
 
 /**
- * @brief Custom config is passed through to the HAL.
+ * @brief Custom config is clamped against capabilities and passed through.
  */
 void test_init_passes_custom_config()
 {
     MockCameraHal hal;
+    // Set permissive capabilities so custom values pass through clamping
+    hal.capabilities = {8, 6, 4, 0, 1600, 1200};
+
     hal::CameraConfig config;
-    config.jpeg_quality_no_psram = 8;
-    config.jpeg_quality_with_psram = 6;
-    config.fb_count_with_psram = 4;
-    config.fb_count_no_psram = 2;
-    config.frame_size_no_psram = 8;  // FRAMESIZE_VGA
+    config.jpeg_quality = 8;
+    config.frame_size = 2;  // FRAMESIZE_VGA
+    config.fb_count = 2;
     CameraController ctrl(hal, config);
 
     hal.init_result = hal::CameraInitResult::SUCCESS;
     ctrl.init();
 
     TEST_ASSERT_EQUAL_INT(1, hal.init_call_count);
-    TEST_ASSERT_EQUAL_UINT8(8, hal.last_init_config.jpeg_quality_no_psram);
-    TEST_ASSERT_EQUAL_UINT8(6, hal.last_init_config.jpeg_quality_with_psram);
-    TEST_ASSERT_EQUAL_UINT8(4, hal.last_init_config.fb_count_with_psram);
-    TEST_ASSERT_EQUAL_UINT8(2, hal.last_init_config.fb_count_no_psram);
-    TEST_ASSERT_EQUAL_UINT8(8, hal.last_init_config.frame_size_no_psram);
+    TEST_ASSERT_EQUAL_UINT8(8, hal.last_init_config.jpeg_quality);
+    TEST_ASSERT_EQUAL_UINT8(2, hal.last_init_config.frame_size);
+    TEST_ASSERT_EQUAL_UINT8(2, hal.last_init_config.fb_count);
+}
+
+// ============================================================
+// Clamping against capabilities
+// ============================================================
+
+/**
+ * @brief init() clamps framesize to max_framesize capability.
+ */
+void test_init_clamps_framesize()
+{
+    MockCameraHal hal;
+    // Conservative capabilities: max SVGA (3)
+    hal.capabilities = {3, 1, 4, 0, 800, 600};
+
+    hal::CameraConfig config;
+    config.frame_size = 5;  // UXGA — exceeds max_framesize=3
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT8(3, hal.last_init_config.frame_size);
+}
+
+/**
+ * @brief init() clamps JPEG quality to min_jpeg_quality capability.
+ */
+void test_init_clamps_quality()
+{
+    MockCameraHal hal;
+    // Conservative capabilities: min quality 12
+    hal.capabilities = {5, 12, 2, 0, 1600, 1200};
+
+    hal::CameraConfig config;
+    config.jpeg_quality = 5;  // Better (lower) than min_jpeg_quality=12
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT8(12, hal.last_init_config.jpeg_quality);
+}
+
+/**
+ * @brief init() clamps fb_count to max_fb_count capability.
+ */
+void test_init_clamps_fb_count()
+{
+    MockCameraHal hal;
+    hal.capabilities = {5, 1, 1, 0, 1600, 1200};
+
+    hal::CameraConfig config;
+    config.fb_count = 4;  // exceeds max_fb_count=1
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT8(1, hal.last_init_config.fb_count);
+}
+
+// ============================================================
+// get_params()
+// ============================================================
+
+/**
+ * @brief get_params() returns default values before init().
+ */
+void test_get_params_before_init()
+{
+    MockCameraHal hal;
+    CameraController ctrl(hal);
+
+    const ResolvedCameraParams& params = ctrl.get_params();
+    TEST_ASSERT_EQUAL_UINT16(640, params.width);
+    TEST_ASSERT_EQUAL_UINT16(480, params.height);
+}
+
+/**
+ * @brief get_params() returns clamped dimensions after init().
+ */
+void test_get_params_after_init()
+{
+    MockCameraHal hal;
+    // Conservative: SVGA (800x600) max
+    hal.capabilities = {3, 12, 1, 0, 800, 600};
+
+    hal::CameraConfig config;
+    config.frame_size = 5;        // UXGA (1600x1200) — will be clamped to SVGA
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    const ResolvedCameraParams& params = ctrl.get_params();
+    TEST_ASSERT_EQUAL_UINT8(3, params.framesize);
+    TEST_ASSERT_EQUAL_UINT16(800, params.width);
+    TEST_ASSERT_EQUAL_UINT16(600, params.height);
 }
 
 // ============================================================
@@ -404,6 +498,15 @@ int main(int argc, char **argv)
     RUN_TEST(test_init_failure);
     RUN_TEST(test_init_passes_default_config);
     RUN_TEST(test_init_passes_custom_config);
+
+    // Clamping
+    RUN_TEST(test_init_clamps_framesize);
+    RUN_TEST(test_init_clamps_quality);
+    RUN_TEST(test_init_clamps_fb_count);
+
+    // get_params()
+    RUN_TEST(test_get_params_before_init);
+    RUN_TEST(test_get_params_after_init);
 
     // deinit()
     RUN_TEST(test_deinit_delegates_to_hal);

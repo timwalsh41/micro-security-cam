@@ -1,4 +1,5 @@
 #include "web_command_transport.h"
+#include "web_auth_util.h"
 #include <cstring>
 #include <cstdio>
 
@@ -101,25 +102,12 @@ void WebCommandTransport::dispatch_and_respond(CommandCode code)
 
 bool WebCommandTransport::check_auth()
 {
-    // No password configured — allow all requests
-    if (m_password[0] == '\0')
-    {
-        return true;
-    }
-
-    // Check if Authorization header contains the password
     const char* auth = m_web.auth_header();
-    if (auth == nullptr || auth[0] == '\0')
+
+    if (!check_basic_auth(auth, m_password))
     {
         m_web.send(401, "application/json",
                    "{\"error\":\"authentication required\"}");
-        return false;
-    }
-
-    if (strstr(auth, m_password) == nullptr)
-    {
-        m_web.send(401, "application/json",
-                   "{\"error\":\"invalid credentials\"}");
         return false;
     }
 
@@ -133,9 +121,8 @@ void WebCommandTransport::handle_status()
         return;
     }
 
-    const char* cmd = m_web.arg("cmd");
-    CommandCode code = map_cmd_string(cmd);
-    dispatch_and_respond(code);
+    // /status always returns GET_STATUS
+    dispatch_and_respond(CommandCode::GET_STATUS);
 }
 
 void WebCommandTransport::handle_control()

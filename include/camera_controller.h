@@ -5,9 +5,6 @@
 #include "hal/camera_hal.h"
 #include "logging_service.h"
 
-// Note: framesize_t is defined in esp_camera.h (ESP32 only).
-// For native tests, a compatible enum is provided in the mock layer.
-
 /**
  * @brief User-facing camera image configuration.
  *
@@ -21,34 +18,35 @@ struct CameraImageConfig
 };
 
 /**
- * @brief Resolved camera parameters after PSRAM guard application.
+ * @brief Camera parameters after resolution mapping (pre-clamping).
  *
- * Contains the validated HAL configuration and actual pixel dimensions
+ * Contains the desired HAL configuration and pixel dimensions
  * that downstream consumers (VideoController, AviWriter) should use.
+ * The final clamped values after init() are available via
+ * CameraController::get_params().
  */
 struct ResolvedCameraParams
 {
-    hal::CameraConfig hal_config;  ///< Fully resolved HAL config
-    uint16_t width;                ///< Validated pixel width
-    uint16_t height;               ///< Validated pixel height
-    uint8_t framesize;             ///< ESP32 framesize_t enum value
+    hal::CameraConfig hal_config;  ///< Desired HAL config (pre-clamping)
+    uint16_t width;                ///< Pixel width from resolution mapping
+    uint16_t height;               ///< Pixel height from resolution mapping
+    uint8_t framesize;             ///< Maps to ESP32 framesize_t enum value
 };
 
 /**
- * @brief Translates user-facing CameraImageConfig to validated HAL config.
+ * @brief Translates user-facing CameraImageConfig to desired camera parameters.
  *
- * Maps resolution string to framesize_t + dimensions, applies PSRAM
- * guards, and returns validated parameters. The authoritative
- * resolution mapping — replaces VideoController::map_resolution().
+ * Maps resolution string to framesize_t enum + pixel dimensions.
+ * This is a pure mapping function — hardware capability clamping
+ * (PSRAM guards, etc.) is handled by CameraController::init()
+ * via HAL-provided CameraCapabilities.
  *
  * @param user_config User-facing camera settings from INI.
- * @param has_psram   Whether PSRAM is available on the board.
- * @param log         LoggingService for guard warnings.
- * @return Resolved camera parameters.
+ * @param log         LoggingService for warnings.
+ * @return Resolved camera parameters (desired, not yet clamped).
  */
 ResolvedCameraParams build_camera_config(
     const CameraImageConfig& user_config,
-    bool has_psram,
     LoggingService& log);
 
 /**
@@ -78,9 +76,11 @@ enum class CameraCaptureResult : uint8_t
  * Provides a controlled lifecycle:
  *   init() → capture_frame() → get_frame() → release_frame()
  *
- * Configuration is determined by PSRAM availability, with defaults
- * suitable for the Seeed XIAO ESP32S3. Custom configuration can be
- * provided via the overloaded constructor.
+ * Configuration values are clamped against hardware capabilities
+ * (queried from CameraHal::get_capabilities()) during init() so
+ * the caller does not need to know about PSRAM or board limits.
+ * The actual applied parameters are available via get_params()
+ * after a successful init().
  */
 class CameraController
 {
@@ -99,20 +99,21 @@ class CameraController
         CameraController(hal::CameraHal& hal, const hal::CameraConfig& config);
 
         /**
-         * @brief Initializes the camera with configuration suitable for this board.
+         * @brief Initializes the camera, clamping config against HAL capabilities.
          *
-         * Queries PSRAM availability via the HAL and adjusts frame size,
-         * quality, and buffer count accordingly. The configuration values
-         * come from the CameraConfig provided at construction time.
+         * Queries CameraHal::get_capabilities() and clamps frame size,
+         * quality, and buffer count to within hardware limits before
+         * initializing. The configuration values come from the
+         * CameraConfig provided at construction time.
          *
          * @return hal::CameraInitResult indicating success or failure.
          */
         hal::CameraInitResult init();
 
         /**
-         * @brief Initializes the camera with pre-resolved parameters.
+         * @brief Initializes the camera, clamping params against HAL capabilities.
          *
-         * @param params Resolved camera parameters from build_camera_config().
+         * @param params Desired parameters from build_camera_config().
          * @return hal::CameraInitResult indicating success or failure.
          */
         hal::CameraInitResult init(const ResolvedCameraParams& params);
@@ -158,12 +159,24 @@ class CameraController
          */
         bool is_initialized() const;
 
+        /**
+         * @brief Returns the parameters that were actually applied during init().
+         *
+         * Contains the clamped HAL config and resolved pixel dimensions.
+         * Only valid after a successful init() call. Before init(),
+         * returns default (VGA) values.
+         *
+         * @return Const reference to the actual applied parameters.
+         */
+        const ResolvedCameraParams& get_params() const;
+
     private:
         hal::CameraHal& m_hal;
         hal::CameraConfig m_config;
         bool m_initialized{false};
         bool m_frame_acquired{false};
         hal::CameraFrame m_current_frame{nullptr, 0};
+        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 640, 480, 2};
 };
 
 #endif // CAMERA_CONTROLLER_H

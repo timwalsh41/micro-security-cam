@@ -69,7 +69,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 
 | Interface | File | Responsibility |
 |-----------|------|----------------|
-| `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, PSRAM detection. Returns `CameraInitResult`, `CameraFrame`. |
+| `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
 | `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/close. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
 | `GpioHal` | `include/hal/gpio_hal.h` | Thin forwarding wrappers for `pinMode()` and `digitalWrite()`. No logic — pure indirection. |
 | `TimeHal` | `include/hal/time_hal.h` | Forwarding functions for Arduino `millis()`, `delay()`, and microsecond delays. Defines the `millis_t` type alias. |
@@ -138,7 +138,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 
 | Mock | Tracks | Configurable |
 |------|--------|-------------|
-| `MockCameraHal` | `init_call_count`, `capture_call_count`, `release_call_count`, `deinit_call_count` | `init_result`, `capture_result`, `initialized_state`, `psram_available` |
+| `MockCameraHal` | `init_call_count`, `capture_call_count`, `release_call_count`, `deinit_call_count` | `init_result`, `capture_result`, `initialized_state`, `capabilities` |
 | `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count` | `init_result`, `open_result`, `write_result` |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
@@ -332,7 +332,7 @@ In `main.cpp`, after SD card initialization:
 1. A stack-allocated buffer of `CONFIG_BUFFER_SIZE` bytes is created.
 2. `PeripheralManager::read_file()` reads `/config.ini` from the SD card.
 3. `ConfigService::load()` parses the buffer and logs the result.
-4. `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution + JPEG quality from config) into validated `ResolvedCameraParams` with PSRAM guards applied.
+4. `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution + JPEG quality from config) into `ResolvedCameraParams`. The camera controller clamps these against HAL capabilities at init time.
 5. `CameraController::init(ResolvedCameraParams)` initializes the camera with the validated config.
 6. `VideoController::init(config, width, height)` stores the validated dimensions.
 7. `camera_capture_interval_ms` is updated from the parsed config.
@@ -546,6 +546,55 @@ tick()
 
 Fully testable on native via mock HALs and services. Tests cover command registration, status JSON, recording delegation, photo capture, time setting, and tick stability.
 
+### Command Reference
+
+This section documents every command recognised by the system, its payload format, and its response. Commands are dispatched via `CommandHandler::dispatch()` (binary/serial transports) or through HTTP query parameters (web transport). The same handler functions execute regardless of transport.
+
+#### Result Codes
+
+Every command returns a `CommandResult` enum value:
+
+| Code | Name | Description |
+|------|------|-------------|
+| `0x00` | `SUCCESS` | Command completed successfully |
+| `0x01` | `UNRECOGNIZED` | No handler registered for this command code |
+| `0x02` | `INVALID_ARGS` | Payload was missing, too short, or malformed |
+| `0x03` | `INVALID_STATE` | Command cannot be executed in the current system state |
+| `0xFF` | `INTERNAL_ERROR` | Hardware or unexpected failure |
+
+#### Command Details
+
+| Code | Command | Payload | Response Data | Effect |
+|------|---------|---------|---------------|--------|
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"state":int,"frames":uint32,"file_size":uint32}` | Returns current recording state, state machine value, frame count, and accumulated file size. No side effects. |
+| `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Returns `INVALID_STATE` if already recording, `INTERNAL_ERROR` if recording fails to start. |
+| `0x11` | `STOP_RECORDING` | None | None | Requests a graceful stop of the current recording session. The clip close and AVI flush complete asynchronously on the next `tick()`. |
+| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera and releases it (Slice 1 placeholder — no SD write). Returns `INTERNAL_ERROR` if frame capture fails. |
+| `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
+| `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
+| `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |
+
+#### Transport Mappings
+
+**Web transport** — query parameter `cmd` on `GET /control`:
+
+| Query Value | Command | Notes |
+|-------------|---------|-------|
+| *(none)* | `GET_STATUS` | Default when `cmd` is omitted |
+| `start` | `START_RECORDING` | |
+| `stop` | `STOP_RECORDING` | |
+| `photo` | `TAKE_PHOTO` | |
+| `config` | `GET_CONFIG` | |
+
+The web transport sends a JSON response body for all commands:
+
+- Success: `{"result":"ok"}`
+- Error: `{"result":"error","code":<uint>}`
+
+The `/status` endpoint always dispatches `GET_STATUS` regardless of query parameters.
+
+**Serial/binary transport** — *(planned for Slice 2)* — feeds a raw `CommandCode` byte + payload through `CommandHandler::tick()`. Responses are returned via the transport's `send_response()` method as a `CommandResult` byte followed by optional response bytes.
+
 ---
 
 ## CameraController
@@ -559,7 +608,7 @@ Manages the camera lifecycle: initialization, frame capture, and resource releas
 ### Dependencies
 
 - `CameraHal &` — abstract camera hardware interface (injected via constructor).
-- `CameraConfig` — configuration parameters with defaults tuned for the XIAO ESP32S3 (PSRAM-aware quality and frame buffer settings).
+- `CameraConfig` — configuration parameters with single-valued defaults (frame size, JPEG quality, frame buffer count, grab mode).
 
 ### Lifecycle
 
@@ -573,8 +622,8 @@ The controller tracks state via `m_initialized` and `m_frame_acquired` flags. Ca
 
 Two `init()` overloads are available:
 
-1. `init()` — queries PSRAM availability via the HAL and selects appropriate quality and frame buffer settings from the `CameraConfig` provided at construction.
-2. `init(const ResolvedCameraParams&)` — uses pre-resolved parameters from `build_camera_config()`, which translates user-facing `CameraImageConfig` (resolution string + JPEG quality) into validated HAL config with PSRAM guards applied.
+1. `init()` — uses the `CameraConfig` provided at construction, then clamps values against `CameraHal::get_capabilities()` before passing to the HAL.
+2. `init(const ResolvedCameraParams&)` — uses pre-resolved parameters from `build_camera_config()`, which translates user-facing `CameraImageConfig` (resolution string + JPEG quality) into HAL config. The controller then clamps against capabilities before initializing the hardware.
 
 ### Resolution Mapping
 
@@ -590,7 +639,7 @@ The free function `build_camera_config()` (`include/camera_controller.h`) provid
 | `HD` | `FRAMESIZE_HD` | 1280×720 |
 | `UXGA` | `FRAMESIZE_UXGA` | 1600×1200 |
 
-PSRAM guards: Without PSRAM, resolution is capped at SVGA (800×600) and JPEG quality is floored at 12.
+Capabilities-based clamping: `CameraController::init()` queries `CameraHal::get_capabilities()` and clamps the requested frame size, JPEG quality, and frame buffer count against the hardware's capabilities before calling HAL init. This keeps PSRAM-aware decision-making in the HAL layer.
 
 ### Testability
 
@@ -962,7 +1011,7 @@ The `setup()` function composes all system components in a layered initializatio
 2. **Peripheral init** — `PeripheralManager::init()` sets up GPIO, LED, and pin arbitration. A 3-second LED blink provides visual startup feedback.
 3. **SD card init** — `PeripheralManager::init_sd_card()` mounts the SD card. If this fails, `setup()` returns early.
 4. **Config load** — Reads `/config.ini` from SD into a stack buffer, then calls `ConfigService::load()`. Missing or empty files result in sensible defaults.
-5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which validates dimensions and applies PSRAM-aware frame size limits. The camera is initialized with these validated parameters.
+5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step.
 7. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
 8. **Web server init** — `WebServerService::init()` registers HTTP routes (`/`, `/status`, `/control`). The `WebCommandTransport` is added to the `CommandHandler`, and the web server's command handler reference is set.
@@ -971,6 +1020,149 @@ The `setup()` function composes all system components in a layered initializatio
 ### Main Loop
 
 The `loop()` function runs on regular intervals to tick the major services to handle commands and events.
+
+---
+
+## Behavioral Workflows
+
+This section captures end-to-end interaction sequences between major system components. Each diagram focuses on a specific runtime scenario and shows how the layered architecture (HAL → Service → Orchestration) collaborates to fulfill the request.
+
+### Command Handling via Web Transport
+
+This workflow covers two phases: **registration** (one-time wiring at startup) and **runtime dispatch** (an HTTP request arrives and triggers a command).
+
+**Registration phase** — `SystemOrchestrator` registers command handler callbacks with `CommandHandler`, then `WebCommandTransport` wires the HTTP routes for `/status` and `/control` on `WebServerHal`. The web server's `handle_client()` loop will invoke these route callbacks when matching requests arrive.
+
+**Runtime dispatch** — A client sends `GET /control?cmd=start` to the ESP32. The main loop calls `web_server_service.handle_client()`, which delegates to the `WebServerHal`. The HAL invokes the registered trampoline, which routes through `WebCommandTransport` for auth checking and command mapping, then calls `CommandHandler::dispatch()`. The dispatcher finds the `START_RECORDING` handler (registered by `SystemOrchestrator`), executes it, and the response flows back through the same chain as a JSON HTTP response.
+
+```plantuml
+@startuml
+title Command Registration & Web Dispatch Flow
+
+' ==================================================================
+' Participant declarations
+' ==================================================================
+participant "main()\nsetup" as MAIN
+participant "SystemOrchestrator" as ORCH
+participant "CommandHandler" as CMDH
+participant "WebCommandTransport" as WCT
+participant "WebServerHal" as WSH
+participant "HTTP Client\n(Browser)" as HTTP_CLIENT
+
+' ==================================================================
+' Registration phase (one-time, during setup())
+' ==================================================================
+=== Registration Phase (setup) ===
+
+MAIN -> ORCH : init()
+activate ORCH
+
+ORCH -> CMDH : register_handler(GET_STATUS, fn)
+activate CMDH
+CMDH --> ORCH : ok
+deactivate CMDH
+
+ORCH -> CMDH : register_handler(START_RECORDING, fn)
+activate CMDH
+CMDH --> ORCH : ok
+deactivate CMDH
+
+ORCH -> CMDH : register_handler(STOP_RECORDING, fn)
+ORCH -> CMDH : register_handler(TAKE_PHOTO, fn)
+ORCH -> CMDH : register_handler(SET_TIME, fn)
+note right: Six handlers total —\nall registered before\nroutes are wired
+
+ORCH --> MAIN : return
+deactivate ORCH
+
+MAIN -> WCT : register_routes(password)
+activate WCT
+
+WCT -> WSH : on("/status", GET, handle_status_trampoline)
+activate WSH
+WSH --> WCT : ok
+deactivate WSH
+
+WCT -> WSH : on("/control", GET, handle_control_trampoline)
+activate WSH
+WSH --> WCT : ok
+deactivate WSH
+
+WCT --> MAIN : return
+deactivate WCT
+
+' ==================================================================
+' Runtime dispatch phase
+' ==================================================================
+=== Runtime Dispatch (loop) ===
+
+HTTP_CLIENT -> WSH : HTTP GET /control?cmd=start
+note right: Client request arrives\nin handle_client()
+
+' Main loop calls handle_client()
+MAIN -> WSH : handle_client()
+activate WSH
+
+' WebServerHal invokes the registered trampoline
+WSH -> WCT : handle_control_trampoline()
+activate WCT
+
+' Auth check
+WCT -> WCT : check_auth()
+note right: Verifies password\nagainst Authorization\nheader (if configured)
+
+' Map query string → command code
+WCT -> WCT : map_cmd_string("start")
+note right: "start" → START_RECORDING
+
+' Dispatch command
+WCT -> CMDH : dispatch(START_RECORDING, payload, len, response, &responseLen)
+activate CMDH
+
+' CommandHandler finds the matching registered handler
+CMDH -> CMDH : Look up START_RECORDING\nin handler table
+
+' Execute the handler (lambda capturing SystemOrchestrator)
+CMDH -> ORCH : handle_start_recording()
+activate ORCH
+
+' Delegate to VideoController
+ORCH -> ORCH : m_video.start_recording()
+note right: Transitions\nVideoController\nstate to RECORDING
+
+ORCH --> CMDH : return SUCCESS
+deactivate ORCH
+
+CMDH --> WCT : return SUCCESS
+deactivate CMDH
+
+' Build and send JSON response
+WCT -> WCT : Build JSON response\n{\"result\":\"ok\"}
+WCT -> WSH : send(200, "application/json", json)
+activate WSH
+WSH --> HTTP_CLIENT : HTTP 200 {\"result\":\"ok\"}
+deactivate WSH
+
+WCT --> WSH : return
+deactivate WCT
+
+WSH --> MAIN : return
+deactivate WSH
+
+@enduml
+```
+
+The diagram illustrates the complete round-trip:
+
+1. **Registration** — `SystemOrchestrator` registers handler lambdas with `CommandHandler` for each `CommandCode`. Only then does `WebCommandTransport::register_routes()` wire the HTTP endpoints. This ordering ensures that by the time a request arrives, every handler is in the dispatch table.
+2. **Request arrival** — The main loop calls `WebServerService::handle_client()` (which delegates to `WebServerHal::handle_client()`). This is a blocking poll that processes one pending HTTP request.
+3. **Trampoline dispatch** — The `WebServerHal` invokes the static trampoline function registered for `/control`, which routes to `WebCommandTransport::handle_control()`.
+4. **Authentication** — If a web password is configured, `check_auth()` validates the `Authorization` header against it. Unauthenticated requests receive a `401` response immediately.
+5. **Command mapping & dispatch** — `map_cmd_string()` translates the `cmd` query parameter (e.g., `"start"`) into the corresponding `CommandCode` (`START_RECORDING`). `dispatch_and_respond()` calls `CommandHandler::dispatch()`, which scans its handler table and invokes the matching `CommandHandlerFn` lambda.
+6. **Handler execution** — The lambda (capturing the `SystemOrchestrator`) calls the appropriate domain method (e.g., `handle_start_recording()` → `m_video.start_recording()`).
+7. **Response** — The `CommandResult` is serialised into a JSON response and sent back through the HTTP chain.
+
+**Note on transport models:** `WebCommandTransport` uses a **push** model — the dispatch happens inline within the HTTP route callback, not through the `CommandHandler::tick()` polling loop. The tick path exists for future transports (e.g., serial UART) that lack a callback-driven request mechanism.
 
 ---
 

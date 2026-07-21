@@ -29,8 +29,8 @@ class MockCameraHal : public hal::CameraHal
         /** Value returned by is_initialized(). */
         bool initialized_state{true};
 
-        /** Value returned by has_psram(). */
-        bool psram_available{false};
+        /** Value returned by get_capabilities(). */
+        hal::CameraCapabilities capabilities{3, 12, 1, 0, 800, 600};
 
         // ============================================================
         // Call tracking (inspect after calling the method)
@@ -90,9 +90,9 @@ class MockCameraHal : public hal::CameraHal
             return initialized_state;
         }
 
-        bool has_psram() const override
+        hal::CameraCapabilities get_capabilities() const override
         {
-            return psram_available;
+            return capabilities;
         }
 };
 

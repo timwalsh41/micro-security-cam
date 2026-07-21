@@ -38,7 +38,7 @@ class CameraHalImpl : public CameraHal
         CameraFrame capture() override;
         void release() override;
         bool is_initialized() const override;
-        bool has_psram() const override;
+        CameraCapabilities get_capabilities() const override;
 
     private:
         bool m_initialized{false};

@@ -179,6 +179,52 @@ class MockWebServerHal : public hal::WebServerHal
             strncpy(header_name_buf, name, sizeof(header_name_buf) - 1);
             strncpy(header_buffer, value, sizeof(header_buffer) - 1);
         }
+
+        /** Configure a simulated Basic Auth header from user:password. */
+        void set_auth(const char* user, const char* password)
+        {
+            // Build "user:password" and Base64-encode it
+            char raw[256];
+            snprintf(raw, sizeof(raw), "%s:%s", user, password);
+
+            static const char* TABLE =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "abcdefghijklmnopqrstuvwxyz"
+                "0123456789+/";
+
+            size_t len = strlen(raw);
+            size_t out = 0;
+            auth_buffer[out++] = 'B';
+            auth_buffer[out++] = 'a';
+            auth_buffer[out++] = 's';
+            auth_buffer[out++] = 'i';
+            auth_buffer[out++] = 'c';
+            auth_buffer[out++] = ' ';
+
+            unsigned int accum = 0;
+            int bits = 0;
+            for (size_t i = 0; i < len; i++)
+            {
+                accum = (accum << 8) | static_cast<unsigned char>(raw[i]);
+                bits += 8;
+                while (bits >= 6 && out < sizeof(auth_buffer) - 1)
+                {
+                    bits -= 6;
+                    auth_buffer[out++] =
+                        TABLE[(accum >> bits) & 0x3F];
+                }
+            }
+            if (bits > 0 && out < sizeof(auth_buffer) - 1)
+            {
+                auth_buffer[out++] =
+                    TABLE[(accum << (6 - bits)) & 0x3F];
+            }
+            while (out % 4 != 6 && out < sizeof(auth_buffer) - 1)
+            {
+                auth_buffer[out++] = '=';
+            }
+            auth_buffer[out] = '\0';
+        }
 };
 
 #endif // MOCK_WEB_SERVER_HAL_H

@@ -4,27 +4,7 @@
 #include "hal/time_hal.h"
 
 #include <cstdint>
-
-/**
- * @brief Calendar date/time fields derived from a Unix timestamp.
- */
-struct Calendar
-{
-    uint16_t year;
-    uint8_t month;  ///< 1-12
-    uint8_t day;    ///< 1-31
-    uint8_t hour;   ///< 0-23
-    uint8_t minute; ///< 0-59
-    uint8_t second; ///< 0-59
-};
-
-/**
- * @brief Converts a Unix timestamp to calendar date/time fields.
- *
- * @param unix_time Seconds since 1970-01-01 00:00:00 UTC.
- * @return Calendar populated with year, month, day, hour, minute, second.
- */
-Calendar calendar_from_unix(uint32_t unix_time);
+#include <ctime>
 
 /**
  * @brief Interface for time acquisition and elapsed-time calculations.
@@ -70,6 +50,13 @@ class TimeService
          * @brief Returns the current Unix timestamp (seconds since epoch).
          */
         virtual uint32_t unix_now() const = 0;
+
+        /**
+         * @brief Returns the current time as a broken-down std::tm struct in local time.
+         *
+         * The time is derived from the Unix offset set via set_unix_offset().
+         */
+        virtual std::tm localtime() const = 0;
 };
 
 /**
@@ -83,6 +70,7 @@ class RealTimeService : public TimeService
         void delay_us(hal::millis_t us) override;
         void set_unix_offset(uint32_t unix_time, uint32_t system_ms) override;
         uint32_t unix_now() const override;
+        std::tm localtime() const override;
 
     private:
         uint32_t m_unix_offset{0};

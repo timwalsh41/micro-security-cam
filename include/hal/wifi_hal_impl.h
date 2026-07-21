@@ -8,18 +8,17 @@ namespace hal
 
 /**
  * @class WifiHalImpl
- * @brief Concrete ESP32 implementation of the WiFi HAL interface.
+ * @brief Concrete implementation of the WiFi HAL interface.
  *
  * Wraps the Arduino WiFi library, providing STA and AP mode
- * management. All WiFi library calls are guarded by ARDUINO
- * preprocessor checks to allow native unit testing.
+ * management.
  */
 class WifiHalImpl : public WifiHal
 {
     public:
-        bool mode(bool sta, bool ap) override;
-        bool begin_sta(const char* ssid, const char* password) override;
-        bool begin_ap(const char* ssid, const char* password) override;
+        void mode(bool sta, bool ap) override;
+        void begin_sta(const char* ssid, const char* password) override;
+        void begin_ap(const char* ssid, const char* password) override;
         WifiStatus status() const override;
         const char* local_ip() const override;
         void disconnect() override;

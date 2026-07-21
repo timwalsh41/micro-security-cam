@@ -159,6 +159,58 @@ class IniParser
     private:
         // Maximum line length supported by the parser (excluding null terminator)
         static constexpr size_t MAX_LINE_LENGTH = 128;
+
+        /**
+         * @brief Compares a parsed key against an expected name, case-insensitive.
+         *
+         * @param key_start Pointer to the start of the parsed key.
+         * @param key_len   Length of the parsed key.
+         * @param name      Expected key name (null-terminated).
+         * @return true if the key matches, false otherwise.
+         */
+        static bool key_match(const char* key_start, size_t key_len, const char* name);
+
+        /**
+         * @brief Copies a raw value into a fixed-size buffer with null termination.
+         *
+         * @param val_start Pointer to the start of the value.
+         * @param val_len   Length of the value.
+         * @param buf       Destination buffer.
+         * @param buf_size  Size of the destination buffer.
+         */
+        static void value_copy(const char* val_start, size_t val_len, char* buf, size_t buf_size);
+
+        /**
+         * @brief Extracts a string value into a fixed-size char array.
+         *
+         * @param val_start Pointer to the start of the value.
+         * @param val_len   Length of the value.
+         * @param dest      Destination char array.
+         * @param dest_size Size of the destination char array.
+         */
+        static void get_string_val(const char* val_start, size_t val_len, char* dest, size_t dest_size);
+
+        /**
+         * @brief Parses a value as an unsigned integer.
+         *
+         * @param val_start Pointer to the start of the value.
+         * @param val_len   Length of the value.
+         * @param valid     Optional pointer to a bool set to true if parsing succeeded.
+         * @param base      Numeric base for parsing (default 10).
+         * @return Parsed unsigned integer value.
+         */
+        static uint32_t get_uint_val(const char* val_start, size_t val_len, bool* valid = nullptr, int base = 10);
+
+        /**
+         * @brief Parses a value as a boolean.
+         *
+         * Accepts "true" (case-insensitive) as true, anything else as false.
+         *
+         * @param val_start Pointer to the start of the value.
+         * @param val_len   Length of the value.
+         * @return true if the value matches "true", false otherwise.
+         */
+        static bool get_bool_val(const char* val_start, size_t val_len);
 };
 
 #endif // INI_PARSER_H

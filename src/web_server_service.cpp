@@ -1,18 +1,13 @@
 #include "web_server_service.h"
+#include "web_auth_util.h"
 #include <cstring>
 
-static constexpr const char* SUBSYSTEM = "Web";
+static constexpr const char* SUBSYSTEM = "WEB";
 
-/**
- * @brief Static trampolines for route callbacks.
- *
- * The WebServerHal::on() interface takes a raw function pointer void(*)(),
- * which cannot capture state. A single global pointer tracks the active
- * WebServerService instance and delegates to the appropriate method.
- */
-static WebServerService* s_instance = nullptr;
+// Static instance pointer for trampolines.
+WebServerService* WebServerService::s_instance = nullptr;
 
-static void trampoline_index()
+void WebServerService::trampoline_index()
 {
     if (s_instance != nullptr)
     {
@@ -44,7 +39,7 @@ void WebServerService::init(const ConfigData::WebConfig& config)
     }
 
     // Register landing page route
-    m_hal.on("/", hal::HttpMethod::GET, trampoline_index);
+    m_hal.on("/", hal::HttpMethod::GET, WebServerService::trampoline_index);
     // Command routes (/status, /control) are registered by WebCommandTransport
 
     m_log.info(SUBSYSTEM, "Web server started on port %u", config.port);
@@ -77,27 +72,13 @@ void WebServerService::handle_index()
 
 bool WebServerService::check_auth()
 {
-    // No password configured — allow all requests
-    if (m_password[0] == '\0')
-    {
-        return true;
-    }
-
-    // Check if Authorization header contains the password
     const char* auth = m_hal.auth_header();
-    if (auth == nullptr || auth[0] == '\0')
+
+    if (!check_basic_auth(auth, m_password))
     {
         m_hal.send(401, "application/json",
                    "{\"error\":\"authentication required\"}");
-        m_log.warn(SUBSYSTEM, "Auth rejected: no credentials provided");
-        return false;
-    }
-
-    if (strstr(auth, m_password) == nullptr)
-    {
-        m_hal.send(401, "application/json",
-                   "{\"error\":\"invalid credentials\"}");
-        m_log.warn(SUBSYSTEM, "Auth rejected: invalid credentials");
+        m_log.warn(SUBSYSTEM, "Auth rejected: invalid or missing credentials");
         return false;
     }
 
