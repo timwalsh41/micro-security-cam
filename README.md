@@ -69,6 +69,9 @@ The firmware reads an INI-style config file (`/config.ini`) from the SD card at 
 [wifi]
 ssid=MyNetwork
 password=MyPassword
+static_ip=192.168.1.100
+gateway=192.168.1.1
+subnet_mask=255.255.255.0
 
 [ap]
 ssid=ESP32-Cam
@@ -95,6 +98,9 @@ jpeg_quality=10
 |---------|-----|------|---------|-------------|
 | `[wifi]` | `ssid` | string | `""` | WiFi network name (station mode) |
 | `[wifi]` | `password` | string | `""` | WiFi network password |
+| `[wifi]` | `static_ip` | string | `""` | Static IP address for station mode |
+| `[wifi]` | `gateway` | string | `""` | Gateway address (required with static_ip) |
+| `[wifi]` | `subnet_mask` | string | `""` | Subnet mask (required with static_ip) |
 | `[ap]` | `ssid` | string | `""` | Access point name (fallback) |
 | `[ap]` | `password` | string | `""` | Access point password |
 | `[web]` | `port` | integer | `80` | HTTP server port (1–65535) |

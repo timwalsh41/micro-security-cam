@@ -64,4 +64,17 @@ bool WifiHalImpl::is_connected() const
     return WiFi.status() == WL_CONNECTED;
 }
 
+bool WifiHalImpl::config_static(const char* ip, const char* gateway,
+                                const char* subnet)
+{
+    IPAddress ip_addr, gw_addr, subnet_addr;
+    if (!ip_addr.fromString(ip) ||
+        !gw_addr.fromString(gateway) ||
+        !subnet_addr.fromString(subnet))
+    {
+        return false;
+    }
+    return WiFi.config(ip_addr, gw_addr, subnet_addr);
+}
+
 } // namespace hal

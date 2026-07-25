@@ -50,6 +50,16 @@ static ConfigData::WifiConfig make_sta_config(const char* ssid,
     return cfg;
 }
 
+static void set_static_ip(ConfigData::WifiConfig& cfg,
+                          const char* ip,
+                          const char* gateway,
+                          const char* subnet)
+{
+    strncpy(cfg.static_ip, ip, CONFIG_FIELD_MAX_LENGTH - 1);
+    strncpy(cfg.gateway, gateway, CONFIG_FIELD_MAX_LENGTH - 1);
+    strncpy(cfg.subnet_mask, subnet, CONFIG_FIELD_MAX_LENGTH - 1);
+}
+
 static ConfigData::ApConfig make_ap_config(const char* ssid,
                                            const char* password)
 {
@@ -245,6 +255,93 @@ void test_is_connected_reflects_hal()
 }
 
 // ============================================================
+// test_static_ip_applied_before_sta
+//
+// All three static IP fields are set.  Verify config_static()
+// is called with the correct values before begin_sta().
+// ============================================================
+
+void test_static_ip_applied_before_sta()
+{
+    TestFixture f;
+
+    f.wifi_hal.status_result = hal::WifiStatus::CONNECTED;
+    f.wifi_hal.connected_result = true;
+    strcpy(f.wifi_hal.ip_buffer, "192.168.1.100");
+
+    ConfigData::WifiConfig sta = make_sta_config("HomeNet", "secret123");
+    set_static_ip(sta, "192.168.1.100", "192.168.1.1", "255.255.255.0");
+    ConfigData::ApConfig ap = make_ap_config("ESP32-Cam", "ap12345");
+
+    f.wifi.init(sta, ap, 30);
+
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.config_static_call_count);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.100", f.wifi_hal.last_static_ip);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.1", f.wifi_hal.last_gateway);
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", f.wifi_hal.last_subnet);
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_sta_call_count);
+    TEST_ASSERT_EQUAL_STRING("HomeNet", f.wifi_hal.last_ssid);
+    TEST_ASSERT_TRUE(f.wifi.is_connected());
+    TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "Configuring static IP"));
+}
+
+// ============================================================
+// test_static_ip_config_failure_falls_back_to_dhcp
+//
+// All three fields are set but config_static() returns false.
+// Verify that begin_sta() is still called (DHCP fallback).
+// ============================================================
+
+void test_static_ip_config_failure_falls_back_to_dhcp()
+{
+    TestFixture f;
+
+    f.wifi_hal.status_result = hal::WifiStatus::CONNECTED;
+    f.wifi_hal.connected_result = true;
+    f.wifi_hal.config_static_result = false;
+    strcpy(f.wifi_hal.ip_buffer, "10.0.0.42");
+
+    ConfigData::WifiConfig sta = make_sta_config("HomeNet", "secret123");
+    set_static_ip(sta, "192.168.1.100", "192.168.1.1", "255.255.255.0");
+    ConfigData::ApConfig ap = make_ap_config("ESP32-Cam", "ap12345");
+
+    f.wifi.init(sta, ap, 30);
+
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.config_static_call_count);
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_sta_call_count);
+    TEST_ASSERT_TRUE(f.wifi.is_connected());
+    TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "Static IP configuration failed"));
+}
+
+// ============================================================
+// test_static_ip_missing_fields_skips_static
+//
+// Only static_ip is set (no gateway or subnet_mask).
+// Verify config_static() is NOT called and DHCP is used.
+// ============================================================
+
+void test_static_ip_missing_fields_skips_static()
+{
+    TestFixture f;
+
+    f.wifi_hal.status_result = hal::WifiStatus::CONNECTED;
+    f.wifi_hal.connected_result = true;
+    strcpy(f.wifi_hal.ip_buffer, "10.0.0.1");
+
+    ConfigData::WifiConfig sta = make_sta_config("Net", "pw");
+    strncpy(sta.static_ip, "10.0.0.99", CONFIG_FIELD_MAX_LENGTH - 1);
+    // gateway and subnet_mask left empty
+    ConfigData::ApConfig ap = make_ap_config("AP", "pw");
+
+    f.wifi.init(sta, ap, 30);
+
+    TEST_ASSERT_EQUAL_INT(0, f.wifi_hal.config_static_call_count);
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_sta_call_count);
+    TEST_ASSERT_TRUE(f.wifi.is_connected());
+    TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "No static IP config"));
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -256,6 +353,9 @@ int main(int argc, char** argv)
     RUN_TEST(test_init_sta_timeout_falls_back_to_ap);
     RUN_TEST(test_init_sta_quick_connect);
     RUN_TEST(test_is_connected_reflects_hal);
+    RUN_TEST(test_static_ip_applied_before_sta);
+    RUN_TEST(test_static_ip_config_failure_falls_back_to_dhcp);
+    RUN_TEST(test_static_ip_missing_fields_skips_static);
 
     return UNITY_END();
 }

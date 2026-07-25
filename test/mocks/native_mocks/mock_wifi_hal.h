@@ -28,6 +28,9 @@ class MockWifiHal : public hal::WifiHal
         /** IP address returned by local_ip(). */
         char ip_buffer[16]{"192.168.1.100"};
 
+        /** Value returned by config_static(). */
+        bool config_static_result{true};
+
         // ============================================================
         // Call tracking (inspect after calling the method)
         // ============================================================
@@ -36,9 +39,13 @@ class MockWifiHal : public hal::WifiHal
         int begin_sta_call_count{0};
         int begin_ap_call_count{0};
         int disconnect_call_count{0};
+        int config_static_call_count{0};
 
         char last_ssid[64]{};
         char last_password[64]{};
+        char last_static_ip[64]{};
+        char last_gateway[64]{};
+        char last_subnet[64]{};
 
         // ============================================================
         // Interface implementation
@@ -81,6 +88,16 @@ class MockWifiHal : public hal::WifiHal
         bool is_connected() const override
         {
             return connected_result;
+        }
+
+        bool config_static(const char* ip, const char* gateway,
+                           const char* subnet) override
+        {
+            config_static_call_count++;
+            strncpy(last_static_ip, ip, sizeof(last_static_ip) - 1);
+            strncpy(last_gateway, gateway, sizeof(last_gateway) - 1);
+            strncpy(last_subnet, subnet, sizeof(last_subnet) - 1);
+            return config_static_result;
         }
 };
 

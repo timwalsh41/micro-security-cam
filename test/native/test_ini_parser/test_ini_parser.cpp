@@ -19,6 +19,24 @@ void test_defaults_has_empty_wifi_password()
     TEST_ASSERT_EQUAL_STRING("", d.wifi.password);
 }
 
+void test_defaults_has_empty_static_ip()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_STRING("", d.wifi.static_ip);
+}
+
+void test_defaults_has_empty_gateway()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_STRING("", d.wifi.gateway);
+}
+
+void test_defaults_has_empty_subnet_mask()
+{
+    ConfigData d = IniParser::defaults();
+    TEST_ASSERT_EQUAL_STRING("", d.wifi.subnet_mask);
+}
+
 void test_defaults_has_empty_ap_ssid()
 {
     ConfigData d = IniParser::defaults();
@@ -118,6 +136,19 @@ void test_single_wifi_password()
     TEST_ASSERT_EQUAL_STRING("Secret123", d.wifi.password);
 }
 
+void test_wifi_static_ip_all_keys()
+{
+    const char* ini =
+        "[wifi]\n"
+        "static_ip=192.168.1.100\n"
+        "gateway=192.168.1.1\n"
+        "subnet_mask=255.255.255.0\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_STRING("192.168.1.100", d.wifi.static_ip);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.1", d.wifi.gateway);
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", d.wifi.subnet_mask);
+}
+
 // ============================================================
 // Multiple sections
 // ============================================================
@@ -128,6 +159,9 @@ void test_multiple_sections()
         "[wifi]\n"
         "ssid=HomeNet\n"
         "password=Pass123\n"
+        "static_ip=10.0.0.50\n"
+        "gateway=10.0.0.1\n"
+        "subnet_mask=255.255.255.0\n"
         "[ap]\n"
         "ssid=ESP32\n"
         "password=Fallback\n"
@@ -146,6 +180,9 @@ void test_multiple_sections()
     ConfigData d = IniParser::parse(ini, strlen(ini));
     TEST_ASSERT_EQUAL_STRING("HomeNet", d.wifi.ssid);
     TEST_ASSERT_EQUAL_STRING("Pass123", d.wifi.password);
+    TEST_ASSERT_EQUAL_STRING("10.0.0.50", d.wifi.static_ip);
+    TEST_ASSERT_EQUAL_STRING("10.0.0.1", d.wifi.gateway);
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", d.wifi.subnet_mask);
     TEST_ASSERT_EQUAL_STRING("ESP32", d.ap.ssid);
     TEST_ASSERT_EQUAL_STRING("Fallback", d.ap.password);
     TEST_ASSERT_EQUAL_UINT16(8080, d.web.port);
@@ -427,6 +464,11 @@ void test_serialize_defaults()
     TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=60"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=0"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=10"));
+
+    // Verify static IP defaults (empty strings) are serialized
+    TEST_ASSERT_NOT_NULL(strstr(buf, "static_ip="));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "gateway="));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask="));
 }
 
 void test_serialize_non_default_values()
@@ -434,6 +476,9 @@ void test_serialize_non_default_values()
     ConfigData d = IniParser::defaults();
     strcpy(d.wifi.ssid, "HomeNet");
     strcpy(d.wifi.password, "Pass123");
+    strcpy(d.wifi.static_ip, "10.0.0.50");
+    strcpy(d.wifi.gateway, "10.0.0.1");
+    strcpy(d.wifi.subnet_mask, "255.255.255.0");
     strcpy(d.ap.ssid, "ESP32");
     strcpy(d.ap.password, "Fallback");
     d.web.port = 8080;
@@ -451,6 +496,12 @@ void test_serialize_non_default_values()
     TEST_ASSERT_GREATER_THAN(0u, written);
     TEST_ASSERT_NOT_NULL(strstr(buf, "ssid=HomeNet"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "password=Pass123"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "static_ip=10.0.0.50"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "gateway=10.0.0.1"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask=255.255.255.0"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "static_ip=10.0.0.50"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "gateway=10.0.0.1"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask=255.255.255.0"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "port=8080"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=5000"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "fps=15"));
@@ -470,6 +521,9 @@ void test_roundtrip_defaults()
 
     TEST_ASSERT_EQUAL_STRING(original.wifi.ssid, parsed.wifi.ssid);
     TEST_ASSERT_EQUAL_STRING(original.wifi.password, parsed.wifi.password);
+    TEST_ASSERT_EQUAL_STRING(original.wifi.static_ip, parsed.wifi.static_ip);
+    TEST_ASSERT_EQUAL_STRING(original.wifi.gateway, parsed.wifi.gateway);
+    TEST_ASSERT_EQUAL_STRING(original.wifi.subnet_mask, parsed.wifi.subnet_mask);
     TEST_ASSERT_EQUAL_STRING(original.ap.ssid, parsed.ap.ssid);
     TEST_ASSERT_EQUAL_STRING(original.ap.password, parsed.ap.password);
     TEST_ASSERT_EQUAL_UINT16(original.web.port, parsed.web.port);
@@ -491,6 +545,9 @@ void test_roundtrip_custom_values()
     ConfigData original = IniParser::defaults();
     strcpy(original.wifi.ssid, "MySSID");
     strcpy(original.wifi.password, "MyPass");
+    strcpy(original.wifi.static_ip, "192.168.0.10");
+    strcpy(original.wifi.gateway, "192.168.0.1");
+    strcpy(original.wifi.subnet_mask, "255.255.255.0");
     strcpy(original.ap.ssid, "FallbackAP");
     strcpy(original.ap.password, "ApPass");
     original.web.port = 9090;
@@ -509,6 +566,9 @@ void test_roundtrip_custom_values()
 
     TEST_ASSERT_EQUAL_STRING(original.wifi.ssid, parsed.wifi.ssid);
     TEST_ASSERT_EQUAL_STRING(original.wifi.password, parsed.wifi.password);
+    TEST_ASSERT_EQUAL_STRING(original.wifi.static_ip, parsed.wifi.static_ip);
+    TEST_ASSERT_EQUAL_STRING(original.wifi.gateway, parsed.wifi.gateway);
+    TEST_ASSERT_EQUAL_STRING(original.wifi.subnet_mask, parsed.wifi.subnet_mask);
     TEST_ASSERT_EQUAL_STRING(original.ap.ssid, parsed.ap.ssid);
     TEST_ASSERT_EQUAL_STRING(original.ap.password, parsed.ap.password);
     TEST_ASSERT_EQUAL_UINT16(original.web.port, parsed.web.port);
@@ -551,6 +611,9 @@ void test_serialize_all_fields_present()
     ConfigData d = IniParser::defaults();
     strcpy(d.wifi.ssid, "W_SSID");
     strcpy(d.wifi.password, "W_PASS");
+    strcpy(d.wifi.static_ip, "10.10.10.10");
+    strcpy(d.wifi.gateway, "10.10.10.1");
+    strcpy(d.wifi.subnet_mask, "255.0.0.0");
     strcpy(d.ap.ssid, "A_SSID");
     strcpy(d.ap.password, "A_PASS");
     d.web.port = 1234;
@@ -569,6 +632,9 @@ void test_serialize_all_fields_present()
     TEST_ASSERT_NOT_NULL(strstr(buf, "[wifi]"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "ssid=W_SSID"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "password=W_PASS"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "static_ip=10.10.10.10"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "gateway=10.10.10.1"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask=255.0.0.0"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "[ap]"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "ssid=A_SSID"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "password=A_PASS"));
@@ -603,6 +669,9 @@ int main(int argc, char** argv)
 
     RUN_TEST(test_defaults_has_empty_wifi_ssid);
     RUN_TEST(test_defaults_has_empty_wifi_password);
+    RUN_TEST(test_defaults_has_empty_static_ip);
+    RUN_TEST(test_defaults_has_empty_gateway);
+    RUN_TEST(test_defaults_has_empty_subnet_mask);
     RUN_TEST(test_defaults_has_empty_ap_ssid);
     RUN_TEST(test_defaults_has_empty_ap_password);
     RUN_TEST(test_defaults_has_web_port_80);
@@ -619,6 +688,7 @@ int main(int argc, char** argv)
 
     RUN_TEST(test_single_wifi_ssid);
     RUN_TEST(test_single_wifi_password);
+    RUN_TEST(test_wifi_static_ip_all_keys);
 
     RUN_TEST(test_multiple_sections);
 

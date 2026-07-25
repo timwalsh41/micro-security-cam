@@ -214,6 +214,18 @@ ConfigData IniParser::parse(const char* content, size_t length)
                     {
                         get_string_val(val_start, val_len, config.wifi.password, CONFIG_FIELD_MAX_LENGTH);
                     }
+                    else if (key_match(key_start, key_len, "static_ip"))
+                    {
+                        get_string_val(val_start, val_len, config.wifi.static_ip, CONFIG_FIELD_MAX_LENGTH);
+                    }
+                    else if (key_match(key_start, key_len, "gateway"))
+                    {
+                        get_string_val(val_start, val_len, config.wifi.gateway, CONFIG_FIELD_MAX_LENGTH);
+                    }
+                    else if (key_match(key_start, key_len, "subnet_mask"))
+                    {
+                        get_string_val(val_start, val_len, config.wifi.subnet_mask, CONFIG_FIELD_MAX_LENGTH);
+                    }
                     break;
                 }
                 case Section::AP:
@@ -356,6 +368,15 @@ size_t IniParser::serialize(const ConfigData& data,
     write("\n");
     write("password=");
     write(data.wifi.password);
+    write("\n");
+    write("static_ip=");
+    write(data.wifi.static_ip);
+    write("\n");
+    write("gateway=");
+    write(data.wifi.gateway);
+    write("\n");
+    write("subnet_mask=");
+    write(data.wifi.subnet_mask);
     write("\n");
 
     // [ap]

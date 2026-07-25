@@ -27,6 +27,24 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
     // Set WiFi mode to STA (station) only initially
     m_hal.mode(true, false);
 
+    // Apply static IP if all three fields are provided
+    if (sta.static_ip[0] != '\0' &&
+        sta.gateway[0] != '\0' &&
+        sta.subnet_mask[0] != '\0')
+    {
+        m_log.info("Wifi", "Configuring static IP: %s / %s / %s",
+                   sta.static_ip, sta.gateway, sta.subnet_mask);
+        if (!m_hal.config_static(sta.static_ip, sta.gateway, sta.subnet_mask))
+        {
+            m_log.warn("Wifi", "Static IP configuration failed, "
+                       "falling back to DHCP");
+        }
+    }
+    else
+    {
+        m_log.debug("Wifi", "No static IP config, using DHCP");
+    }
+
     // Attempt STA connection
     m_log.info("Wifi", "Connecting to STA network: %s", sta.ssid);
     m_hal.begin_sta(sta.ssid, sta.password);

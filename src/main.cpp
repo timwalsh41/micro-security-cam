@@ -26,7 +26,7 @@ namespace constants
     constexpr millis_t PERIPHERAL_MANAGER_TICK_TIME_MS = 5;
 }
 
-// --- Core services (always present) ---
+// --- Core services ---
 RealTimeService real_time;
 hal::SerialLogBackend log_backend;
 LoggingService logger{log_backend, real_time};
@@ -37,8 +37,6 @@ hal::CameraHalImpl camera_hal;
 CameraController camera_ctrl{camera_hal};
 VideoController video_controller{camera_ctrl, peripheral_manager, real_time, logger};
 PlatformInitializer platform_init;
-
-// --- Slice 1: WiFi, Web, Commands, Orchestrator ---
 hal::WifiHalImpl wifi_hal_impl;
 hal::WebServerHalImpl web_server_hal_impl;
 WifiService wifi_service{wifi_hal_impl, real_time, logger};

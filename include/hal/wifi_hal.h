@@ -83,6 +83,21 @@ class WifiHal
         virtual const char* local_ip() const = 0;
 
         /**
+         * @brief Configures static IP addressing for the station interface.
+         *
+         * Must be called before begin_sta(). If configuration fails
+         * (e.g. invalid address strings), the caller should fall back
+         * to DHCP by simply not calling this method.
+         *
+         * @param ip       Static IP address as dotted-decimal string.
+         * @param gateway  Gateway IP address as dotted-decimal string.
+         * @param subnet   Subnet mask as dotted-decimal string.
+         * @return true if the configuration was applied successfully.
+         */
+        virtual bool config_static(const char* ip, const char* gateway,
+                                   const char* subnet) = 0;
+
+        /**
          * @brief Disconnects from the current network.
          */
         virtual void disconnect() = 0;

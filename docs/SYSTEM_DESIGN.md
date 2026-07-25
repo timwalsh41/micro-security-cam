@@ -100,12 +100,13 @@ Abstract interface for WiFi operations. Provides STA/AP mode selection, connecti
 | `begin_ap(ssid, password)` | Start an access point |
 | `status()` | Return connection status as a `WifiStatus` enum (`CONNECTED`, `DISCONNECTED`, etc.) |
 | `local_ip()` | Return the assigned IP address |
+| `config_static(ip, gateway, subnet)` | Configure static IP addressing for STA before `begin_sta()`; returns `false` if addresses are invalid |
 | `disconnect()` | Disconnect from the network |
 | `is_connected()` | Return whether the device is connected |
 
-**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library.
+**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library. Uses `IPAddress::fromString()` for address parsing and `WiFi.config()` to apply the static configuration.
 
-**Mock**: `MockWifiHal` (`test/mocks/native_mocks/mock_wifi_hal.h`) provides configurable return values (`begin_sta_result`, `status_result` of type `WifiStatus`, `connected_result`, `ip_buffer`) and call tracking (`begin_sta_call_count`, `begin_ap_call_count`, etc.).
+**Mock**: `MockWifiHal` (`test/mocks/native_mocks/mock_wifi_hal.h`) provides configurable return values (`begin_sta_result`, `status_result` of type `WifiStatus`, `connected_result`, `ip_buffer`, `config_static_result`) and call tracking (`begin_sta_call_count`, `begin_ap_call_count`, `config_static_call_count`, etc.).
 
 ### WebServerHal
 
@@ -271,7 +272,9 @@ jpeg_quality=10
 ```c++
 struct ConfigData
 {
-    struct WifiConfig   { char ssid[64]; char password[64]; };
+    struct WifiConfig   { char ssid[64]; char password[64];
+                          char static_ip[64]; char gateway[64];
+                          char subnet_mask[64]; };
     struct ApConfig     { char ssid[64]; char password[64]; };
     struct WebConfig    { uint16_t port; char password[64];
                           uint8_t max_streams{4}; };
@@ -388,10 +391,18 @@ Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls b
 ```
 init(sta_config, ap_config, timeout_secs)
   → mode(STA)
+  → if static_ip + gateway + subnet_mask all set:
+       config_static(ip, gateway, subnet)  ← on failure, log warning and continue with DHCP
   → begin_sta(ssid, password)
   → poll status() every 1s until connected or timeout
   → if timeout: mode(AP), begin_ap(ssid, password)
 ```
+
+If all three static IP fields (`static_ip`, `gateway`, `subnet_mask`) are present and non-empty in the config, `config_static()` is called before `begin_sta()`. If `config_static()` returns `false` (e.g. malformed address), a warning is logged and the system falls back to DHCP — `begin_sta()` is always called.
+
+If any of the three fields is missing or empty, static IP configuration is skipped and DHCP is used.
+
+Static IP applies only to STA mode. AP mode always uses its own addressing via `softAP()`.
 
 #### Key Methods
 
@@ -401,7 +412,7 @@ init(sta_config, ap_config, timeout_secs)
 
 #### Testability
 
-Fully testable on native via `MockWifiHal`. Tests cover STA success, timeout fallback, quick-connect, and connection state reflection.
+Fully testable on native via `MockWifiHal`. Tests cover STA success, timeout fallback, quick-connect, connection state reflection, static IP application, static IP failure fallback to DHCP, and missing-fields skipping static config.
 
 ### WebServerService
 
