@@ -80,9 +80,13 @@ password=FallbackPass
 [web]
 port=80
 password=WebPass
+max_streams=4
 
 [camera]
 capture_interval_ms=20000
+resolution=VGA
+jpeg_quality=10
+grab_mode=0xFF
 
 [video]
 fps=10
@@ -90,6 +94,8 @@ resolution=VGA
 clip_duration_s=60
 max_file_size_mb=0
 jpeg_quality=10
+audio_enabled=false
+mic_gain=2
 ```
 
 ### Sections and Keys
@@ -109,7 +115,7 @@ jpeg_quality=10
 | `[camera]` | `capture_interval_ms` | integer | `20000` | Time between captures in ms |
 | `[camera]` | `resolution` | string | `VGA` | Still photo resolution (see table below) |
 | `[camera]` | `jpeg_quality` | integer | `10` | Still photo JPEG quality (0–63, lower = better) |
-| `[camera]` | `grab_mode` | hex | `0xFF` | Camera grab mode (0x00 = when empty, 0xFF = latest) |
+| `[camera]` | `grab_mode` | hex | `0xFF` | Camera grab mode (0x00 = when empty, 0x01 = latest, 0xFF = hardware-recommended default) |
 | `[video]` | `fps` | integer | `10` | Video frame rate (1–30) |
 | `[video]` | `resolution` | string | `VGA` | Frame resolution (see table below) |
 | `[video]` | `clip_duration_s` | integer | `60` | Max clip length in seconds (0 = no limit) |

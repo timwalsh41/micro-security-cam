@@ -158,8 +158,7 @@ main.cpp (significant changes)
 │   ├── TimeService&
 │   ├── LoggingService&
 │   ├── TimerHal ← NEW (injected)
-│   ├── AviWriter (owned)
-│   ├── SdWriteBuffer (owned)
+│   ├── AviWriter ← incremental mode (index in RAM, per-frame SD writes)
 │   ├── StreamService ← NEW (reference, for frame copy)
 │   ├── capture_task (FreeRTOS task, owns all SD I/O)
 │   │   ├── ISR → task notification
@@ -178,6 +177,18 @@ main.cpp (significant changes)
 
 > **Implementation decision:** The `sd_active` mutex must be a FreeRTOS mutex (not a simple atomic bool) because the ESP32-S3 is dual-core and the critical section spans multiple SD transactions. A FreeRTOS mutex provides priority inheritance, which prevents priority inversion when the main loop (low priority) holds the mutex and `capture_task` (high priority) is waiting. Using `std::atomic<bool>` would not provide this guarantee. The mutex is created in `VideoController::init()` and shared via the `SdController` interface.
 
+#### Core placement on dual-core ESP32-S3
+
+The ESP32-IDF FreeRTOS port is SMP and fully leverages both CPU cores. The Arduino `loopTask` runs on **core 1** (APP_CPU) by default. Intentionally placing tasks on the right core improves parallelism:
+
+| Task | Recommended Core | Rationale |
+|------|-----------------|-----------|
+| `capture_task` | Core 1 (APP_CPU) or `tskNO_AFFINITY` | Keeps ISR notification local — the camera driver's frame-ready ISR typically fires on core 1, making `vTaskNotifyGiveFromISR()` same-core (no cross-core IPI). |
+| `sustain_task[N]` | Core 0 (PRO_CPU) | Streaming HTTP writes run in parallel with frame capture and SD I/O on core 1. |
+| `mic_task` | Core 1 or `tskNO_AFFINITY` | Shares SD I/O with `capture_task`; no benefit to separating onto a different core. |
+
+Use `xTaskCreatePinnedToCore()` for explicit placement. Leave `capture_task` unpinned initially and only pin if profiling shows core imbalance.
+
 ### After Slice 4 — Audio
 
 ```
@@ -191,7 +202,7 @@ main.cpp (additions only)
 │   └── mic_task (FreeRTOS task, owned)
 └── VideoController (modified)
     └── on_frame_capture() → also starts/stops MicService at clip boundaries
-        └── AviWriter → now supports dual-stream (video + audio)
+        └── AviWriter → incremental mode (Slice 3) + dual-stream video/audio (Slice 4)
 ```
 
 ### After Slice 6 — Motion + Timelapse
@@ -441,7 +452,6 @@ skinparam ranksep 30
         -LoggingService& m_log
         -TimerHal& m_timer
         -AviWriter m_avi_writer
-        -SdWriteBuffer m_sd_buffer
         -StreamService* m_stream_service
         -MicService* m_mic_service
         -MotionDetector* m_motion_detector
@@ -490,10 +500,9 @@ skinparam ranksep 30
         +close()
     }
 
-    class SdWriteBuffer {
-        -m_buffer[RAMSIZE]
-        +buffer_frame(data, len)
-        +flush()
+    class AviIndex {
+        +add_entry(fourcc, size, offset)
+        +write_to_sd(file)
         +reset()
     }
 
@@ -548,7 +557,6 @@ skinparam ranksep 30
  SystemOrchestrator o-down-> MotionDetector : optional
 
  VideoController *-down-> AviWriter
- VideoController *-down-> SdWriteBuffer
  VideoController ..> CameraController : uses
  VideoController ..> SdController : uses
  VideoController ..> TimeService : uses
@@ -581,7 +589,7 @@ skinparam ranksep 30
 
 **Key structural observations:**
 - `SystemOrchestrator` sits at the top as the single point of command routing — all external inputs (web, serial, schedule) flow through it.
-- `VideoController` owns the capture pipeline (`AviWriter`, `SdWriteBuffer`) and the FreeRTOS `capture_task`. It holds optional references to `StreamService`, `MicService`, and `MotionDetector`.
+- `VideoController` owns the capture pipeline (`AviWriter`, `AviIndex`) and the FreeRTOS `capture_task`. It holds optional references to `StreamService`, `MicService`, and `MotionDetector`.
 - `CommandHandler` is protocol-agnostic — `WebCommandTransport` and `SerialCommandTransport` are the two concrete transports, both feeding the same dispatch mechanism.
 - All HAL interfaces are isolated at the top — each has exactly one implementation (`*HalImpl`) and one mock (`Mock*Hal`), injected via constructor. `CameraHal` is the pre-existing HAL (shown for completeness); `WifiHal`, `WebServerHal`, `TimerHal`, and `MicHal` are new in Phase 2.
 - `SdController` is used by both `VideoController` (via `capture_task`) and `MicService` (via `mic_task`), arbitrated by the `sd_active` mutex.
@@ -782,13 +790,13 @@ class WebServerService
 
 **Initial routes:**
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/` | GET | Index page (from SD `/data/` or built-in HTML) |
-| `/web/*` | GET | Static files from SD `/data/` (HTML, JS, CSS, SVG, ICO) |
-| `/status` | GET | JSON status (recording state, SD space, config) |
-| `/control` | GET | Control commands (record on/off, still capture, reset) |
-| `/update` | POST | Bulk config updates from web UI |
+| Route | Method | Purpose | Slice |
+|-------|--------|---------|-------|
+| `/` | GET | Index page (from SD `/data/` or built-in HTML) | 1 |
+| `/web/*` | GET | Static files from SD `/data/` (HTML, JS, CSS, SVG, ICO) | 5 |
+| `/status` | GET | JSON status (recording state, SD space, config) | 1 |
+| `/control` | GET | Control commands (record on/off, still capture, reset) | 1 |
+| `/update` | POST | Bulk config updates from web UI | 5 |
 
 **Authentication:** Basic auth using `[web]` section credentials. Checked in every handler.
 
@@ -1125,6 +1133,22 @@ command_handler.tick();  // polls both web and serial transports
 
 **Demo:** Open browser, see live camera view in real time. Recording continues simultaneously in background.
 
+### FreeRTOS Task Inventory
+
+The system runs four categories of FreeRTOS tasks (plus the implicit Arduino `loopTask`). Tasks are introduced across slices as shown below:
+
+| Task | Owner | Slice | Recommended Core | Priority | Stack | Responsibility |
+|------|-------|-------|------------------|----------|-------|---------------|
+| `loopTask` | Arduino core | Implicit | 1 (APP_CPU) | 1 | — | `setup()`/`loop()` — orchestrator tick, LED state machine, web server `handle_client()` |
+| `capture_task` | `VideoController` | 3 | 1 or `tskNO_AFFINITY` | 3 (highest) | TBD | Frame capture pacing via ISR notification; owns all SD I/O (recording, streaming buffer fill, photo write); optionally runs motion detection |
+| `sustain_task[N]` (0–4) | `StreamService` | 3 | 0 (PRO_CPU) | 2 | TBD | Per-stream HTTP multipart response writer; blocks on frame semaphore with 1.2 s timeout |
+| `mic_task` | `MicService` | 4 | 1 or `tskNO_AFFINITY` | 2 | TBD | Reads PDM mic via I2S DMA, applies gain, writes WAV data to SD |
+
+- **Priority guidance:** `capture_task` at highest priority so frame pacing is never starved. `sustain_task` and `mic_task` at medium priority — they can tolerate occasional scheduling jitter. `loopTask` at lowest — no hard real-time requirements.
+- **Stack sizes:** Marked TBD — determined during implementation via `uxTaskGetStackHighWaterMark()` stress testing. Initial guesses: `capture_task` ~4096 (call depth with AVI writing), `sustain_task` ~3072 (HTTP framing), `mic_task` ~2048 (simple read→write loop).
+- **Motion detection runs inline** within `capture_task` (no separate task) — it processes each frame immediately after capture before the buffer is released.
+- **No dedicated networking task** — HTTP handling is split: admin routes run in `loopTask` via `WebServer::handle_client()`, stream routes run in `sustain_task[N]` via `esp_http_server` (see Streaming Implementation Decision below).
+
 ### New Interfaces
 
 #### `TimerHal` (`include/hal/timer_hal.h`)
@@ -1209,7 +1233,9 @@ while (is_streaming[slot_num]) {
 }
 ```
 
-> **Implementation decision:** The `sustain_task` runs an HTTP chunked response, which requires a long-lived connection. Whether to route this through `WebServerHal` (which wraps Arduino `WebServer` and manages one request at a time) or use a lower-level HTTP server (e.g., ESP-IDF `esp_http_server` which supports concurrent connections natively) needs to be determined at implementation time. The Arduino `WebServer` library is single-threaded and may not work correctly when `sustain_task` holds a connection open while the main loop calls `handle_client()`. A possible approach: the stream endpoint uses `esp_http_server` directly for the multipart response, while all other routes use `WebServerHal` as before.
+> **Implementation decision:** The `sustain_task` writes an HTTP multipart response on a long-lived connection. The Arduino `WebServer` library is single-threaded — `handle_client()` processes one request at a time from the main loop. A `sustain_task` writing directly to the same socket from a different task is **not compatible** with `WebServer`'s internal state machine.
+>
+> **Recommendation:** Route the stream endpoint through ESP-IDF's `esp_http_server` (`httpd_handle_t`), which natively supports concurrent connections. Admin routes (`/status`, `/control`) can continue using `WebServerHal` (Arduino `WebServer`) as before. This means `StreamService` needs a second HAL path — either a `StreamServerHal` interface with its own `StreamServerHalImpl`, or `WebServerHal` gains separate methods for the stream server. The implementation should validate that `esp_http_server`'s `HTTPD_ESP_INT_FLAG` does not conflict with the camera timer ISR.
 
 ### Major Modification — `VideoController` Refactor
 
@@ -1237,6 +1263,8 @@ class VideoController
 
 **Concurrency note:** `capture_photo()` is called from the orchestrator (main loop context), not from `capture_task`. It must acquire the `sd_active` mutex before doing SD I/O and release it after, serializing with `capture_task`'s recording/streaming operations. If `capture_task` is actively recording, the photo write waits until the current SD transaction completes. This is acceptable because photo capture is a low-frequency operation.
 
+> **Latency expectation:** With per-frame writes, `capture_task` holds the `sd_active` mutex for ~100 ms per frame. A `TAKE_PHOTO` arriving during recording waits at most one frame write (~100 ms), plus the photo write itself (~50 ms). The photo command response sees ~150 ms latency in the worst case — noticeable but not a hang.
+
     private:
         // OLD: void tick() — REMOVED
         // NEW: FreeRTOS task-based architecture
@@ -1261,22 +1289,93 @@ class VideoController
         TimeService& m_time;
         LoggingService& m_log;
         AviWriter m_avi_writer;
-        SdWriteBuffer m_sd_buffer;
 };
 ```
 
 **`on_frame_capture()` flow:**
 1. `m_camera.capture_frame()` → `m_camera.get_frame()`
 2. For each active stream slot: copy JPEG to slot buffer, give semaphore
-3. If recording: `m_avi_writer.write_frame()`, accumulate chunk, `m_sd_buffer.buffer_frame()`
+3. If recording: `m_avi_writer.write_frame()` to format the AVI chunk, then write the chunk bytes directly to the SD file via `m_sd.write()` (within `capture_task` — SD I/O is exclusive to this task). The camera's `fb_count=2` provides hardware pipelining: the next frame is captured while this write runs.
 4. `m_camera.release_frame()`
-5. Check clip limits, auto-rotate if needed
+5. Check clip limits, auto-rotate if needed — rotation is cheap (~50 ms index flush + header fixup)
 
-**SD I/O ownership:** All SD card operations — including `open_clip()`, `close_clip()`, `capture_and_write_frame()`, and the `SdWriteBuffer` flush — run exclusively within `capture_task`. This eliminates the concurrent SD access problem. The main loop never touches `SdController` for SD operations.
+**SD I/O ownership:** All SD card operations — including `open_clip()`, `close_clip()`, per-frame `write()` calls, and `capture_photo()` — run exclusively within `capture_task`. The main loop never touches `SdController` for SD operations.
 
-**Clip rotation tradeoff:** When a clip reaches its duration or size limit, `close_clip()` must replay all accumulated frame chunks and the index to SD. This can block `capture_task` for several seconds (writing up to 4MB to SD), during which no frames are captured and no stream frames are delivered. Stream consumers will see a gap at clip boundaries. This is an acceptable tradeoff for the initial implementation — the alternative (interleaving SD writes with frame capture) would significantly increase complexity.
+**Incremental AVI writing (replaces buffer-all-at-close):** Rather than accumulating all frames in a PSRAM buffer and writing the entire AVI at clip close, each frame is written to SD as it is captured. Only the AVI index is retained in RAM (~10 KB for a 60-second clip at 10 fps). At clip close, the index is appended and the header is patched via `seek()` + overwrite.
 
-> **Implementation decision:** Whether to optimize clip rotation to reduce the capture gap (e.g., background flushing, double-buffering the AVI accumulation) is deferred. The current buffer-all-at-close strategy produces correct AVI files reliably. Optimization can be explored later if the gap is visually problematic.
+**How it works:**
+
+```
+Clip start → write placeholder AVI header (224 bytes, zeros for frame count/size)
+             ↓
+Frame N captured → write frame N-1 formatted chunk to SD
+                   ↓
+             (camera captures frame N+1 in its own DMA buffer, in parallel)
+             ↓
+Frame N+1 captured → write frame N formatted chunk to SD
+             ⋮
+Clip end   → write accumulated index → seek(0) → overwrite header with final stats
+             → close()  [~50 ms total]
+```
+
+**Why this works:** The ESP32 camera driver supports `fb_count=2`, providing two DMA frame buffers. While `capture_task` writes the previous frame's data to SD, the camera hardware captures the next frame into the other buffer in parallel. At VGA 10 fps (~90 ms write time per frame within a 100 ms frame period), this pipelining keeps capture and I/O overlapped.
+
+**Benefits over buffer-all-at-close:**
+
+| Aspect | Old (buffer-all-at-close) | New (incremental writes) |
+|--------|--------------------------|--------------------------|
+| PSRAM for AVI | 4 MB (`CLIP_BUFFER_RAM_SIZE`) | ~10 KB (index only) |
+| Clip rotation gap | 4–8 seconds (no frames captured) | ~50 ms (index flush + header fixup) |
+| Stream continuity | Gap at every clip boundary | Continuous — frames always delivered |
+| `sd_active` mutex held | 4–8 s at clip close | ~100 ms per frame |
+| LED responsiveness | Frozen during flush | Responsive between frames |
+| Risk of data loss on power fail | Entire clip lost | At most one frame lost |
+
+**`AviWriter` incremental mode — new API:**
+
+The `AviWriter` class gains incremental mode support in this slice. Existing methods (`open()`, `write_frame()`) are backward-compatible — incremental mode is opt-in via a constructor flag.
+
+```cpp
+// New methods for incremental mode
+void open_incremental(const char* path, uint16_t width, uint16_t height,
+                      uint8_t fps, SdController& sd);
+    // Writes a placeholder AVI header (224 bytes) to the SD file.
+    // Subsequent calls to write_frame() format frame chunks and
+    // write them directly to the SD file via SdController.
+
+void write_frame_incremental(const uint8_t* data, uint32_t len);
+    // Formats an AVI chunk header + frame data, writes to the SD file,
+    // and records the chunk offset in an internal index (RAM).
+
+void close_incremental(SdController& sd);
+    // Writes the accumulated AVI index to the SD file, then seeks to
+    // offset 0 and overwrites the header with final frame count and file size.
+    // Total time: ~50 ms (index write + seek + header overwrite).
+```
+
+**New internal member:**
+```cpp
+class AviWriter {
+    // ... existing members ...
+    private:
+        struct IndexEntry {
+            uint32_t fourcc;
+            uint32_t size;
+            uint32_t offset;  // file offset of chunk start
+        };
+        static constexpr size_t MAX_INDEX_ENTRIES = 1024;
+        IndexEntry m_index[MAX_INDEX_ENTRIES];
+        uint32_t m_index_count = 0;
+        uint32_t m_data_size = 0;  // total frame data written
+        bool m_incremental = false;
+};
+```
+
+With `fb_count=2` camera pipelining, each frame write runs concurrently with the next frame's capture, so the ~90 ms write time is fully overlapped.
+
+**Limitation — framerate ceiling:** The effective framerate is bounded by `max(frame_period, write_time_per_frame + overhead)`. At VGA / `jpeg_quality=10` / 500 KB/s SPI: ~90 ms write time per 45 KB frame, yielding a ceiling of ~11 fps. For the target config (`fps=10`, `resolution=VGA`) this works with ~10 ms margin. If higher framerates are needed later, a ring-buffer + dedicated write task can decouple capture from I/O.
+
+**Graceful frame drops:** If `write_time + overhead` exceeds `frame_period`, `capture_task` skips `get_frame()` for the cycle(s) needed to catch up. A dropped-frame counter is incremented. Stream consumers receive the previous frame again (or nothing, depending on slot design). This is logged and tolerable.
 
 **ISR + task notification:**
 ```cpp
@@ -1300,6 +1399,20 @@ void VideoController::capture_task_entry(void* param) {
 }
 ```
 
+#### Cross-task synchronization (must address at implementation)
+
+Two shared-state boundaries exist between `capture_task` and the main loop context that require explicit synchronisation:
+
+**1. `VideoController` state accessed from two contexts**
+The orchestrator (main loop) calls `start_recording()`, `stop_recording()`, `state()`, `is_recording()` while `capture_task` modifies `m_state`, checks `m_stop_clip`, etc. Without synchronisation this is a data race on members like `m_state`, `m_stop_clip`, `m_frames_recorded`.
+
+*Mitigation:* Use `std::atomic<uint8_t>` for `m_state` and `m_stop_clip`, or wrap state reads/writes in the `sd_active` mutex when accessed from outside `capture_task`.
+
+**2. `SystemOrchestrator` callbacks cross task boundary (Slice 6)**
+When motion detection is enabled, `on_frame_capture()` calls `SystemOrchestrator::on_motion_detected()` / `on_motion_stopped()` from within `capture_task`. These callbacks modify orchestrator state (`m_active_capture`, `m_motion_stop_requested`) while `system_orchestrator.tick()` (main loop) reads/writes the same state concurrently.
+
+*Mitigation:* Either (a) defer events through a FreeRTOS queue between `capture_task` and the main loop, or (b) protect shared orchestrator state with a mutex. Approach (a) is preferred — it keeps callbacks non-blocking and makes the data flow explicit.
+
 ### Composition Change
 
 ```cpp
@@ -1320,7 +1433,7 @@ video_controller.set_stream_service(&stream_service);
 
 ### Tests
 
-- `test_native/test_video_controller/`: Refactor — test `on_frame_capture()` directly (no task scheduling in native tests); add `capture_photo()` test that verifies raw JPEG written to SD
+- `test_native/test_video_controller/`: Refactor — test `on_frame_capture()` directly (no task scheduling in native tests); verify per-frame SD write via mock; add `capture_photo()` test that verifies raw JPEG written to SD; test clip close header fixup (seek + overwrite)
 - `test_native/test_stream_service/`: Stream lifecycle, semaphore patterns, buffer overflow handling
 - Timer ISR simulation via `MockTimerHal::trigger()`
 - `test_native/test_system_orchestrator/`: Update `TAKE_PHOTO` test to verify `capture_photo()` is called on `VideoController` (mock expectation)
@@ -1421,7 +1534,7 @@ void write_audio_stream_header(uint32_t sample_rate, uint16_t bits_per_sample,
                             uint16_t channels);
 void write_audio_chunk(const uint8_t* data, uint32_t len);
 void build_audio_index();
-// close() now writes dual-stream AVI when audio was included
+// close_incremental() now writes dual-stream AVI when audio stream was added
 ```
 
 #### `VideoController` — audio integration in `closeClip()`
@@ -1872,7 +1985,7 @@ Complete dependency and responsibility summary for all new and significantly mod
 | Component | Slice | Changes |
 |-----------|-------|---------|
 | **VideoController** | 3, 4, 6 | Major refactor: `tick()` → FreeRTOS `capture_task`, stream buffer delivery, motion detection, audio start/stop |
-| **AviWriter** | 4 | Audio stream header, dual-stream index, mixed chunks |
+| **AviWriter** | 3, 4 | Incremental mode (per-frame write, RAM index, seek-based header fixup); audio stream header, dual-stream index, mixed chunks |
 | **TimeService** | 1 | Unix time offset, `unix_now()`, `Calendar` struct |
 | **ConfigData** | 1, 7 | `[camera]` gains `resolution`, `jpeg_quality`, `grab_mode`; new sections (camera_photo, camera_video, motion, timelapse, schedule) |
 | **IniParser** | 1, 7 | Parse new config sections and expanded `[camera]` fields |
@@ -1909,26 +2022,22 @@ Composition root (main.cpp):
 
 PSRAM usage scales with resolution and stream count. The relationship is continuous, not a hard limit.
 
-| Config | Camera Buffers | Stream Buffers | AVI Accumulation | Motion Decode | Total PSRAM | Headroom (8MB) |
-|--------|---------------|----------------|------------------|---------------|-------------|----------------|
-| VGA, 4 streams | ~3.6 MB | ~2.0 MB | ~4.0 MB | ~307 KB | ~9.9 MB | **exceeds** |
-| VGA, 2 streams | ~3.6 MB | ~1.0 MB | ~4.0 MB | ~307 KB | ~8.9 MB | **exceeds** |
-| VGA, 0 streams | ~3.6 MB | — | ~4.0 MB | ~307 KB | ~7.9 MB | ~0.1 MB |
-| HD, 0 streams | ~7.2 MB | — | ~4.0 MB | ~921 KB | ~12.1 MB | **exceeds** |
-| SVGA, 0 streams | ~5.6 MB | — | ~4.0 MB | ~480 KB | ~10.1 MB | **exceeds** |
+| Config | Camera Buffers | Stream Buffers | AVI Index | Motion Decode | Total PSRAM | Headroom (8MB) |
+|--------|---------------|----------------|-----------|---------------|-------------|----------------|
+| VGA, 4 streams | ~3.6 MB | ~2.0 MB | ~10 KB | ~307 KB | ~5.9 MB | ~2.1 MB |
+| VGA, 2 streams | ~3.6 MB | ~1.0 MB | ~10 KB | ~307 KB | ~4.9 MB | ~3.1 MB |
+| VGA, 0 streams | ~3.6 MB | — | ~10 KB | ~307 KB | ~3.9 MB | ~4.1 MB |
+| HD, 0 streams | ~7.2 MB | — | ~10 KB | ~921 KB | ~8.1 MB | **exceeds** |
+| SVGA, 0 streams | ~5.6 MB | — | ~10 KB | ~480 KB | ~6.1 MB | ~1.9 MB |
 
-**Note on AVI accumulation:** The `VideoController`'s buffer-all-at-close strategy accumulates the complete AVI (header + all frame chunks + index) in RAM before writing to SD. At `CLIP_BUFFER_RAM_SIZE = 4MB`, this is a significant PSRAM consumer. The budget above includes this allocation. Actual peak usage may be lower if clips are short (fewer frames accumulated), but the budget assumes full-capacity clips.
+**Note on AVI index:** Incremental writes eliminate the 4 MB `CLIP_BUFFER_RAM_SIZE`. Only the AVI index is retained in RAM (~16 bytes per frame, ~10 KB for a 60-second clip at 10 fps). This frees ~4 MB of PSRAM for stream buffers, motion detection, and higher resolutions.
 
 **Key tradeoffs:**
 - Higher resolution → more PSRAM for camera buffers + longer motion detection decode time → lower achievable frame rate
-- More streams → more PSRAM for stream buffers → less headroom for camera/motion/AVI accumulation
+- More streams → more PSRAM for stream buffers → less headroom for camera/motion
 - Motion detection decode scales with capture resolution (not 96×96 output)
-- The AVI accumulation buffer (`CLIP_BUFFER_RAM_SIZE`) can be reduced to free PSRAM when streaming is active — this is a tunable constant
+- VGA with up to 4 streams fits comfortably within 8 MB PSRAM. HD still exceeds due to camera DMA buffer size (7.2 MB alone).
 - All features configurable at runtime — user tunes resolution, streams, motion, and clip length to fit their PSRAM
-
-**Guideline:** With the AVI accumulation buffer included, VGA with 0 streams has ~0.1MB headroom — tight but workable. Enabling 2 streams requires either reducing `CLIP_BUFFER_RAM_SIZE` or accepting that peak memory may temporarily exceed 8MB (the ESP32-S3 PSRAM allocator handles this by returning nullptr on exhaustion, which the code must handle gracefully). The motion decode buffer is only allocated when motion detection is active.
-
-> **Implementation decision:** Whether `CLIP_BUFFER_RAM_SIZE` should be dynamically sized based on available PSRAM and active feature count (streams, motion) is deferred. A static 4MB default with graceful fallback on allocation failure may be sufficient.
 
 ---
 
@@ -2069,12 +2178,12 @@ entry_0_motion_stop_delay=2
 |------|---------|-------|
 | `include/video_controller.h` | FreeRTOS task creation, ISR timer, recording mode enum, `sd_active` mutex, `on_frame_capture()` refactored; motion detection reports to orchestrator via callbacks | 3 |
 | `src/video_controller.cpp` | Replace `tick()` with `capture_task`, integrate motion/audio/streaming, SD I/O ownership; motion events notify orchestrator instead of auto-starting | 3 |
-| `include/avi_writer.h` | Audio stream support (stream count=2, 01wb chunks) | 4 |
-| `src/avi_writer.cpp` | Audio stream header, audio chunks, dual-stream index | 4 |
+| `include/avi_writer.h` | Incremental mode (per-frame write, RAM index, seek-based header fixup); audio stream support (stream count=2, 01wb chunks) | 3, 4 |
+| `src/avi_writer.cpp` | Incremental write methods, placeholder header, index build; audio stream header, audio chunks, dual-stream index | 3, 4 |
 | `include/camera_controller.h` | Config-driven init (replaces hardcoded values), `reconfigure()` method for mode switching | 1, 7 |
 | `src/camera_controller.cpp` | Read resolution/quality from `ConfigData`, re-init camera on mode switch | 1, 7 |
-| `include/sd_controller.h` | Move to `capture_task` ownership (no longer `tick()`-driven from main loop) | 3 |
-| `src/sd_controller.cpp` | SD I/O operations called exclusively from `capture_task` | 3 |
+| `include/sd_controller.h` | Move to `capture_task` ownership (no longer `tick()`-driven from main loop); add `write()` and `seek()` methods for incremental AVI writes | 3 |
+| `src/sd_controller.cpp` | SD I/O operations called exclusively from `capture_task`; per-frame write path replaces batched flush | 3 |
 | `include/pin_arbitrator.h` | Retained but unused in FreeRTOS path (SD CS managed by `capture_task` directly) | 3 |
 | `src/pin_arbitrator.cpp` | No functional changes; retained for backward compatibility with non-FreeRTOS paths | 3 |
 | `include/peripheral_manager.h` | **Deprecated** — responsibilities distributed to `LedStateMachine` (LED) and `SdController` (SD I/O) | 3 |
@@ -2140,6 +2249,7 @@ test/
 - **Hardware tests** validate FreeRTOS task interactions: `capture_task` → `stream_buffer` → `sustain_task` flow, `mic_task` WAV output, motion → orchestrator callback → recording trigger
 - **`MotionDetector`** is fully native-testable with synthetic 96×96 pixel arrays
 - **No native FreeRTOS mock** — task synchronization tested on hardware only (too complex for limited benefit)
+- **Cross-task synchronization stress testing:** The two data races identified above (VideoController state, Orchestrator callbacks) should be stress-tested on hardware. A hardware test should: start recording, rapidly issue stop/start commands from the web transport, and verify no state corruption or crash after 1000+ transitions. This catches race conditions that unit tests with mocks cannot.
 - Timer ISR simulation via `MockTimerHal::trigger()` for native video controller tests
 
 ---
