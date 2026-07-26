@@ -43,6 +43,8 @@ class WebServerService
         LoggingService& m_log;
         char m_password[CONFIG_FIELD_MAX_LENGTH]{};
 
+        static constexpr const char* SUBSYSTEM = "WEB";
+
         /** @brief Singleton instance for static trampolines. */
         static WebServerService* s_instance;
 

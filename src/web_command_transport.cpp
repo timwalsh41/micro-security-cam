@@ -2,6 +2,7 @@
 #include "web_auth_util.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 // Static instance pointer for trampolines.
 WebCommandTransport* WebCommandTransport::s_instance = nullptr;
@@ -73,19 +74,43 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     {
         return CommandCode::GET_CONFIG;
     }
+    if (std::strcmp(cmd, "set_time") == 0)
+    {
+        return CommandCode::SET_TIME;
+    }
 
     return CommandCode::GET_STATUS;
 }
 
 void WebCommandTransport::dispatch_and_respond(CommandCode code)
 {
+    dispatch_and_respond(code, nullptr, 0);
+}
+
+void WebCommandTransport::dispatch_and_respond(
+    CommandCode code,
+    const uint8_t* payload,
+    size_t payload_len)
+{
     uint8_t response_buf[CommandHandler::MAX_RESPONSE_SIZE]{};
     size_t response_len = 0;
 
-    CommandResult result = m_handler.dispatch(code, nullptr, 0,
+    CommandResult result = m_handler.dispatch(code, payload, payload_len,
                                               response_buf, response_len);
 
-    // Build JSON response
+    // If the handler wrote response data, forward it directly.
+    if (response_len > 0)
+    {
+        if (response_len < CommandHandler::MAX_RESPONSE_SIZE)
+        {
+            response_buf[response_len] = '\0';
+        }
+        m_web.send(200, "application/json",
+                   reinterpret_cast<const char*>(response_buf));
+        return;
+    }
+
+    // Fall back to basic result for commands with no response payload.
     char json[128];
     if (result == CommandResult::SUCCESS)
     {
@@ -141,6 +166,30 @@ void WebCommandTransport::handle_control()
     }
 
     CommandCode code = map_cmd_string(cmd);
+
+    // SET_TIME needs a Unix timestamp from the "ts" query parameter.
+    if (code == CommandCode::SET_TIME)
+    {
+        const char* ts_str = m_web.arg("ts");
+        if (ts_str == nullptr || ts_str[0] == '\0')
+        {
+            m_web.send(400, "application/json",
+                       "{\"error\":\"missing 'ts' parameter\"}");
+            return;
+        }
+
+        // Parse and pack as little-endian uint32.
+        unsigned long ts = strtoul(ts_str, nullptr, 10);
+        uint8_t payload[4];
+        payload[0] = static_cast<uint8_t>(ts & 0xFF);
+        payload[1] = static_cast<uint8_t>((ts >> 8) & 0xFF);
+        payload[2] = static_cast<uint8_t>((ts >> 16) & 0xFF);
+        payload[3] = static_cast<uint8_t>((ts >> 24) & 0xFF);
+
+        dispatch_and_respond(code, payload, sizeof(payload));
+        return;
+    }
+
     dispatch_and_respond(code);
 }
 

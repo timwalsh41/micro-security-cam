@@ -51,6 +51,7 @@ class SystemOrchestrator
         void tick();
 
     private:
+        static constexpr const char* SUBSYSTEM = "ORCH";
         VideoController& m_video;
         CameraController& m_camera;
         CommandHandler& m_cmd_handler;

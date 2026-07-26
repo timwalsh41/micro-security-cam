@@ -22,7 +22,7 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
                        const ConfigData::ApConfig& ap,
                        uint16_t timeout_secs)
 {
-    m_log.info("Wifi", "Initializing WiFi...");
+    m_log.info(SUBSYSTEM, "Initializing WiFi...");
 
     // Set WiFi mode to STA (station) only initially
     m_hal.mode(true, false);
@@ -32,21 +32,21 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
         sta.gateway[0] != '\0' &&
         sta.subnet_mask[0] != '\0')
     {
-        m_log.info("Wifi", "Configuring static IP: %s / %s / %s",
+        m_log.info(SUBSYSTEM, "Configuring static IP: %s / %s / %s",
                    sta.static_ip, sta.gateway, sta.subnet_mask);
         if (!m_hal.config_static(sta.static_ip, sta.gateway, sta.subnet_mask))
         {
-            m_log.warn("Wifi", "Static IP configuration failed, "
+            m_log.warn(SUBSYSTEM, "Static IP configuration failed, "
                        "falling back to DHCP");
         }
     }
     else
     {
-        m_log.debug("Wifi", "No static IP config, using DHCP");
+        m_log.debug(SUBSYSTEM, "No static IP config, using DHCP");
     }
 
     // Attempt STA connection
-    m_log.info("Wifi", "Connecting to STA network: %s", sta.ssid);
+    m_log.info(SUBSYSTEM, "Connecting to STA network: %s", sta.ssid);
     m_hal.begin_sta(sta.ssid, sta.password);
 
     // Poll until connected or timeout
@@ -60,25 +60,25 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
         if (m_hal.status() == hal::WifiStatus::CONNECTED)
         {
             m_connected = true;
-            m_log.info("Wifi", "STA connected successfully. IP: %s",
+            m_log.info(SUBSYSTEM, "STA connected successfully. IP: %s",
                        m_hal.local_ip());
             return;
         }
 
         elapsed_ms = m_time.elapsed_ms(start_ms, m_time.now());
-        m_log.debug("Wifi", "Waiting for STA connection... (%u ms/%u ms)",
+        m_log.debug(SUBSYSTEM, "Waiting for STA connection... (%u ms/%u ms)",
                      elapsed_ms, timeout_secs*1000);
     } while (elapsed_ms < timeout_secs*1000);
 
     // STA connection timed out, fall back to AP mode
-    m_log.warn("Wifi", "STA connection timed out after %u seconds, "
+    m_log.warn(SUBSYSTEM, "STA connection timed out after %u seconds, "
                "falling back to AP mode", timeout_secs);
 
     // Switch to AP mode
     m_hal.mode(false, true);
     m_hal.begin_ap(ap.ssid, ap.password);
 
-    m_log.info("Wifi", "AP started. SSID: %s, IP: %s",
+    m_log.info(SUBSYSTEM, "AP started. SSID: %s, IP: %s",
                ap.ssid, m_hal.local_ip());
 
     // Note: In AP mode, m_connected remains false as we are not

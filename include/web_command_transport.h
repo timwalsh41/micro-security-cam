@@ -83,6 +83,16 @@ class WebCommandTransport : public CommandTransport
          */
         void dispatch_and_respond(CommandCode code);
 
+        /**
+         * @brief Dispatches a command with a binary payload and sends a JSON response.
+         * @param code         The command to dispatch.
+         * @param payload      Pointer to payload data (may be nullptr).
+         * @param payload_len  Length of payload in bytes.
+         */
+        void dispatch_and_respond(CommandCode code,
+                                  const uint8_t* payload,
+                                  size_t payload_len);
+
         /** @brief Handler for GET /status — always dispatches GET_STATUS. */
         void handle_status();
 

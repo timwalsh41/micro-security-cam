@@ -1,0 +1,7 @@
+[project]
+name = "esp32-security-camera"
+version = "0.1.0"
+description = "Script utilities for use with ESP32 security camera"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []

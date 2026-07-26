@@ -84,6 +84,12 @@
         "output": ""
     },
     {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_web_server_service/test_web_server_service.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
+        "file": "test/native/test_web_server_service/test_web_server_service.cpp",
+        "output": ""
+    },
+    {
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_wifi_service/test_wifi_service.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
         "file": "test/native/test_wifi_service/test_wifi_service.cpp",

@@ -212,6 +212,8 @@ class VideoController
          */
         void create_directory(const char* path);
 
+        static constexpr const char* SUBSYSTEM = "VIDEO";
+
         // Dependencies (injected)
         CameraController& m_camera;
         PeripheralManager& m_peripheral;

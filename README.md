@@ -253,6 +253,25 @@ The firmware records MJPEG video to the SD card in standard AVI containers.
 | Stopping | Single pulse (500ms) | Clip boundary — old clip closing, new clip opening |
 | Idle | Photo capture pulse or off | Not recording video |
 
+## CLI Tool
+
+The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints.
+
+Edit the `HOST`, `PORT`, and `PASSWORD` variables at the top of the script to match your device configuration.
+
+```bash
+# Get camera status (JSON)
+uv run script/python/camera_cli.py status
+
+# Send a control command
+uv run script/python/camera_cli.py control [start | stop | photo]
+
+# Set camera clock to current system time
+uv run script/python/camera_cli.py set-time
+```
+
+Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.
+
 ## Documentation
 
 - [System Design](docs/SYSTEM_DESIGN.md) — Architecture, HAL pattern, and component overview

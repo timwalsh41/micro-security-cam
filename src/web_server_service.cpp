@@ -2,8 +2,6 @@
 #include "web_auth_util.h"
 #include <cstring>
 
-static constexpr const char* SUBSYSTEM = "WEB";
-
 // Static instance pointer for trampolines.
 WebServerService* WebServerService::s_instance = nullptr;
 

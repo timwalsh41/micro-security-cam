@@ -157,6 +157,8 @@ void setup()
 
 void loop()
 {
+    RecordingState last_video_state = video_controller.state();
+
     if (camera_ctrl.is_initialized() && peripheral_manager.is_sd_card_initialized())
     {
         auto now = real_time.now();
@@ -180,19 +182,24 @@ void loop()
         system_orchestrator.tick();
 
         // LED feedback: video state takes precedence over photo capture
-        switch (video_controller.state())
+        if (video_controller.state() != last_video_state)
         {
-            case RecordingState::RECORDING:
-                peripheral_manager.blink(200, 200);
-                break;
-            case RecordingState::STOPPING:
-                peripheral_manager.pulse_led(500);
-                break;
-            case RecordingState::IDLE:
-                // LED controlled by other logic below
-                break;
+            switch (video_controller.state())
+            {
+                case RecordingState::RECORDING:
+                    peripheral_manager.blink(200, 200);
+                    break;
+                case RecordingState::STOPPING:
+                    peripheral_manager.pulse_led(500);
+                    break;
+                case RecordingState::IDLE:
+                    // LED controlled by other logic below
+                    break;
+            }
+            last_video_state = video_controller.state();
         }
 
+        /*
         if (TimeService::elapsed_ms(last_capture_time_ms, now) >= camera_capture_interval_ms)
         {
             if (!video_controller.is_recording())
@@ -204,7 +211,9 @@ void loop()
             take_photo(image_count);
             image_count++;
         }
-        else if (now % 5000 == 0)
+        */
+        
+        if (now % 5000 == 0)
         {
             logger.info("MAIN", "Looping...");
             real_time.delay_ms(2);

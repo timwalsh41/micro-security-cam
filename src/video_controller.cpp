@@ -33,7 +33,7 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
                               ? (1000u / m_config.fps)
                               : 0;
 
-    m_log.info("VIDEO", "Init: %ufps %ux%u, clip %us, quality %u",
+    m_log.info(SUBSYSTEM, "Init: %ufps %ux%u, clip %us, quality %u",
                m_config.fps, m_width, m_height,
                m_config.clip_duration_s, m_config.jpeg_quality);
 
@@ -100,7 +100,7 @@ void VideoController::tick()
             if (m_avi_writer.is_open())
             {
                 m_state = RecordingState::RECORDING;
-                m_log.info("VIDEO", "New clip: %s", m_file_path);
+                m_log.info(SUBSYSTEM, "New clip: %s", m_file_path);
                 return;
             }
         }
@@ -149,7 +149,7 @@ void VideoController::tick()
 
         if (m_frames_recorded >= max_frames())
         {
-            m_log.warn("VIDEO", "Max frames reached, closing clip");
+            m_log.warn(SUBSYSTEM, "Max frames reached, closing clip");
             m_state = RecordingState::STOPPING;
             return;
         }
@@ -176,7 +176,7 @@ bool VideoController::start_recording()
     }
 
     m_state = RecordingState::RECORDING;
-    m_log.info("VIDEO", "Recording started: %s", m_file_path);
+    m_log.info(SUBSYSTEM, "Recording started: %s", m_file_path);
     return true;
 }
 
@@ -293,7 +293,7 @@ void VideoController::close_clip()
     m_sd_buffer.flush();
     m_sd_buffer.reset();
 
-    m_log.info("VIDEO", "Clip closed: %s (%u frames, %u bytes)",
+    m_log.info(SUBSYSTEM, "Clip closed: %s (%u frames, %u bytes)",
                m_file_path, m_frames_recorded, m_file_size);
 
     // Clean up
@@ -312,7 +312,7 @@ void VideoController::capture_and_write_frame()
     CameraCaptureResult result = m_camera.capture_frame();
     if (result != CameraCaptureResult::SUCCESS)
     {
-        m_log.warn("VIDEO", "Frame capture failed");
+        m_log.warn(SUBSYSTEM, "Frame capture failed");
         return;
     }
 

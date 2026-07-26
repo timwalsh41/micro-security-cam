@@ -2,8 +2,6 @@
 #include <cstdio>
 #include <cstring>
 
-static constexpr const char* SUBSYSTEM = "ORCH";
-
 SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CameraController& camera,
                                        CommandHandler& cmd_handler,
@@ -176,7 +174,17 @@ CommandResult SystemOrchestrator::handle_set_time(
     memcpy(&unix_time, payload, sizeof(uint32_t));
 
     m_time.set_unix_offset(unix_time, m_time.now());
+    auto now = m_time.localtime();
+
     m_log.info(SUBSYSTEM, "Time set to %lu", static_cast<unsigned long>(unix_time));
+    m_log.info(SUBSYSTEM, "Current date-time is %u-%u-%u %u:%u:%u UTC",
+        1900 + now.tm_year,
+        1 + now.tm_mon,
+        now.tm_mday,
+        now.tm_hour,
+        now.tm_min,
+        now.tm_sec);
+    
     return CommandResult::SUCCESS;
 }
 

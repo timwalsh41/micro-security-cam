@@ -86,6 +86,7 @@ class ConfigService
         static constexpr hal::millis_t READ_TIMEOUT_MS = 5000;
 
     private:
+        static constexpr const char* SUBSYSTEM = "CONF";
         LoggingService& m_logger;
         ConfigData m_config;
 };

@@ -50,6 +50,7 @@ class WifiService
         const char* local_ip() const;
 
     private:
+        static constexpr const char* SUBSYSTEM = "WIFI";
         hal::WifiHal& m_hal;
         TimeService& m_time;
         LoggingService& m_log;
