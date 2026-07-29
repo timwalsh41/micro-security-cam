@@ -34,11 +34,15 @@ class HardwareSerial
 {
     public:
         void begin(uint32_t) {}
+        void end() {}
+        int available() { return 0; }
+        int read() { return -1; }
+        size_t write(const uint8_t* buffer, size_t size) { return size; }
+        size_t write(uint8_t c) { return 1; }
         void print(const String& s) { std::cout << s; }
         void print(uint32_t n) { std::cout << n; }
         void println(const String& s) { std::cout << s << std::endl; }
         void println(uint32_t n) { std::cout << n << std::endl; }
-        void write(const char* buffer, const size_t size) { std::cout << buffer << std::endl; }
         void flush() { } 
 };
 

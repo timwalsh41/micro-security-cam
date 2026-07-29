@@ -278,6 +278,65 @@ void test_response_buffer()
     TEST_ASSERT_EQUAL_UINT8('K', response[1]);
 }
 
+/**
+ * @brief Multiple transports registered — each is polled independently
+ *        and receives the correct response without cross-talk.
+ */
+void test_multi_transport_no_interference()
+{
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger{log_backend, time};
+    CommandHandler handler{logger};
+
+    MockCommandTransport transport_a;
+    MockCommandTransport transport_b;
+
+    handler.add_transport(transport_a);
+    handler.add_transport(transport_b);
+
+    // Register handlers
+    handler.register_handler(
+        CommandCode::GET_STATUS,
+        [](const uint8_t*, size_t, uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            response[0] = 0xAA;
+            responseLen = 1;
+            return CommandResult::SUCCESS;
+        });
+
+    handler.register_handler(
+        CommandCode::TAKE_PHOTO,
+        [](const uint8_t*, size_t, uint8_t*, size_t&) -> CommandResult
+        {
+            return CommandResult::SUCCESS;
+        });
+
+    // Set requests on both transports
+    transport_a.set_request(CommandCode::GET_STATUS);
+    transport_b.set_request(CommandCode::TAKE_PHOTO);
+
+    // Single tick should process both
+    handler.tick();
+
+    // Verify transport_a got GET_STATUS result (SUCCESS with 0xAA data)
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(transport_a.m_response_code));
+    TEST_ASSERT_EQUAL_UINT32(1, transport_a.m_response_data.size());
+    TEST_ASSERT_EQUAL_UINT8(0xAA, transport_a.m_response_data[0]);
+
+    // Verify transport_b got TAKE_PHOTO result (SUCCESS, no data)
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(transport_b.m_response_code));
+    TEST_ASSERT_TRUE(transport_b.m_response_data.empty());
+
+    // Both transports should have consumed their requests
+    TEST_ASSERT_FALSE(transport_a.m_has_request);
+    TEST_ASSERT_FALSE(transport_b.m_has_request);
+}
+
 // ============================================================
 // Test runner
 // ============================================================
@@ -295,6 +354,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_tick_polls_transports);
     RUN_TEST(test_multiple_handlers);
     RUN_TEST(test_response_buffer);
+    RUN_TEST(test_multi_transport_no_interference);
 
     return UNITY_END();
 }

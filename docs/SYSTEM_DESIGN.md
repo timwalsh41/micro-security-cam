@@ -21,9 +21,10 @@ The design follows a layered architecture that separates hardware access from ap
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Orchestration / Command Layer                  │
-│  SystemOrchestrator  (top-level coordinator)                │
-│  CommandHandler      (protocol-agnostic dispatch)           │
-│  WebCommandTransport (HTTP → CommandHandler bridge)         │
+│  SystemOrchestrator   (top-level coordinator)               │
+│  CommandHandler       (protocol-agnostic dispatch)          │
+│  WebCommandTransport  (HTTP → CommandHandler bridge)        │
+│  SerialCommandTransport (UART → CommandHandler bridge)      │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -41,7 +42,7 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                Hardware Abstraction Layer (HAL)             │
 │  CameraHal       SdCardHal      LogBackend                  │
-│  GpioHal         TimeHal        WifiHal                     │
+│  GpioHal         TimeHal        WifiHal    SerialHal        │
 │  WebServerHal                                               │
 └─────────────────────────────────────────────────────────────┘
                          │
@@ -74,6 +75,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | `GpioHal` | `include/hal/gpio_hal.h` | Thin forwarding wrappers for `pinMode()` and `digitalWrite()`. No logic — pure indirection. |
 | `TimeHal` | `include/hal/time_hal.h` | Forwarding functions for Arduino `millis()`, `delay()`, and microsecond delays. Defines the `millis_t` type alias. |
 | `LogBackend` | `include/hal/log_backend.h` | Abstract interface for log output destinations. Receives fully formatted log lines from `LoggingService`. |
+| `SerialHal` | `include/hal/serial_hal.h` | UART serial port abstraction. Wraps the Arduino `HardwareSerial` interface (`available`, `read`, `write`, `flush`) behind a mockable interface. |
 
 ### Concrete ESP32 Implementations
 
@@ -84,7 +86,8 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
 | `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/close) |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
-| `SerialLogBackend` | Arduino `Serial.write()` — writes formatted log lines only. `Serial.begin()` called in constructor. |
+| `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
+| `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
 
 ### WifiHal
@@ -133,6 +136,23 @@ Abstract interface for HTTP server operations. Provides route registration, requ
 
 **Mock**: `MockWebServerHal` (`test/mocks/native_mocks/mock_web_server_hal.h`) provides configurable return values and records registered routes and responses.
 
+### SerialHal
+
+**File**: `include/hal/serial_hal.h`
+
+Abstract interface for UART serial port operations. Provides byte-level I/O and buffer management.
+
+| Method | Purpose |
+|--------|---------|
+| `available()` | Return the number of bytes in the receive buffer |
+| `read()` | Read a single byte, or -1 if none available |
+| `write(data, len)` | Write a buffer of bytes |
+| `flush()` | Wait for the transmit buffer to empty |
+
+**ESP32 Implementation**: `SerialHalImpl` (`src/hal/serial_hal_impl.cpp`) wraps the Arduino `HardwareSerial` (`Serial`) object, forwarding each method directly.
+
+**Mock**: `MockSerialHal` (`test/mocks/native_mocks/mock_serial_hal.h`) provides configurable return values, simulated input injection (`inject_input()`, `inject_bytes()`), captured output inspection (`output_as_string()`), and call tracking (`flush_call_count`).
+
 ### Mock Implementations (Native Tests)
 
 Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable return values plus call tracking:
@@ -142,6 +162,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | `MockCameraHal` | `init_call_count`, `capture_call_count`, `release_call_count`, `deinit_call_count` | `init_result`, `capture_result`, `initialized_state`, `capabilities` |
 | `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count` | `init_result`, `open_result`, `write_result` |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
+| `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
 
 ---
@@ -465,15 +486,7 @@ Transport (HTTP, Serial, etc.)
 
 #### Command Codes
 
-| Code | Command | Description |
-|------|---------|-------------|
-| `0x01` | `GET_STATUS` | Return system status as JSON |
-| `0x10` | `START_RECORDING` | Begin video recording |
-| `0x11` | `STOP_RECORDING` | Stop video recording |
-| `0x12` | `TAKE_PHOTO` | Capture a still photo |
-| `0x20` | `SET_CONFIG` | Update configuration |
-| `0x21` | `GET_CONFIG` | Return current configuration |
-| `0x30` | `SET_TIME` | Set the Unix time offset |
+The full set of recognised commands, their hex codes, payloads, and transport mappings are documented in the **[Command Reference](#command-reference)** section below.
 
 #### Key Design Points
 
@@ -502,17 +515,40 @@ Bridges HTTP routes to `CommandHandler::dispatch()`. Each registered command bec
 
 #### Command Mapping
 
-| Query Value | CommandCode |
-|-------------|-------------|
-| (none) | `GET_STATUS` |
-| `start` | `START_RECORDING` |
-| `stop` | `STOP_RECORDING` |
-| `photo` | `TAKE_PHOTO` |
-| `config` | `GET_CONFIG` |
+See the **Web transport** table in the **[Command Reference](#command-reference)** for the mapping of query values to CommandCodes.
 
 #### Static Trampolines
 
 Like `WebServerService`, this class uses a static instance pointer with static callback methods because `WebServerHal::on()` requires plain function pointers.
+
+### SerialCommandTransport
+
+**Files**: `include/serial_command_transport.h`, `src/serial_command_transport.cpp`
+
+#### Responsibility
+
+Implements a text-based command protocol over UART using the `SerialHal` abstraction. Each line is parsed as a single command and dispatched through `CommandHandler::dispatch()`. Responses are returned as `OK` or `ERR` text lines.
+
+#### Text Protocol
+
+```
+Request:  COMMAND [args]\n
+Response: OK [data]\n   or   ERR <code>\n
+```
+
+Command parsing is case-sensitive. Arguments are separated from the command by a space. Lines are accumulated in an internal buffer until a newline character (`\n`) is received. Both `\n` and `\r` are treated as line terminators; carriage returns are consumed silently, and blank lines are ignored. Lines exceeding the internal buffer (128 bytes) are discarded.
+
+#### Command Mapping
+
+See the **Serial transport** table in the **[Command Reference](#command-reference)** for the mapping of text commands to CommandCodes.
+
+#### Polling Model
+
+Unlike `WebCommandTransport` (which is callback-driven), `SerialCommandTransport` uses a **poll** model. The transport accumulates bytes in `has_request()` and signals readiness when a complete line is received. The `CommandHandler::tick()` method polls `has_request()` on all registered transports, so no separate calls are needed.
+
+#### Integration
+
+The transport shares a single `SerialHal` instance with `SerialLogBackend`.
 
 ### SystemOrchestrator
 
@@ -533,20 +569,13 @@ Top-level system coordinator and command router.
 
 #### Registered Commands
 
-| Command | Handler | Description |
-|---------|---------|-------------|
-| `GET_STATUS` | `handle_get_status()` | Returns JSON with recording state, frame count, file size |
-| `START_RECORDING` | `handle_start_recording()` | Delegates to `VideoController::start_recording()` |
-| `STOP_RECORDING` | `handle_stop_recording()` | Delegates to `VideoController::stop_recording()` |
-| `TAKE_PHOTO` | `handle_take_photo()` | Captures a frame, logs size, releases (file write deferred) |
-| `SET_TIME` | `handle_set_time()` | Reads 4-byte uint32 payload, calls `TimeService::set_unix_offset()` |
-| `SET_CONFIG` | `handle_set_config()` | Returns `INVALID_STATE` (not yet implemented) |
+The orchestrator registers handlers for all commands listed in the **[Command Reference](#command-reference)**. The handler implementation for each command is documented in the `SystemOrchestrator` source files.
 
 #### Lifecycle
 
 ```
 init()
-  → register_commands()  // registers 6 handlers with CommandHandler
+  → register_commands()  // registers all handlers with CommandHandler
   → log initialization
 
 tick()
@@ -583,6 +612,8 @@ Every command returns a `CommandResult` enum value:
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera and releases it (Slice 1 placeholder — no SD write). Returns `INTERNAL_ERROR` if frame capture fails. |
 | `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
 | `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
+| `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). Returns `INVALID_ARGS` if the key is unknown. |
+| `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value. The string contains both the key path and the new value separated by `=`. Returns `INVALID_ARGS` if the key is unknown. |
 | `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |
 
 #### Transport Mappings
@@ -604,7 +635,23 @@ The web transport sends a JSON response body for all commands:
 
 The `/status` endpoint always dispatches `GET_STATUS` regardless of query parameters.
 
-**Serial/binary transport** — *(planned for Slice 2)* — feeds a raw `CommandCode` byte + payload through `CommandHandler::tick()`. Responses are returned via the transport's `send_response()` method as a `CommandResult` byte followed by optional response bytes.
+**Serial transport** — line-based text protocol over UART. Each command is a single line terminated by `\n`; responses are returned as `OK` or `ERR` lines.
+
+| Text Command | Command | Payload | Response |
+|-------------|---------|---------|----------|
+| `STATUS` | `GET_STATUS` | None | Status JSON |
+| `PHOTO` | `TAKE_PHOTO` | None | Empty |
+| `RECORD_START` | `START_RECORDING` | None | Empty |
+| `RECORD_STOP` | `STOP_RECORDING` | None | Empty |
+| `TIME <unix_ts>` | `SET_TIME` | Decimal ASCII string (parsed as `uint32_t` by transport) | Empty |
+| `GET <section>.<key>` | `GET_CONFIG_VALUE` | `"section.key"` string | The value string |
+| `SET <section>.<key>=<val>` | `SET_CONFIG_VALUE` | `"section.key=value"` string | Empty |
+
+Response format:
+- **Success**: `OK [data]\n` (data is optional)
+- **Error**: `ERR <code>\n` (code is the two-digit hex `CommandResult` value)
+
+Line accumulation happens inside the transport's `has_request()` method. The transport uses the shared `SerialHal` instance.
 
 ---
 
@@ -1013,12 +1060,12 @@ GPIO 21 is shared between the LED (active LOW) and the SD card chip-select (acti
 
 The `setup()` function composes all system components in a layered initialization sequence. Global instances are declared at file scope, organized into two groups:
 
-1. **Core services** — always present: `RealTimeService`, `LoggingService`, `ConfigService`, `PeripheralManager`, `CameraController`, `VideoController`, `PlatformInitializer`.
-2. **Network & command services** — WiFi, web, commands, orchestrator: `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SystemOrchestrator`.
+1. **Core services** — always present: `RealTimeService`, `SerialHalImpl`, `LoggingService`, `ConfigService`, `PeripheralManager`, `CameraController`, `VideoController`, `PlatformInitializer`.
+2. **Network & command services** — WiFi, web, commands, orchestrator: `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `SystemOrchestrator`.
 
 ### Initialization Sequence
 
-1. **Platform init** — `PlatformInitializer::init()` configures Serial and basic hardware.
+1. **Platform init** — `PlatformInitializer::init()` configures ESP-IDF and basic hardware.
 2. **Peripheral init** — `PeripheralManager::init()` sets up GPIO, LED, and pin arbitration. A 3-second LED blink provides visual startup feedback.
 3. **SD card init** — `PeripheralManager::init_sd_card()` mounts the SD card. If this fails, `setup()` returns early.
 4. **Config load** — Reads `/config.ini` from SD into a stack buffer, then calls `ConfigService::load()`. Missing or empty files result in sensible defaults.
@@ -1026,7 +1073,8 @@ The `setup()` function composes all system components in a layered initializatio
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step.
 7. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
 8. **Web server init** — `WebServerService::init()` registers HTTP routes (`/`, `/status`, `/control`). The `WebCommandTransport` is added to the `CommandHandler`, and the web server's command handler reference is set.
-9. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers (GET_STATUS, START_RECORDING, STOP_RECORDING, TAKE_PHOTO, SET_TIME, SET_CONFIG).
+9. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
+10. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers.
 
 ### Main Loop
 
@@ -1173,7 +1221,7 @@ The diagram illustrates the complete round-trip:
 6. **Handler execution** — The lambda (capturing the `SystemOrchestrator`) calls the appropriate domain method (e.g., `handle_start_recording()` → `m_video.start_recording()`).
 7. **Response** — The `CommandResult` is serialised into a JSON response and sent back through the HTTP chain.
 
-**Note on transport models:** `WebCommandTransport` uses a **push** model — the dispatch happens inline within the HTTP route callback, not through the `CommandHandler::tick()` polling loop. The tick path exists for future transports (e.g., serial UART) that lack a callback-driven request mechanism.
+**Note on transport models:** `WebCommandTransport` uses a **push** model — the dispatch happens inline within the HTTP route callback, not through the `CommandHandler::tick()` polling loop. `SerialCommandTransport` uses a **poll** model — line accumulation happens inside `has_request()`, and `CommandHandler::tick()` drives the poll-response-dispatch cycle for all registered poll-based transports.
 
 ---
 

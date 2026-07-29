@@ -1,0 +1,491 @@
+#include <unity.h>
+#include "serial_command_transport.h"
+#include "command_handler.h"
+#include "mock_log_backend.h"
+#include "mock_serial_hal.h"
+#include "time_service.h"
+#include "logging_service.h"
+#include <cstring>
+#include <cstdint>
+#include <map>
+#include <string>
+
+// ============================================================
+// TestFixture
+// ============================================================
+
+struct TestFixture
+{
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger;
+    CommandHandler handler;
+    MockSerialHal serial;
+    SerialCommandTransport transport;
+    std::map<std::string, std::string> config;
+
+    TestFixture()
+        : logger(log_backend, time)
+        , handler(logger)
+        , transport(serial)
+    {
+        // Register handler for STATUS/GET_STATUS
+        handler.register_handler(
+            CommandCode::GET_STATUS,
+            [](const uint8_t*, size_t, uint8_t* response, size_t& responseLen) -> CommandResult
+            {
+                // Mirrors handle_get_status: writes status info as response string.
+                const char* msg = "OK";
+                std::memcpy(response, msg, 2);
+                responseLen = 2;
+                return CommandResult::SUCCESS;
+            });
+
+        // Register handler for TAKE_PHOTO
+        handler.register_handler(
+            CommandCode::TAKE_PHOTO,
+            [](const uint8_t*, size_t, uint8_t*, size_t&) -> CommandResult
+            {
+                // Mirrors handle_take_photo: always returns success (no HW in test)
+                return CommandResult::SUCCESS;
+            });
+
+        // Register handler for SET_TIME
+        handler.register_handler(
+            CommandCode::SET_TIME,
+            [](const uint8_t* payload, size_t len, uint8_t*, size_t&) -> CommandResult
+            {
+                // Mirrors handle_set_time: checks for 4-byte timestamp payload
+                if (len < sizeof(uint32_t))
+                {
+                    return CommandResult::INVALID_ARGS;
+                }
+                return CommandResult::SUCCESS;
+            });
+
+        // Register handler for SET_CONFIG_VALUE
+        handler.register_handler(
+            CommandCode::SET_CONFIG_VALUE,
+            [this](const uint8_t* payload, size_t len,
+                    uint8_t*, size_t&) -> CommandResult
+            {
+                // Mirrors handle_set_config_value: uses memchr bounded by len
+                // to find '=', then treats the value as a C string.
+                if (payload == nullptr || len == 0)
+                {
+                    return CommandResult::INVALID_ARGS;
+                }
+                const char* data = reinterpret_cast<const char*>(payload);
+                const char* eq = static_cast<const char*>(
+                    memchr(data, '=', len));
+                if (eq == nullptr || eq == data)
+                {
+                    return CommandResult::INVALID_ARGS;
+                }
+                std::string key(data, static_cast<size_t>(eq - data));
+                const char* val = eq + 1;
+                this->config[key] = val;
+                return CommandResult::SUCCESS;
+            });
+
+        // Register handler for GET_CONFIG_VALUE
+        handler.register_handler(
+            CommandCode::GET_CONFIG_VALUE,
+            [this](const uint8_t* payload, size_t /*len*/,
+                    uint8_t* response, size_t& responseLen) -> CommandResult
+            {
+                // Mirrors handle_get_config_value: ignores len, treats
+                // payload as a null-terminated C string.
+                if (payload == nullptr)
+                {
+                    return CommandResult::INVALID_ARGS;
+                }
+                const char* key = reinterpret_cast<const char*>(payload);
+                auto it = this->config.find(key);
+                if (it == this->config.end())
+                {
+                    return CommandResult::INVALID_ARGS;
+                }
+                const std::string& value = it->second;
+                std::memcpy(response, value.c_str(), value.size());
+                responseLen = value.size();
+                return CommandResult::SUCCESS;
+            });
+
+        handler.add_transport(transport);
+    }
+
+    void inject_line(const char* line)
+    {
+        serial.inject_input(line);
+    }
+};
+
+// ============================================================
+// Tests
+// ============================================================
+
+/**
+ * @brief No serial data available returns no request.
+ */
+void test_no_data_no_request()
+{
+    TestFixture f;
+    TEST_ASSERT_FALSE(f.transport.has_request());
+}
+
+/**
+ * @brief Partial line without newline does not produce a request.
+ */
+void test_partial_line_no_request()
+{
+    TestFixture f;
+    f.inject_line("STATUS");
+    TEST_ASSERT_FALSE(f.transport.has_request());
+}
+
+/**
+ * @brief Complete line after newline produces a request.
+ */
+void test_newline_triggers_request()
+{
+    TestFixture f;
+    f.inject_line("STATUS\n");
+    TEST_ASSERT_TRUE(f.transport.has_request());
+}
+
+/**
+ * @brief STATUS command is parsed as GET_STATUS.
+ */
+void test_status_command()
+{
+    TestFixture f;
+    f.inject_line("STATUS\n");
+
+    TEST_ASSERT_TRUE(f.transport.has_request());
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::GET_STATUS),
+        static_cast<uint8_t>(code));
+    TEST_ASSERT_NULL(payload);
+    TEST_ASSERT_EQUAL_UINT32(0, payload_len);
+}
+
+/**
+ * @brief PHOTO command is parsed as TAKE_PHOTO.
+ */
+void test_photo_command()
+{
+    TestFixture f;
+    f.inject_line("PHOTO\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::TAKE_PHOTO),
+        static_cast<uint8_t>(code));
+    TEST_ASSERT_NULL(payload);
+    TEST_ASSERT_EQUAL_UINT32(0, payload_len);
+}
+
+/**
+ * @brief RECORD_START command is parsed as START_RECORDING.
+ */
+void test_record_start_command()
+{
+    TestFixture f;
+    f.inject_line("RECORD_START\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::START_RECORDING),
+        static_cast<uint8_t>(code));
+}
+
+/**
+ * @brief RECORD_STOP command is parsed as STOP_RECORDING.
+ */
+void test_record_stop_command()
+{
+    TestFixture f;
+    f.inject_line("RECORD_STOP\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::STOP_RECORDING),
+        static_cast<uint8_t>(code));
+}
+
+/**
+ * @brief TIME command with decimal timestamp produces SET_TIME with
+ *        4-byte little-endian payload.
+ */
+void test_time_command()
+{
+    TestFixture f;
+    f.inject_line("TIME 1234567890\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::SET_TIME),
+        static_cast<uint8_t>(code));
+    TEST_ASSERT_NOT_NULL(payload);
+    TEST_ASSERT_EQUAL_UINT32(4, payload_len);
+
+    // Verify little-endian: 1234567890 = 0x499602D2
+    TEST_ASSERT_EQUAL_UINT8(0xD2, payload[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x02, payload[1]);
+    TEST_ASSERT_EQUAL_UINT8(0x96, payload[2]);
+    TEST_ASSERT_EQUAL_UINT8(0x49, payload[3]);
+}
+
+/**
+ * @brief GET command with section.key produces GET_CONFIG_VALUE
+ *        with the key string as payload.
+ */
+void test_get_config_value_command()
+{
+    TestFixture f;
+    f.inject_line("GET wifi.ssid\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::GET_CONFIG_VALUE),
+        static_cast<uint8_t>(code));
+    TEST_ASSERT_NOT_NULL(payload);
+    TEST_ASSERT_EQUAL_UINT32(9, payload_len);
+    TEST_ASSERT_EQUAL_MEMORY("wifi.ssid", payload, payload_len);
+}
+
+/**
+ * @brief SET command with key=value produces SET_CONFIG_VALUE
+ *        with the full assignment string as payload.
+ */
+void test_set_config_value_command()
+{
+    TestFixture f;
+    f.inject_line("SET wifi.ssid=MyNetwork\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::SET_CONFIG_VALUE),
+        static_cast<uint8_t>(code));
+    TEST_ASSERT_NOT_NULL(payload);
+    TEST_ASSERT_EQUAL_UINT32(19, payload_len);
+    TEST_ASSERT_EQUAL_MEMORY("wifi.ssid=MyNetwork", payload, payload_len);
+}
+
+/**
+ * @brief Unknown text command produces an unrecognized code (0).
+ */
+void test_unknown_command()
+{
+    TestFixture f;
+    f.inject_line("BOGUS\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(code));
+}
+
+/**
+ * @hline Empty line (just newline) does not produce a request.
+ */
+void test_empty_line_skipped()
+{
+    TestFixture f;
+    f.inject_line("\n");
+
+    TEST_ASSERT_FALSE(f.transport.has_request());
+}
+
+/**
+ * @brief Success response with data sends "OK <data>\n".
+ */
+void test_response_ok_with_data()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    const uint8_t data[] = "value";
+    f.transport.send_response(CommandResult::SUCCESS, data, 5);
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING("OK value\n", output);
+}
+
+/**
+ * @brief Success response without data sends "OK\n".
+ */
+void test_response_ok_no_data()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.transport.send_response(CommandResult::SUCCESS, nullptr, 0);
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING("OK\n", output);
+}
+
+/**
+ * @brief Error response sends "ERR <code>\n".
+ */
+void test_response_error()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.transport.send_response(CommandResult::INVALID_ARGS, nullptr, 0);
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING("ERR 02\n", output);
+}
+
+/**
+ * @brief tick() drives the full cycle: read request → dispatch → send response.
+ */
+void test_tick_full_cycle()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+    f.inject_line("STATUS\n");
+
+    f.handler.tick();
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING("OK OK\n", output);
+}
+
+/**
+ * @hline Multiple commands in sequence are processed correctly.
+ */
+void test_multiple_commands_sequence()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+    f.inject_line("PHOTO\nSTATUS\n");
+
+    // First command: PHOTO
+    f.handler.tick();
+
+    // Second command: STATUS
+    f.handler.tick();
+
+    const char* output = f.serial.output_as_string();
+    // PHOTO returns "OK\n", STATUS returns "OK OK\n" (data "OK")
+    TEST_ASSERT_EQUAL_STRING("OK\nOK OK\n", output);
+}
+
+/**
+ * @brief Leading spaces in a command line are ignored.
+ */
+void test_leading_spaces()
+{
+    TestFixture f;
+    f.inject_line("  STATUS\n");
+    f.transport.has_request();
+
+    CommandCode code;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    f.transport.read_request(code, payload, payload_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandCode::GET_STATUS),
+        static_cast<uint8_t>(code));
+}
+
+/**
+ * @brief SET a config value, then GET it through the full tick cycle.
+ *        Tests that state set by SET_CONFIG_VALUE persists and is
+ *        retrievable via GET_CONFIG_VALUE.
+ */
+void test_set_then_get_config_value()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.serial.inject_input("SET wifi.ssid=test\n");
+    f.handler.tick();
+    TEST_ASSERT_EQUAL_STRING("OK\n", f.serial.output_as_string());
+
+    f.serial.clear_buffers();
+
+    f.serial.inject_input("GET wifi.ssid\n");
+    f.handler.tick();
+
+    TEST_ASSERT_EQUAL_STRING("OK test\n", f.serial.output_as_string());
+}
+
+// ============================================================
+// Test runner
+// ============================================================
+
+void setUp() {}
+void tearDown() {}
+
+int main(int argc, char** argv)
+{
+    UNITY_BEGIN();
+
+    RUN_TEST(test_no_data_no_request);
+    RUN_TEST(test_partial_line_no_request);
+    RUN_TEST(test_newline_triggers_request);
+    RUN_TEST(test_status_command);
+    RUN_TEST(test_photo_command);
+    RUN_TEST(test_record_start_command);
+    RUN_TEST(test_record_stop_command);
+    RUN_TEST(test_time_command);
+    RUN_TEST(test_get_config_value_command);
+    RUN_TEST(test_set_config_value_command);
+    RUN_TEST(test_unknown_command);
+    RUN_TEST(test_empty_line_skipped);
+    RUN_TEST(test_response_ok_with_data);
+    RUN_TEST(test_response_ok_no_data);
+    RUN_TEST(test_response_error);
+    RUN_TEST(test_tick_full_cycle);
+    RUN_TEST(test_multiple_commands_sequence);
+    RUN_TEST(test_leading_spaces);
+    RUN_TEST(test_set_then_get_config_value);
+
+    return UNITY_END();
+}

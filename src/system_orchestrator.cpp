@@ -1,6 +1,7 @@
 #include "system_orchestrator.h"
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CameraController& camera,
@@ -78,6 +79,22 @@ void SystemOrchestrator::register_commands()
                uint8_t* response, size_t& responseLen) -> CommandResult
         {
             return this->handle_set_config(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
+        CommandCode::GET_CONFIG_VALUE,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_get_config_value(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
+        CommandCode::SET_CONFIG_VALUE,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_set_config_value(payload, len, response, responseLen);
         });
 }
 
@@ -194,4 +211,76 @@ CommandResult SystemOrchestrator::handle_set_config(
 {
     // Placeholder - config update deferred
     return CommandResult::INVALID_STATE;
+}
+
+CommandResult SystemOrchestrator::handle_get_config_value(
+    const uint8_t* payload, size_t len,
+    uint8_t* response, size_t& responseLen)
+{
+    if (payload == nullptr || len == 0)
+    {
+        return CommandResult::INVALID_ARGS;
+    }
+
+    // Payload is a null-terminated "section.key" string.
+    const char* key = reinterpret_cast<const char*>(payload);
+
+    char value_buf[CONFIG_FIELD_MAX_LENGTH];
+    if (!m_config.get_config_value(key, value_buf, sizeof(value_buf)))
+    {
+        m_log.warn(SUBSYSTEM, "GET_CONFIG_VALUE: unknown key '%s'", key);
+        return CommandResult::INVALID_ARGS;
+    }
+
+    size_t val_len = strnlen(value_buf, CONFIG_FIELD_MAX_LENGTH);
+    if (val_len >= CommandHandler::MAX_RESPONSE_SIZE)
+    {
+        return CommandResult::INTERNAL_ERROR;
+    }
+
+    memcpy(response, value_buf, val_len);
+    responseLen = val_len;
+    return CommandResult::SUCCESS;
+}
+
+CommandResult SystemOrchestrator::handle_set_config_value(
+    const uint8_t* payload, size_t len,
+    uint8_t* /* response */, size_t& /* responseLen */)
+{
+    if (payload == nullptr || len == 0)
+    {
+        return CommandResult::INVALID_ARGS;
+    }
+
+    // Payload format: "section.key=value"
+    // Find the '=' separator.
+    const char* data = reinterpret_cast<const char*>(payload);
+    const char* eq = static_cast<const char*>(memchr(data, '=', len));
+    if (eq == nullptr || eq == data)
+    {
+        m_log.warn(SUBSYSTEM, "SET_CONFIG_VALUE: missing '=' separator");
+        return CommandResult::INVALID_ARGS;
+    }
+
+    // Extract key (before '=') as a temporary null-terminated string.
+    size_t key_len = static_cast<size_t>(eq - data);
+    if (key_len >= CONFIG_FIELD_MAX_LENGTH)
+    {
+        return CommandResult::INVALID_ARGS;
+    }
+    char key_buf[CONFIG_FIELD_MAX_LENGTH];
+    memcpy(key_buf, data, key_len);
+    key_buf[key_len] = '\0';
+
+    // Value is after '='.
+    const char* val = eq + 1;
+
+    if (!m_config.set_config_value(key_buf, val))
+    {
+        m_log.warn(SUBSYSTEM, "SET_CONFIG_VALUE: unknown key '%s'", key_buf);
+        return CommandResult::INVALID_ARGS;
+    }
+
+    m_log.info(SUBSYSTEM, "Config '%s' set to '%s'", key_buf, val);
+    return CommandResult::SUCCESS;
 }

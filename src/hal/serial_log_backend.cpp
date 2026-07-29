@@ -1,12 +1,12 @@
 #include "hal/serial_log_backend.h"
-#include <Arduino.h>
+#include <cstring>
 
 namespace hal
 {
 
-SerialLogBackend::SerialLogBackend()
+SerialLogBackend::SerialLogBackend(SerialHal& serial)
+: m_serial(serial)
 {
-    Serial.begin(115200);
 }
 
 void SerialLogBackend::write(const char* line)
@@ -19,8 +19,8 @@ void SerialLogBackend::write(const char* line)
     buf[len]     = '\r';
     buf[len + 1] = '\n';
 
-    // use atomic Serial.write call to target proper output channel
-    Serial.write(buf, len + 2);
+    // Use atomic write call via the injected SerialHal.
+    m_serial.write(reinterpret_cast<const uint8_t*>(buf), len + 2);
 }
 
 } // namespace hal

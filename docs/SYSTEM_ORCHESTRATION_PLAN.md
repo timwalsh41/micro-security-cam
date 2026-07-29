@@ -340,10 +340,8 @@ skinparam ranksep 30
 
     class SerialCommandTransport {
         -CommandHandler& m_handler
-        -HardwareSerial& m_serial
+        -SerialHal& m_serial
         -m_line_buffer[128]
-        +init(baud_rate)
-        +tick()
     }
 
     WebCommandTransport ..|> CommandTransport
@@ -1066,18 +1064,16 @@ class SerialCommandTransport : public CommandTransport
 {
     public:
         SerialCommandTransport(CommandHandler& handler,
-                               HardwareSerial& serial);
-        void init(uint32_t baudRate = 115200);
-        void tick();  // poll serial for complete line, parse, dispatch
+                               hal::SerialHal& serial);
         // CommandTransport interface
-        void send_response(CommandResult code,
-                          const uint8_t* data, size_t len) override;
         bool has_request() override;
         void read_request(CommandCode& code,
-                         const uint8_t*& payload, size_t& len) override;
+                          const uint8_t*& payload, size_t& len) override;
+        void send_response(CommandResult code,
+                          const uint8_t* data, size_t len) override;
     private:
         CommandHandler& m_handler;
-        HardwareSerial& m_serial;
+        hal::SerialHal& m_serial;
         char m_line_buffer[128];
         size_t m_line_pos;
         // Text protocol parsing encapsulated here
@@ -1086,28 +1082,32 @@ class SerialCommandTransport : public CommandTransport
 
 ### Text Protocol
 
-Encapsulated entirely within `SerialCommandTransport`. Changing transport mechanics requires only a new `CommandTransport` subclass — `CommandHandler` and all command handlers remain unchanged.
+Encapsulated entirely within `SerialCommandTransport`. Changing transport mechanics requires only a new `CommandTransport` subclass — `CommandHandler` and all command handlers remain unchanged. Line accumulation happens inside `has_request()`, so no separate `tick()` call is needed — `CommandHandler::tick()` polls `has_request()` on all registered transports.
 
 ```
 Request:  COMMAND [args]\n
-Response: OK [data]\n  or  ERR <code> [message]\n
+Response: OK [data]\n  or  ERR <code>\n
 
 Commands:
-  STATUS              → OK <json status>
-  PHOTO               → OK photo saved as /path
-  RECORD_START        → OK recording started
-  RECORD_STOP         → OK recording stopped
-  TIME <unix_time>    → OK time set
-  SET <key>=<value>   → OK config updated
-  GET <key>           → OK <value>
+  STATUS              → GET_STATUS
+  PHOTO               → TAKE_PHOTO
+  RECORD_START        → START_RECORDING
+  RECORD_STOP         → STOP_RECORDING
+  TIME <unix_time>    → SET_TIME (raw 4-byte uint32 payload)
+  GET <section>.<key> → GET_CONFIG_VALUE (payload = "section.key")
+  SET <section>.<key>=<val> → SET_CONFIG_VALUE (payload = "section.key=value")
 ```
 
 ### Composition Change
 
+A `SerialHal` abstraction is introduced to wrap the Arduino `HardwareSerial` interface, maintaining the same HAL pattern used by `WifiHal` and `WebServerHal`. The serial port is initialised in the `SerialHalImpl` constructor — consumers receive a ready-to-use `SerialHal` reference. The log backend and serial transport share a single instance, eliminating `begin()`/`end()` from the abstract interface.
+
 ```cpp
+// main.cpp globals:
+hal::SerialHalImpl serial_hal{115200};
+
 // main.cpp setup():
-SerialCommandTransport serial_transport(command_handler, Serial);
-serial_transport.init(115200);
+SerialCommandTransport serial_transport(command_handler, serial_hal);
 command_handler.add_transport(serial_transport);
 
 // main.cpp loop():
@@ -1950,9 +1950,11 @@ Complete dependency and responsibility summary for all new and significantly mod
 | **WifiHal** | `include/hal/wifi_hal.h` | WiFi mode, connect, status | None (hardware) |
 | **WifiHalImpl** | `include/hal/wifi_hal_impl.h` | ESP32 Arduino WiFi wrapper | Arduino WiFi |
 | **WebServerHal** | `include/hal/web_server_hal.h` | HTTP server lifecycle + request/response | None (hardware) |
-| **WebServerHalImpl** | `include/hal/web_server_hal_impl.h` | Arduino WebServer adapter | Arduino WebServer |
+| **WebServerHalImpl** | `include/hal/web_server_hal_impl.h` | Arduino `WebServer` adapter | Arduino WebServer |
 | **TimerHal** | `include/hal/timer_hal.h` | Hardware timer ISR | None (hardware) |
 | **TimerHalImpl** | `include/hal/timer_hal_impl.h` | ESP32 timer wrapper | ESP-IDF timer |
+| **SerialHal** | `include/hal/serial_hal.h` | UART serial port abstraction (available/read/write/flush) | None (hardware) |
+| **SerialHalImpl** | `include/hal/serial_hal_impl.h` | Arduino `HardwareSerial` wrapper — port initialised in constructor | Arduino HardwareSerial |
 | **MicHal** | `include/hal/mic_hal.h` | I2S microphone driver | None (hardware) |
 | **MicHalImpl** | `include/hal/mic_hal_impl.h` | ESP32 I2S/PDM wrapper | ESP-IDF I2S |
 
@@ -1972,7 +1974,7 @@ Complete dependency and responsibility summary for all new and significantly mod
 | Component | File | Responsibility | Constructor Dependencies |
 |-----------|------|----------------|-------------------------|
 | **WebCommandTransport** | `include/web_command_transport.h` | HTTP → `CommandHandler` bridge | `WebServerHal&`, `CommandHandler&` |
-| **SerialCommandTransport** | `include/serial_command_transport.h` | Serial line → `CommandHandler` bridge | `CommandHandler&`, `HardwareSerial&` |
+| **SerialCommandTransport** | `include/serial_command_transport.h` | Serial line → `CommandHandler` bridge | `CommandHandler&`, `hal::SerialHal&` |
 
 ### Computation Components
 

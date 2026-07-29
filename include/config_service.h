@@ -68,6 +68,26 @@ class ConfigService
         ConfigData& mutable_config();
 
         /**
+         * @brief Reads a configuration value by "section.key" path.
+         *
+         * @param key       Dot-separated section and key name (e.g. "wifi.ssid").
+         * @param value_out Buffer to receive the value string.
+         * @param max_len   Size of the output buffer.
+         * @return true if the key was found and value copied.
+         */
+        bool get_config_value(const char* key,
+                              char* value_out, size_t max_len) const;
+
+        /**
+         * @brief Writes a configuration value by "section.key" path.
+         *
+         * @param key   Dot-separated section and key name (e.g. "wifi.ssid").
+         * @param value New value string.
+         * @return true if the key was recognised and value was written.
+         */
+        bool set_config_value(const char* key, const char* value);
+
+        /**
          * @brief Maximum size of the config file read buffer.
          *
          * Log output includes bytes_read / CONFIG_BUFFER_SIZE so reviewers

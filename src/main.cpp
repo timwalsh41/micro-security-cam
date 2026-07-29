@@ -1,6 +1,7 @@
 #include "hal/time_hal.h"
 #include "platform_initializer.h"
 #include "hal/camera_hal_impl.h"
+#include "hal/serial_hal_impl.h"
 #include "hal/serial_log_backend.h"
 #include "hal/sd_card_hal_impl.h"
 #include "hal/wifi_hal_impl.h"
@@ -15,6 +16,7 @@
 #include "web_server_service.h"
 #include "command_handler.h"
 #include "web_command_transport.h"
+#include "serial_command_transport.h"
 #include "system_orchestrator.h"
 
 using hal::millis_t;
@@ -28,7 +30,8 @@ namespace constants
 
 // --- Core services ---
 RealTimeService real_time;
-hal::SerialLogBackend log_backend;
+hal::SerialHalImpl serial_hal{115200};
+hal::SerialLogBackend log_backend{serial_hal};
 LoggingService logger{log_backend, real_time};
 ConfigService config_service{logger};
 hal::SdCardHalImpl sd_hal{SD_CS};
@@ -42,6 +45,7 @@ hal::WebServerHalImpl web_server_hal_impl;
 WifiService wifi_service{wifi_hal_impl, real_time, logger};
 CommandHandler command_handler{logger};
 WebCommandTransport web_transport{web_server_hal_impl, command_handler};
+SerialCommandTransport serial_transport{serial_hal};
 WebServerService web_server_service{web_server_hal_impl, logger};
 SystemOrchestrator system_orchestrator{
     video_controller, camera_ctrl, command_handler,
@@ -148,6 +152,9 @@ void setup()
 
     // --- Initialize orchestrator (registers commands) ---
     system_orchestrator.init();
+
+    // --- Register serial transport (after all commands are registered) ---
+    command_handler.add_transport(serial_transport);
 
     // --- Register web command routes (after all commands are registered) ---
     web_transport.register_routes(config_service.config().web.password);

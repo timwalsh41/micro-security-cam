@@ -74,6 +74,10 @@ class SystemOrchestrator
                                       uint8_t* response, size_t& responseLen);
         CommandResult handle_set_config(const uint8_t* payload, size_t len,
                                         uint8_t* response, size_t& responseLen);
+        CommandResult handle_get_config_value(const uint8_t* payload, size_t len,
+                                              uint8_t* response, size_t& responseLen);
+        CommandResult handle_set_config_value(const uint8_t* payload, size_t len,
+                                              uint8_t* response, size_t& responseLen);
 };
 
 #endif // SYSTEM_ORCHESTRATOR_H

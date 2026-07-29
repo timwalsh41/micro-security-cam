@@ -22,6 +22,8 @@ enum class CommandCode : uint8_t
     TAKE_PHOTO = 0x12,
     SET_CONFIG = 0x20,
     GET_CONFIG = 0x21,
+    GET_CONFIG_VALUE = 0x22,
+    SET_CONFIG_VALUE = 0x23,
     SET_TIME = 0x30,
 };
 
