@@ -342,6 +342,98 @@ void test_static_ip_missing_fields_skips_static()
 }
 
 // ============================================================
+// test_ap_static_ip_applied_before_begin_ap
+//
+// STA connection times out, all three AP static IP fields are
+// set.  Verify config_static_ap() is called with correct values
+// before begin_ap().
+// ============================================================
+
+void test_ap_static_ip_applied_before_begin_ap()
+{
+    TestFixture f;
+
+    f.wifi_hal.status_result = hal::WifiStatus::DISCONNECTED;
+    f.wifi_hal.connected_result = false;
+    strcpy(f.wifi_hal.ip_buffer, "192.168.4.100");
+
+    ConfigData::WifiConfig sta = make_sta_config("HomeNet", "secret123");
+    ConfigData::ApConfig ap = make_ap_config("ESP32-Cam", "ap12345");
+    strncpy(ap.ap_ip, "192.168.4.100", CONFIG_FIELD_MAX_LENGTH - 1);
+    strncpy(ap.ap_gateway, "192.168.4.1", CONFIG_FIELD_MAX_LENGTH - 1);
+    strncpy(ap.ap_subnet_mask, "255.255.255.0", CONFIG_FIELD_MAX_LENGTH - 1);
+
+    f.wifi.init(sta, ap, 1);
+
+    TEST_ASSERT_FALSE(f.wifi.is_connected());
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_sta_call_count);
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_ap_call_count);
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.config_static_ap_call_count);
+    TEST_ASSERT_EQUAL_STRING("192.168.4.100", f.wifi_hal.last_static_ip);
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", f.wifi_hal.last_gateway);
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", f.wifi_hal.last_subnet);
+    TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "Configuring AP static IP"));
+}
+
+// ============================================================
+// test_ap_static_ip_missing_fields_skips_static
+//
+// STA connection times out, only ap_ip is set.  Verify
+// config_static_ap() is NOT called (DHCP fallback).
+// ============================================================
+
+void test_ap_static_ip_missing_fields_skips_static()
+{
+    TestFixture f;
+
+    f.wifi_hal.status_result = hal::WifiStatus::DISCONNECTED;
+    f.wifi_hal.connected_result = false;
+    strcpy(f.wifi_hal.ip_buffer, "192.168.4.1");
+
+    ConfigData::WifiConfig sta = make_sta_config("Net", "pw");
+    ConfigData::ApConfig ap = make_ap_config("AP", "pw");
+    strncpy(ap.ap_ip, "192.168.4.100", CONFIG_FIELD_MAX_LENGTH - 1);
+    // ap_gateway and ap_subnet_mask left empty
+
+    f.wifi.init(sta, ap, 1);
+
+    TEST_ASSERT_FALSE(f.wifi.is_connected());
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_ap_call_count);
+    TEST_ASSERT_EQUAL_INT(0, f.wifi_hal.config_static_ap_call_count);
+    TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "No AP static IP config"));
+}
+
+// ============================================================
+// test_ap_static_ip_config_failure_logs_warning
+//
+// STA connection times out, all AP fields set but
+// config_static_ap() returns false.  Verify begin_ap() is still
+// called (falls back to default address).
+// ============================================================
+
+void test_ap_static_ip_config_failure_logs_warning()
+{
+    TestFixture f;
+
+    f.wifi_hal.status_result = hal::WifiStatus::DISCONNECTED;
+    f.wifi_hal.connected_result = false;
+    f.wifi_hal.config_static_ap_result = false;
+    strcpy(f.wifi_hal.ip_buffer, "192.168.4.1");
+
+    ConfigData::WifiConfig sta = make_sta_config("HomeNet", "secret123");
+    ConfigData::ApConfig ap = make_ap_config("ESP32-Cam", "ap12345");
+    strncpy(ap.ap_ip, "192.168.4.100", CONFIG_FIELD_MAX_LENGTH - 1);
+    strncpy(ap.ap_gateway, "192.168.4.1", CONFIG_FIELD_MAX_LENGTH - 1);
+    strncpy(ap.ap_subnet_mask, "255.255.255.0", CONFIG_FIELD_MAX_LENGTH - 1);
+
+    f.wifi.init(sta, ap, 1);
+
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.config_static_ap_call_count);
+    TEST_ASSERT_EQUAL_INT(1, f.wifi_hal.begin_ap_call_count);
+    TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "AP static IP configuration failed"));
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -356,6 +448,9 @@ int main(int argc, char** argv)
     RUN_TEST(test_static_ip_applied_before_sta);
     RUN_TEST(test_static_ip_config_failure_falls_back_to_dhcp);
     RUN_TEST(test_static_ip_missing_fields_skips_static);
+    RUN_TEST(test_ap_static_ip_applied_before_begin_ap);
+    RUN_TEST(test_ap_static_ip_missing_fields_skips_static);
+    RUN_TEST(test_ap_static_ip_config_failure_logs_warning);
 
     return UNITY_END();
 }

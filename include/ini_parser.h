@@ -59,6 +59,9 @@ struct ConfigData
     {
         char ssid[CONFIG_FIELD_MAX_LENGTH]{};
         char password[CONFIG_FIELD_MAX_LENGTH]{};
+        char ap_ip[CONFIG_FIELD_MAX_LENGTH]{};
+        char ap_gateway[CONFIG_FIELD_MAX_LENGTH]{};
+        char ap_subnet_mask[CONFIG_FIELD_MAX_LENGTH]{};
     };
 
     /**

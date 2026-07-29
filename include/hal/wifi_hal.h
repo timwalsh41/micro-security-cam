@@ -98,6 +98,21 @@ class WifiHal
                                    const char* subnet) = 0;
 
         /**
+         * @brief Configures static IP addressing for the soft AP interface.
+         *
+         * Must be called before begin_ap(). If configuration fails
+         * (e.g. invalid address strings), the AP will use a link-local
+         * address instead.
+         *
+         * @param ip       Static IP address as dotted-decimal string.
+         * @param gateway  Gateway IP address as dotted-decimal string.
+         * @param subnet   Subnet mask as dotted-decimal string.
+         * @return true if the configuration was applied successfully.
+         */
+        virtual bool config_static_ap(const char* ip, const char* gateway,
+                                      const char* subnet) = 0;
+
+        /**
          * @brief Disconnects from the current network.
          */
         virtual void disconnect() = 0;

@@ -25,6 +25,8 @@ class WifiHalImpl : public WifiHal
         bool is_connected() const override;
         bool config_static(const char* ip, const char* gateway,
                            const char* subnet) override;
+        bool config_static_ap(const char* ip, const char* gateway,
+                              const char* subnet) override;
 
     private:
         bool m_connected{false};

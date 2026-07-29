@@ -76,6 +76,9 @@ subnet_mask=255.255.255.0
 [ap]
 ssid=ESP32-Cam
 password=FallbackPass
+ap_ip=192.168.4.1
+ap_gateway=192.168.4.1
+ap_subnet_mask=255.255.255.0
 
 [web]
 port=80
@@ -109,6 +112,9 @@ mic_gain=2
 | `[wifi]` | `subnet_mask` | string | `""` | Subnet mask (required with static_ip) |
 | `[ap]` | `ssid` | string | `""` | Access point name (fallback) |
 | `[ap]` | `password` | string | `""` | Access point password |
+| `[ap]` | `ap_ip` | string | `""` | Static IP for AP mode (requires ap_gateway & ap_subnet_mask) |
+| `[ap]` | `ap_gateway` | string | `""` | Gateway address for AP mode |
+| `[ap]` | `ap_subnet_mask` | string | `""` | Subnet mask for AP mode |
 | `[web]` | `port` | integer | `80` | HTTP server port (1–65535) |
 | `[web]` | `password` | string | `""` | Web interface password |
 | `[web]` | `max_streams` | integer | `4` | Max concurrent streams (1–4) |

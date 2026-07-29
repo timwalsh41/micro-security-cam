@@ -10,6 +10,19 @@
 namespace hal
 {
 
+bool WifiHalImpl::config_static_ap(const char* ip, const char* gateway,
+                                    const char* subnet)
+{
+    IPAddress ip_addr, gw_addr, subnet_addr;
+    if (!ip_addr.fromString(ip) ||
+        !gw_addr.fromString(gateway) ||
+        !subnet_addr.fromString(subnet))
+    {
+        return false;
+    }
+    return WiFi.softAPConfig(ip_addr, gw_addr, subnet_addr);
+}
+
 void WifiHalImpl::mode(bool sta, bool ap)
 {
     if (sta && ap)
@@ -50,6 +63,13 @@ WifiStatus WifiHalImpl::status() const
 
 const char* WifiHalImpl::local_ip() const
 {
+    // If m_ip_buffer has been set to a non-default address (e.g. from
+    // begin_ap()), return the stored value.  Otherwise fall back to
+    // WiFi.localIP() for STA mode.
+    if (m_ip_buffer[0] != '\0' && strcmp(m_ip_buffer, "0.0.0.0") != 0)
+    {
+        return m_ip_buffer;
+    }
     return WiFi.localIP().toString().c_str();
 }
 

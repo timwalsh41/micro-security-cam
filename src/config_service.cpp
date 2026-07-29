@@ -26,6 +26,9 @@ const char* field_ptr(const ConfigData& cfg, const char* key)
     // AP
     if (strcmp(key, "ap.ssid") == 0)            return cfg.ap.ssid;
     if (strcmp(key, "ap.password") == 0)        return cfg.ap.password;
+    if (strcmp(key, "ap.ap_ip") == 0)           return cfg.ap.ap_ip;
+    if (strcmp(key, "ap.ap_gateway") == 0)      return cfg.ap.ap_gateway;
+    if (strcmp(key, "ap.ap_subnet_mask") == 0)  return cfg.ap.ap_subnet_mask;
     // Camera
     if (strcmp(key, "camera.resolution") == 0)  return cfg.camera.resolution;
     // Video
@@ -52,6 +55,9 @@ bool write_field(ConfigData& cfg, const char* key, const char* value)
     // AP
     else if (strcmp(key, "ap.ssid") == 0)           dest = cfg.ap.ssid;
     else if (strcmp(key, "ap.password") == 0)       dest = cfg.ap.password;
+    else if (strcmp(key, "ap.ap_ip") == 0)          dest = cfg.ap.ap_ip;
+    else if (strcmp(key, "ap.ap_gateway") == 0)     dest = cfg.ap.ap_gateway;
+    else if (strcmp(key, "ap.ap_subnet_mask") == 0) dest = cfg.ap.ap_subnet_mask;
     // Camera
     else if (strcmp(key, "camera.resolution") == 0) dest = cfg.camera.resolution;
     // Video

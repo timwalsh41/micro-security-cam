@@ -76,6 +76,25 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
 
     // Switch to AP mode
     m_hal.mode(false, true);
+
+    // Apply static AP IP if all three fields are provided
+    if (ap.ap_ip[0] != '\0' &&
+        ap.ap_gateway[0] != '\0' &&
+        ap.ap_subnet_mask[0] != '\0')
+    {
+        m_log.info(SUBSYSTEM, "Configuring AP static IP: %s / %s / %s",
+                   ap.ap_ip, ap.ap_gateway, ap.ap_subnet_mask);
+        if (!m_hal.config_static_ap(ap.ap_ip, ap.ap_gateway, ap.ap_subnet_mask))
+        {
+            m_log.warn(SUBSYSTEM, "AP static IP configuration failed, "
+                       "using default address");
+        }
+    }
+    else
+    {
+        m_log.debug(SUBSYSTEM, "No AP static IP config, using default address");
+    }
+
     m_hal.begin_ap(ap.ssid, ap.password);
 
     m_log.info(SUBSYSTEM, "AP started. SSID: %s, IP: %s",

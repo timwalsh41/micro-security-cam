@@ -31,6 +31,9 @@ class MockWifiHal : public hal::WifiHal
         /** Value returned by config_static(). */
         bool config_static_result{true};
 
+        /** Value returned by config_static_ap(). */
+        bool config_static_ap_result{true};
+
         // ============================================================
         // Call tracking (inspect after calling the method)
         // ============================================================
@@ -40,6 +43,7 @@ class MockWifiHal : public hal::WifiHal
         int begin_ap_call_count{0};
         int disconnect_call_count{0};
         int config_static_call_count{0};
+        int config_static_ap_call_count{0};
 
         char last_ssid[64]{};
         char last_password[64]{};
@@ -98,6 +102,16 @@ class MockWifiHal : public hal::WifiHal
             strncpy(last_gateway, gateway, sizeof(last_gateway) - 1);
             strncpy(last_subnet, subnet, sizeof(last_subnet) - 1);
             return config_static_result;
+        }
+
+        bool config_static_ap(const char* ip, const char* gateway,
+                              const char* subnet) override
+        {
+            config_static_ap_call_count++;
+            strncpy(last_static_ip, ip, sizeof(last_static_ip) - 1);
+            strncpy(last_gateway, gateway, sizeof(last_gateway) - 1);
+            strncpy(last_subnet, subnet, sizeof(last_subnet) - 1);
+            return config_static_ap_result;
         }
 };
 

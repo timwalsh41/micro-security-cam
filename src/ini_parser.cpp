@@ -238,6 +238,18 @@ ConfigData IniParser::parse(const char* content, size_t length)
                     {
                         get_string_val(val_start, val_len, config.ap.password, CONFIG_FIELD_MAX_LENGTH);
                     }
+                    else if (key_match(key_start, key_len, "ap_ip"))
+                    {
+                        get_string_val(val_start, val_len, config.ap.ap_ip, CONFIG_FIELD_MAX_LENGTH);
+                    }
+                    else if (key_match(key_start, key_len, "ap_gateway"))
+                    {
+                        get_string_val(val_start, val_len, config.ap.ap_gateway, CONFIG_FIELD_MAX_LENGTH);
+                    }
+                    else if (key_match(key_start, key_len, "ap_subnet_mask"))
+                    {
+                        get_string_val(val_start, val_len, config.ap.ap_subnet_mask, CONFIG_FIELD_MAX_LENGTH);
+                    }
                     break;
                 }
                 case Section::WEB:
@@ -386,6 +398,15 @@ size_t IniParser::serialize(const ConfigData& data,
     write("\n");
     write("password=");
     write(data.ap.password);
+    write("\n");
+    write("ap_ip=");
+    write(data.ap.ap_ip);
+    write("\n");
+    write("ap_gateway=");
+    write(data.ap.ap_gateway);
+    write("\n");
+    write("ap_subnet_mask=");
+    write(data.ap.ap_subnet_mask);
     write("\n");
 
     // [web]
