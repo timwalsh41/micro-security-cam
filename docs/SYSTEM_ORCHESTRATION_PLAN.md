@@ -37,7 +37,7 @@ The plan is organized into **7 vertical slices**, each delivering a demonstrable
 
 - **`SystemOrchestrator` introduced in Slice 1** as a thin command router, grows through slices into the full mode coordinator (Slice 7). Commands route through it from the start — no rewiring needed later.
 - **Unified `CommandHandler` abstraction** from the start, supporting serial + web transports, protocol-agnostic design, text-based protocol with clean isolation for future changes.
-- **FreeRTOS task model replaces `tick()` polling** in Slice 3 — one-way migration. `capture_task` is the primary frame producer and owns all SD I/O. Main loop retains `led_state_machine.tick()`, LED GPIO write, and `web_server_service.handle_client()`.
+- **FreeRTOS task model replaces `tick()` polling** in Slice 3 — one-way migration. `capture_task` is the primary frame producer and owns all SD I/O. Main loop retains `led_state_machine.tick()` and LED GPIO write with `sd_active` mutex arbitration.
 - **WiFi reconnection strategy encapsulated** in `WifiService` for easy evolution — single-attempt-at-boot initially, periodic reconnect later without touching other components.
 - **Resolution vs framerate treated as a continuous tradeoff**, not hard limits — PSRAM budget documented as guidance, not enforcement.
 
@@ -147,33 +147,30 @@ main.cpp (significant changes)
 ├── ConfigService (unchanged)
 ├── LoggingService (unchanged)
 ├── WifiService (unchanged)
-├── WebServerService (unchanged)
+├── WebServerService (unchanged, no handle_client())
 ├── CommandHandler (unchanged)
 ├── SystemOrchestrator (gains streaming awareness)
 │   ├── StreamService& ← NEW reference
 │   └── registers stream start/stop commands
 ├── VideoController ← MAJOR REFACTOR
 │   ├── CameraController&
-│   ├── SdController& (owned exclusively by capture_task for SD I/O)
+│   ├── SdController& (exclusive SD I/O via capture_task)
 │   ├── TimeService&
 │   ├── LoggingService&
 │   ├── TimerHal ← NEW (injected)
-│   ├── AviWriter ← incremental mode (index in RAM, per-frame SD writes)
-│   ├── StreamService ← NEW (reference, for frame copy)
+│   ├── AviWriter ← format-only (index in RAM, per-frame SD writes)
+│   ├── StreamService ← NEW (optional reference, for frame delivery)
 │   ├── capture_task (FreeRTOS task, owns all SD I/O)
 │   │   ├── ISR → task notification
 │   │   ├── on_frame_capture()
 │   │   └── sd_active mutex (FreeRTOS mutex, for LED arbitration)
-│   ├── stream_buffer[] (PSRAM, owned)
-│   ├── stream_buffer_size[] (owned)
-│   └── frame_semaphore[] (owned, binary semaphores)
+│   └── sd_active mutex (FreeRTOS mutex, held during all SD I/O)
 └── StreamService ← NEW
-    ├── WebServerHal& (for HTTP response streaming)
     ├── sustain_task[] (FreeRTOS tasks, one per stream)
-    └── StreamSlot state (per-stream tracking)
+    └── StreamSlot state (per-stream slot buffers in PSRAM + binary semaphores)
 ```
 
-**SD I/O and LED concurrency:** In this model, `capture_task` exclusively owns all SD card I/O (via `SdController`). The main loop no longer touches `SdController`. The `capture_task` acquires the `sd_active` mutex before any SD transaction and releases it after. The main loop ticks `LedStateMachine` and applies the LED state directly to GPIO 21 only when the mutex is not held (i.e., SD is inactive). This avoids the pin-sharing conflict between SD chip-select and LED without requiring the `PinArbitrator` in the main loop. The `PinArbitrator` remains active within the `capture_task` path for CS/LED coordination during SD I/O.
+**SD I/O and LED concurrency:** `capture_task` exclusively owns all SD card I/O. The main loop ticks `LedStateMachine` and applies the LED state directly to GPIO 21 only when the `sd_active` mutex is not held (i.e., SD is inactive). Arbitration is handled entirely through the mutex — no `PinArbitrator` needed.
 
 > **Implementation decision:** The `sd_active` mutex must be a FreeRTOS mutex (not a simple atomic bool) because the ESP32-S3 is dual-core and the critical section spans multiple SD transactions. A FreeRTOS mutex provides priority inheritance, which prevents priority inversion when the main loop (low priority) holds the mutex and `capture_task` (high priority) is waiting. Using `std::atomic<bool>` would not provide this guarantee. The mutex is created in `VideoController::init()` and shared via the `SdController` interface.
 
@@ -280,9 +277,7 @@ skinparam ranksep 30
     interface WebServerHal {
         +begin(port)
         +on(uri, method, handler)
-        +handle_client()
         +send(code, type, content)
-        +send_content(data, len)
     }
 
     interface TimerHal {
@@ -307,6 +302,11 @@ skinparam ranksep 30
         +release()
     }
 
+    interface StreamWriter {
+        +write(data, len) : size_t
+        +close()
+    }
+
     class WifiHalImpl {
     }
     class WebServerHalImpl {
@@ -317,12 +317,16 @@ skinparam ranksep 30
     }
     class CameraHalImpl {
     }
+    class AsyncWebStreamWriter {
+        -m_client : AsyncClient*
+    }
 
     WifiHalImpl ..|> WifiHal
     WebServerHalImpl ..|> WebServerHal
     TimerHalImpl ..|> TimerHal
     MicHalImpl ..|> MicHal
     CameraHalImpl ..|> CameraHal
+    AsyncWebStreamWriter ..|> StreamWriter
 }
 
  package "Command Framework" {
@@ -374,16 +378,14 @@ skinparam ranksep 30
         -CommandHandler& m_cmd_handler
         -LoggingService& m_log
         +init(config)
-        +handle_client()
     }
 
     class StreamService {
-        -WebServerHal& m_web_hal
         -LoggingService& m_log
         -StreamSlot m_slots[4]
         -m_max_streams
         +init(max_streams) : bool
-        +start_stream(slot) : bool
+        +start_stream(slot, writer) : bool
         +stop_stream(slot)
         +deliver_frame(slot, data, len)
         +active_slot_count() : uint8_t
@@ -454,8 +456,6 @@ skinparam ranksep 30
         -MicService* m_mic_service
         -MotionDetector* m_motion_detector
         -m_capture_task_handle
-        -m_stream_buffer[4]
-        -m_frame_semaphore[4]
         +init(config)
         +start_recording()
         +stop_recording()
@@ -540,7 +540,6 @@ skinparam ranksep 30
 
  WifiService ..> WifiHal : uses
  WebServerService ..> WebServerHal : uses
- StreamService ..> WebServerHal : uses
  MicService ..> MicHal : uses
  MicService ..> SdController : uses
 
@@ -570,6 +569,7 @@ skinparam ranksep 30
 
  CommandHandler ..> LoggingService : uses
  WifiService ..> LoggingService : uses
+ StreamService ..> StreamWriter : uses
  StreamService ..> LoggingService : uses
  MicService ..> LoggingService : uses
  SystemOrchestrator ..> LoggingService : uses
@@ -589,7 +589,7 @@ skinparam ranksep 30
 - `SystemOrchestrator` sits at the top as the single point of command routing — all external inputs (web, serial, schedule) flow through it.
 - `VideoController` owns the capture pipeline (`AviWriter`, `AviIndex`) and the FreeRTOS `capture_task`. It holds optional references to `StreamService`, `MicService`, and `MotionDetector`.
 - `CommandHandler` is protocol-agnostic — `WebCommandTransport` and `SerialCommandTransport` are the two concrete transports, both feeding the same dispatch mechanism.
-- All HAL interfaces are isolated at the top — each has exactly one implementation (`*HalImpl`) and one mock (`Mock*Hal`), injected via constructor. `CameraHal` is the pre-existing HAL (shown for completeness); `WifiHal`, `WebServerHal`, `TimerHal`, and `MicHal` are new in Phase 2.
+- All HAL interfaces are isolated at the top — each has exactly one implementation (`*HalImpl`) and one mock (`Mock*Hal`), injected via constructor. `CameraHal` is the pre-existing HAL (shown for completeness); `WifiHal`, `WebServerHal`, `TimerHal`, `MicHal`, and `StreamWriter` are new in Phase 2.
 - `SdController` is used by both `VideoController` (via `capture_task`) and `MicService` (via `mic_task`), arbitrated by the `sd_active` mutex.
 
 ---
@@ -1139,7 +1139,7 @@ The system runs four categories of FreeRTOS tasks (plus the implicit Arduino `lo
 
 | Task | Owner | Slice | Recommended Core | Priority | Stack | Responsibility |
 |------|-------|-------|------------------|----------|-------|---------------|
-| `loopTask` | Arduino core | Implicit | 1 (APP_CPU) | 1 | — | `setup()`/`loop()` — orchestrator tick, LED state machine, web server `handle_client()` |
+| `loopTask` | Arduino core | Implicit | 1 (APP_CPU) | 1 | — | `setup()`/`loop()` — orchestrator tick, LED state machine, async HTTP request handling |
 | `capture_task` | `VideoController` | 3 | 1 or `tskNO_AFFINITY` | 3 (highest) | TBD | Frame capture pacing via ISR notification; owns all SD I/O (recording, streaming buffer fill, photo write); optionally runs motion detection |
 | `sustain_task[N]` (0–4) | `StreamService` | 3 | 0 (PRO_CPU) | 2 | TBD | Per-stream HTTP multipart response writer; blocks on frame semaphore with 1.2 s timeout |
 | `mic_task` | `MicService` | 4 | 1 or `tskNO_AFFINITY` | 2 | TBD | Reads PDM mic via I2S DMA, applies gain, writes WAV data to SD |
@@ -1147,7 +1147,7 @@ The system runs four categories of FreeRTOS tasks (plus the implicit Arduino `lo
 - **Priority guidance:** `capture_task` at highest priority so frame pacing is never starved. `sustain_task` and `mic_task` at medium priority — they can tolerate occasional scheduling jitter. `loopTask` at lowest — no hard real-time requirements.
 - **Stack sizes:** Marked TBD — determined during implementation via `uxTaskGetStackHighWaterMark()` stress testing. Initial guesses: `capture_task` ~4096 (call depth with AVI writing), `sustain_task` ~3072 (HTTP framing), `mic_task` ~2048 (simple read→write loop).
 - **Motion detection runs inline** within `capture_task` (no separate task) — it processes each frame immediately after capture before the buffer is released.
-- **No dedicated networking task** — HTTP handling is split: admin routes run in `loopTask` via `WebServer::handle_client()`, stream routes run in `sustain_task[N]` via `esp_http_server` (see Streaming Implementation Decision below).
+- **No dedicated networking task** — HTTP handling runs entirely on `AsyncWebServer`'s internal event loop. Admin routes and stream routes share the same instance.
 
 ### New Interfaces
 
@@ -1182,14 +1182,15 @@ struct StreamSlot {
     size_t buffer_size = 0;         // 0 = free, >0 = frame ready
     SemaphoreHandle_t semaphore;    // binary semaphore
     TaskHandle_t task_handle = nullptr;
+    class StreamWriter* writer = nullptr;   // abstract write sink
 };
 
 class StreamService
 {
     public:
-        StreamService(WebServerHal& web_hal, LoggingService& log);
+        StreamService(LoggingService& log);
         bool init(uint8_t max_streams);  // allocate stream slots
-        bool start_stream(uint8_t slot_num);   // creates sustain_task
+        bool start_stream(uint8_t slot_num, StreamWriter* writer);
         void stop_stream(uint8_t slot_num);
         void deliver_frame(uint8_t slot_num, const uint8_t* data,
                           size_t len);  // called by capture_task
@@ -1197,7 +1198,6 @@ class StreamService
         uint8_t active_slot_count() const;
     private:
         static void sustain_task(void* param);  // per-stream FreeRTOS task
-        WebServerHal& m_web_hal;
         LoggingService& m_log;
         StreamSlot m_slots[4];  // max 4 concurrent streams
         uint8_t m_max_streams;
@@ -1223,19 +1223,17 @@ Content-Type: image/jpeg
 ```cpp
 while (is_streaming[slot_num]) {
     if (xSemaphoreTake(frame_semaphore[slot_num], pdMS_TO_TICKS(1200))) {
-        m_web_hal.send_content(header, header_len);
-        m_web_hal.send_content(stream_buffer[slot_num], stream_buffer_size[slot_num]);
-        m_web_hal.send_content(boundary, boundary_len);
-        stream_buffer_size[slot_num] = 0;
+        slots[slot_num].writer->write(multipart_header, header_len);
+        slots[slot_num].writer->write(frame_data, frame_len);
+        slots[slot_num].writer->write(boundary, boundary_len);
+        slots[slot_num].buffer_size = 0;
     } else {
         break;  // Timeout → terminate stream
     }
 }
 ```
 
-> **Implementation decision:** The `sustain_task` writes an HTTP multipart response on a long-lived connection. The Arduino `WebServer` library is single-threaded — `handle_client()` processes one request at a time from the main loop. A `sustain_task` writing directly to the same socket from a different task is **not compatible** with `WebServer`'s internal state machine.
->
-> **Recommendation:** Route the stream endpoint through ESP-IDF's `esp_http_server` (`httpd_handle_t`), which natively supports concurrent connections. Admin routes (`/status`, `/control`) can continue using `WebServerHal` (Arduino `WebServer`) as before. This means `StreamService` needs a second HAL path — either a `StreamServerHal` interface with its own `StreamServerHalImpl`, or `WebServerHal` gains separate methods for the stream server. The implementation should validate that `esp_http_server`'s `HTTPD_ESP_INT_FLAG` does not conflict with the camera timer ISR.
+> **Implementation decision:** `StreamWriter` abstracts the HTTP connection write sink. `AsyncWebStreamWriter` adapts `AsyncClient*` for the ESP32. A `MockStreamWriter` captures written data for native tests. `StreamService` has no dependency on the HTTP server library — the writer is created in the route handler via `request.create_stream_writer()` and injected at `start_stream()`. The `AsyncWebServer` instance lives inside `WebServerHalImpl`; no `handle_client()` polling needed.
 
 ### Major Modification — `VideoController` Refactor
 
@@ -1257,13 +1255,11 @@ class VideoController
         // NEW — stream integration
         void set_stream_service(StreamService* svc);  // null = no streaming
 
-**`capture_photo()` implementation:** Opens a raw JPEG file on SD, writes the captured frame bytes directly, and closes the file. All I/O runs within the `capture_task` context (which owns all SD access). The method does NOT use the AVI pipeline — it writes a standalone `.jpg` file.
+**`capture_photo()` implementation:** If a recording is in progress, returns `false` immediately (`INVALID_STATE`). Otherwise performs direct synchronous I/O from the calling context (main loop) — captures a frame, opens a `.jpg` file on SD, writes the JPEG bytes, and closes. Does NOT use the AVI pipeline.
 
 **`SystemOrchestrator::handle_take_photo()` update required:** Before this slice, `handle_take_photo()` captures a frame and discards it. In Slice 3 it must be updated to call `m_video.capture_photo(path)` instead. The file path is built from the current timestamp using `TimeService::unix_now()` (or `now()` as fallback), e.g. `/photos/YYYYMMDD_HHMMSS.jpg`. The parent directory is created on first use. The orchestrator response should report the saved path on success.
 
-**Concurrency note:** `capture_photo()` is called from the orchestrator (main loop context), not from `capture_task`. It must acquire the `sd_active` mutex before doing SD I/O and release it after, serializing with `capture_task`'s recording/streaming operations. If `capture_task` is actively recording, the photo write waits until the current SD transaction completes. This is acceptable because photo capture is a low-frequency operation.
-
-> **Latency expectation:** With per-frame writes, `capture_task` holds the `sd_active` mutex for ~100 ms per frame. A `TAKE_PHOTO` arriving during recording waits at most one frame write (~100 ms), plus the photo write itself (~50 ms). The photo command response sees ~150 ms latency in the worst case — noticeable but not a hang.
+**Concurrency model:** `capture_photo()` returns `INVALID_STATE` if recording is in progress — "stop recording first". When idle, `capture_task` doesn't exist so no concurrency concern; the main loop performs direct SD I/O.
 
     private:
         // OLD: void tick() — REMOVED
@@ -1295,11 +1291,11 @@ class VideoController
 **`on_frame_capture()` flow:**
 1. `m_camera.capture_frame()` → `m_camera.get_frame()`
 2. For each active stream slot: copy JPEG to slot buffer, give semaphore
-3. If recording: `m_avi_writer.write_frame()` to format the AVI chunk, then write the chunk bytes directly to the SD file via `m_sd.write()` (within `capture_task` — SD I/O is exclusive to this task). The camera's `fb_count=2` provides hardware pipelining: the next frame is captured while this write runs.
+3. If recording: `m_avi_writer.write_frame()` returns a formatted AVI chunk, then write those bytes to the SD file via `m_sd.write_sync()`. The camera's `fb_count=2` provides hardware pipelining: the next frame is captured while this write runs.
 4. `m_camera.release_frame()`
 5. Check clip limits, auto-rotate if needed — rotation is cheap (~50 ms index flush + header fixup)
 
-**SD I/O ownership:** All SD card operations — including `open_clip()`, `close_clip()`, per-frame `write()` calls, and `capture_photo()` — run exclusively within `capture_task`. The main loop never touches `SdController` for SD operations.
+**SD I/O ownership:** While `capture_task` exists (during recording), all SD operations — `open_clip()`, `close_clip()`, per-frame writes — run exclusively within it. When idle, `capture_task` doesn't exist and `capture_photo()` performs direct synchronous SD I/O from the calling context.
 
 **Incremental AVI writing (replaces buffer-all-at-close):** Rather than accumulating all frames in a PSRAM buffer and writing the entire AVI at clip close, each frame is written to SD as it is captured. Only the AVI index is retained in RAM (~10 KB for a 60-second clip at 10 fps). At clip close, the index is appended and the header is patched via `seek()` + overwrite.
 
@@ -1331,29 +1327,34 @@ Clip end   → write accumulated index → seek(0) → overwrite header with fin
 | LED responsiveness | Frozen during flush | Responsive between frames |
 | Risk of data loss on power fail | Entire clip lost | At most one frame lost |
 
-**`AviWriter` incremental mode — new API:**
+**`AviWriter` — format-only API:**
 
-The `AviWriter` class gains incremental mode support in this slice. Existing methods (`open()`, `write_frame()`) are backward-compatible — incremental mode is opt-in via a constructor flag.
+`AviWriter` has no I/O dependency — it formats AVI data structures in memory. `VideoController` copies the formatted output to SD.
 
 ```cpp
-// New methods for incremental mode
-void open_incremental(const char* path, uint16_t width, uint16_t height,
-                      uint8_t fps, SdController& sd);
-    // Writes a placeholder AVI header (224 bytes) to the SD file.
-    // Subsequent calls to write_frame() format frame chunks and
-    // write them directly to the SD file via SdController.
+// AviWriter is format-only — no SdController dependency.
+// VideoController calls avi_writer.write_frame(data, len) to get a
+// formatted AVI chunk, then writes those bytes to SD via SdController::write_sync().
+// At clip close, avi_writer.close() returns patched header + index,
+// and VideoController seeks + overwrites via SdController.
 
-void write_frame_incremental(const uint8_t* data, uint32_t len);
-    // Formats an AVI chunk header + frame data, writes to the SD file,
-    // and records the chunk offset in an internal index (RAM).
+void open(const char* path, uint16_t width, uint16_t height,
+          uint8_t fps);
+    // Allocates index buffer, records initial
+    // placeholder header values.
 
-void close_incremental(SdController& sd);
-    // Writes the accumulated AVI index to the SD file, then seeks to
-    // offset 0 and overwrites the header with final frame count and file size.
-    // Total time: ~50 ms (index write + seek + header overwrite).
+size_t write_frame(const uint8_t* data, uint32_t len);
+    // Formats an AVI chunk header + frame data into an internal
+    // buffer and returns the formatted size and a pointer.
+    // Records chunk offset in internal index (RAM).
+
+void close(uint8_t*& out_header, size_t& header_len,
+           uint8_t*& out_index, size_t& index_len);
+    // Returns patched header with final frame count/file size,
+    // and accumulated index. VideoController writes both to SD.
 ```
 
-**New internal member:**
+**Format-only internals:**
 ```cpp
 class AviWriter {
     // ... existing members ...
@@ -1367,7 +1368,6 @@ class AviWriter {
         IndexEntry m_index[MAX_INDEX_ENTRIES];
         uint32_t m_index_count = 0;
         uint32_t m_data_size = 0;  // total frame data written
-        bool m_incremental = false;
 };
 ```
 
@@ -1418,16 +1418,17 @@ When motion detection is enabled, `on_frame_capture()` calls `SystemOrchestrator
 ```cpp
 // main.cpp setup():
 TimerHalImpl timer_hal_impl;
-StreamService stream_service(web_server_hal_impl, logging_service);
+StreamService stream_service(logging_service);
 stream_service.init(config.web.max_streams);
 video_controller.set_stream_service(&stream_service);
 // VideoController::start_recording() now launches capture_task internally
 ```
 
+The `/stream` route is registered through `WebServerHal::on()` inside `SystemOrchestrator::init()`. The handler calls `request.create_stream_writer()` to obtain a `StreamWriter*` and passes it to `StreamService::start_stream()`. The `AsyncWebServer` instance lives entirely inside `WebServerHalImpl` — `main.cpp` never sees it.
+
 **Note:** The `main.cpp` loop no longer calls `video_controller.tick()`. The `capture_task` runs independently and owns all SD I/O. The main loop retains:
 - `led_state_machine.tick()` — advances LED timing, returns desired on/off state
 - LED GPIO write — applied directly to GPIO 21 only when `capture_task` does not hold the `sd_active` mutex
-- `web_server_service.handle_client()` — HTTP request handling
 - `command_handler.tick()` — serial/web command polling
 - `system_orchestrator.tick()` — schedule evaluation, mode transitions
 
@@ -2161,6 +2162,9 @@ entry_0_motion_stop_delay=2
 | `src/serial_command_transport.cpp` | Serial transport implementation | 2 |
 | `include/hal/timer_hal.h` | Hardware timer HAL interface | 3 |
 | `include/hal/timer_hal_impl.h` | ESP32 timer HAL implementation | 3 |
+| `include/hal/stream_writer.h` | Stream write abstraction (`write()`, `close()`) | 3 |
+| `include/async_web_stream_writer.h` | `AsyncWebServer`-specific `StreamWriter` adapter | 3 |
+| `src/async_web_stream_writer.cpp` | `AsyncWebStreamWriter` implementation | 3 |
 | `include/hal/mic_hal.h` | Microphone HAL interface | 4 |
 | `include/hal/mic_hal_impl.h` | I2S/PDM microphone implementation | 4 |
 | `include/mic_service.h` | Microphone service (WAV recording) | 4 |
@@ -2170,6 +2174,7 @@ entry_0_motion_stop_delay=2
 | `test/mocks/native_mocks/mock_wifi_hal.h` | WiFi HAL mock for native tests | 1 |
 | `test/mocks/native_mocks/mock_web_server_hal.h` | Web server HAL mock for native tests | 1 |
 | `test/mocks/native_mocks/mock_timer_hal.h` | Timer HAL mock with controllable trigger | 3 |
+| `test/mocks/native_mocks/mock_stream_writer.h` | `StreamWriter` mock for native `StreamService` tests | 3 |
 | `test/mocks/native_mocks/mock_mic_hal.h` | Microphone HAL mock for native tests | 4 |
 
 ---
@@ -2180,16 +2185,16 @@ entry_0_motion_stop_delay=2
 |------|---------|-------|
 | `include/video_controller.h` | FreeRTOS task creation, ISR timer, recording mode enum, `sd_active` mutex, `on_frame_capture()` refactored; motion detection reports to orchestrator via callbacks | 3 |
 | `src/video_controller.cpp` | Replace `tick()` with `capture_task`, integrate motion/audio/streaming, SD I/O ownership; motion events notify orchestrator instead of auto-starting | 3 |
-| `include/avi_writer.h` | Incremental mode (per-frame write, RAM index, seek-based header fixup); audio stream support (stream count=2, 01wb chunks) | 3, 4 |
-| `src/avi_writer.cpp` | Incremental write methods, placeholder header, index build; audio stream header, audio chunks, dual-stream index | 3, 4 |
+| `include/avi_writer.h` | Format-only (no I/O dependency); RAM index, seek-based header fixup; audio stream support (stream count=2, 01wb chunks) | 3, 4 |
+| `src/avi_writer.cpp` | Format-only write methods, placeholder header, index build; audio stream header, audio chunks, dual-stream index | 3, 4 |
 | `include/camera_controller.h` | Config-driven init (replaces hardcoded values), `reconfigure()` method for mode switching | 1, 7 |
 | `src/camera_controller.cpp` | Read resolution/quality from `ConfigData`, re-init camera on mode switch | 1, 7 |
-| `include/sd_controller.h` | Move to `capture_task` ownership (no longer `tick()`-driven from main loop); add `write()` and `seek()` methods for incremental AVI writes | 3 |
-| `src/sd_controller.cpp` | SD I/O operations called exclusively from `capture_task`; per-frame write path replaces batched flush | 3 |
-| `include/pin_arbitrator.h` | Retained but unused in FreeRTOS path (SD CS managed by `capture_task` directly) | 3 |
-| `src/pin_arbitrator.cpp` | No functional changes; retained for backward compatibility with non-FreeRTOS paths | 3 |
-| `include/peripheral_manager.h` | **Deprecated** — responsibilities distributed to `LedStateMachine` (LED) and `SdController` (SD I/O) | 3 |
-| `src/peripheral_manager.cpp` | **Deprecated** — `tick()` eliminated; `LedStateMachine` ticked independently from main loop, SD I/O moved to `capture_task` | 3 |
+| `include/sd_controller.h` | Move to `capture_task` ownership (no longer `tick()`-driven from main loop); add `write_sync()`, `read_sync()`, `create_dir_sync()`, `set_mutex()` methods | 3 |
+| `src/sd_controller.cpp` | SD I/O operations called exclusively from `capture_task`; synchronous per-frame write path replaces batched flush | 3 |
+| `include/pin_arbitrator.h` | **Removed entirely** — arbitration handled by `sd_active` FreeRTOS mutex | 3 |
+| `src/pin_arbitrator.cpp` | **Removed entirely** — no longer needed | 3 |
+| `include/peripheral_manager.h` | **Removed entirely (dissolved)** — responsibilities distributed to `LedStateMachine` (LED) and `SdController` (SD I/O) | 3 |
+| `src/peripheral_manager.cpp` | **Removed entirely (dissolved)** — `tick()` eliminated; `LedStateMachine` ticked independently from main loop, SD I/O moved to `capture_task` | 3 |
 | `include/led_state_machine.h` | Independent `tick()` called from main loop (not through `PeripheralManager`) | 3 |
 | `src/led_state_machine.cpp` | LED state machine runs independently, writes GPIO directly when SD inactive | 3 |
 | `include/ini_parser.h` | Add `[motion]`, `[timelapse]`, `[camera_photo]`, `[camera_video]`, `[schedule]` config sections; remove camera fields from `[video]` | 1–7 |
@@ -2198,10 +2203,12 @@ entry_0_motion_stop_delay=2
 | `src/config_service.cpp` | Log new config sections at startup | 1–7 |
 | `include/time_service.h` | Unix time offset, `unix_now()`, `Calendar` utility | 1 |
 | `src/time_service.cpp` | Unix time implementation | 1 |
-| `include/stream_service.h` | Semaphores, `sustain_task`, slot state management, `stop_stream()` | 3 |
-| `src/stream_service.cpp` | Task lifecycle, multipart header builder, frame distribution | 3 |
-| `include/web_server_hal.h` | `send_content()` method for chunked responses (used by `sustain_task`) | 3 |
-| `src/main.cpp` | Init WiFi, `WebServer`, `SystemOrchestrator`; remove `peripheral_manager.tick()` and `video_controller.tick()` from loop; add SD-active LED arbitration via `sd_active` mutex | 1, 3 |
+| `include/stream_service.h` | Stream slot buffers, semaphores, `sustain_task`; `start_stream()` takes `StreamWriter*` | 3 |
+| `src/stream_service.cpp` | Task lifecycle, multipart header builder, `StreamWriter::write()` frame distribution | 3 |
+| `include/web_server_hal.h` | Refactored for AsyncWebServer: removed `handle_client()` and `send_content()`, `on()` takes `std::function` | 3 |
+| `include/hal/web_server_hal_impl.h` | Rewritten to wrap `AsyncWebServer` | 3 |
+| `src/hal/web_server_hal_impl.cpp` | Rewritten to wrap `AsyncWebServer` | 3 |
+| `src/main.cpp` | Init WiFi, `WebServerService`, `SystemOrchestrator`; remove `peripheral_manager.tick()` and `video_controller.tick()` from loop; add SD-active LED arbitration via `sd_active` mutex | 1, 3 |
 | `docs/SYSTEM_DESIGN.md` | Document full architecture, all services, task topology | All |
 
 ---
