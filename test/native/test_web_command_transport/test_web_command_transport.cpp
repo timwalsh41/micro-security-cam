@@ -98,6 +98,9 @@ struct TestFixture
 // Route registration tests
 // ============================================================
 
+/**
+ * @brief register_routes() creates /status and /control routes.
+ */
 void test_register_routes_creates_status_and_control()
 {
     TestFixture f;
@@ -118,6 +121,9 @@ void test_register_routes_creates_status_and_control()
                       f.hal.registered_routes[1].method);
 }
 
+/**
+ * @brief register_routes() handles a null password without crashing.
+ */
 void test_register_routes_with_null_password()
 {
     TestFixture f;
@@ -131,6 +137,9 @@ void test_register_routes_with_null_password()
 // Auth tests
 // ============================================================
 
+/**
+ * @brief /status allows all requests when no password is set.
+ */
 void test_status_no_password_allows_all()
 {
     TestFixture f;
@@ -144,6 +153,9 @@ void test_status_no_password_allows_all()
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
 }
 
+/**
+ * @brief /status returns 401 when no auth header is present.
+ */
 void test_status_no_auth_header_returns_401()
 {
     TestFixture f;
@@ -159,6 +171,9 @@ void test_status_no_auth_header_returns_401()
     TEST_ASSERT_EQUAL_INT(401, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief /status returns 401 for a wrong password.
+ */
 void test_status_wrong_auth_returns_401()
 {
     TestFixture f;
@@ -173,6 +188,9 @@ void test_status_wrong_auth_returns_401()
     TEST_ASSERT_EQUAL_INT(401, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief /status succeeds with correct credentials.
+ */
 void test_status_correct_auth_succeeds()
 {
     TestFixture f;
@@ -191,6 +209,9 @@ void test_status_correct_auth_succeeds()
 // Status handler tests
 // ============================================================
 
+/**
+ * @brief /status dispatches GET_STATUS and forwards the response.
+ */
 void test_status_dispatches_get_status()
 {
     TestFixture f;
@@ -210,6 +231,9 @@ void test_status_dispatches_get_status()
 // Control handler — command mapping tests
 // ============================================================
 
+/**
+ * @brief /control returns 400 when the cmd arg is missing.
+ */
 void test_control_missing_cmd_returns_400()
 {
     TestFixture f;
@@ -225,6 +249,9 @@ void test_control_missing_cmd_returns_400()
     TEST_ASSERT_EQUAL_INT(400, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief /control returns 400 when the cmd arg is empty.
+ */
 void test_control_empty_cmd_returns_400()
 {
     TestFixture f;
@@ -242,6 +269,9 @@ void test_control_empty_cmd_returns_400()
     TEST_ASSERT_EQUAL_INT(400, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief /control maps cmd=start to START_RECORDING.
+ */
 void test_control_start_recording()
 {
     TestFixture f;
@@ -259,6 +289,9 @@ void test_control_start_recording()
                 std::string::npos);
 }
 
+/**
+ * @brief /control maps cmd=stop to STOP_RECORDING.
+ */
 void test_control_stop_recording()
 {
     TestFixture f;
@@ -271,6 +304,9 @@ void test_control_stop_recording()
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
 }
 
+/**
+ * @brief /control maps cmd=photo to TAKE_PHOTO.
+ */
 void test_control_take_photo()
 {
     TestFixture f;
@@ -283,6 +319,9 @@ void test_control_take_photo()
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
 }
 
+/**
+ * @brief /control maps cmd=config to GET_CONFIG.
+ */
 void test_control_get_config()
 {
     TestFixture f;
@@ -295,6 +334,9 @@ void test_control_get_config()
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
 }
 
+/**
+ * @brief /control falls back to GET_STATUS for an unknown cmd.
+ */
 void test_control_unknown_cmd_falls_back_to_get_status()
 {
     TestFixture f;
@@ -312,6 +354,9 @@ void test_control_unknown_cmd_falls_back_to_get_status()
 // SET_TIME specific tests
 // ============================================================
 
+/**
+ * @brief set_time returns 400 when the ts arg is missing.
+ */
 void test_set_time_missing_ts_returns_400()
 {
     TestFixture f;
@@ -327,6 +372,9 @@ void test_set_time_missing_ts_returns_400()
     TEST_ASSERT_EQUAL_INT(400, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief set_time returns 400 when the ts arg is empty.
+ */
 void test_set_time_empty_ts_returns_400()
 {
     TestFixture f;
@@ -341,6 +389,9 @@ void test_set_time_empty_ts_returns_400()
     TEST_ASSERT_EQUAL_INT(400, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief set_time packs the timestamp into a 4-byte little-endian payload.
+ */
 void test_set_time_with_timestamp()
 {
     TestFixture f;
@@ -363,6 +414,9 @@ void test_set_time_with_timestamp()
     TEST_ASSERT_EQUAL_UINT8(0x65, g_last_payload[3]);
 }
 
+/**
+ * @brief set_time with a zero timestamp sends a zeroed payload.
+ */
 void test_set_time_zero_timestamp()
 {
     TestFixture f;

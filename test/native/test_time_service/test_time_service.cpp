@@ -2,6 +2,9 @@
 #include "time_service.h"
 #include <Arduino.h>
 
+/**
+ * @brief elapsed_ms() returns the difference when now is after since.
+ */
 void test_elapsed_ms_normal_subtraction() 
 {
     hal::millis_t since = 100;
@@ -10,6 +13,9 @@ void test_elapsed_ms_normal_subtraction()
     TEST_ASSERT_EQUAL_UINT32(50, TimeService::elapsed_ms(since, now));
 } 
     
+/**
+ * @brief elapsed_ms() returns 0 when since equals now.
+ */
 void test_elapsed_ms_zero_elapsed()
 {
     hal::millis_t since = 100;
@@ -18,6 +24,9 @@ void test_elapsed_ms_zero_elapsed()
     TEST_ASSERT_EQUAL_UINT32(0, TimeService::elapsed_ms(since, now));
 }
 
+/**
+ * @brief elapsed_ms() handles rollover near the millis_t maximum.
+ */
 void test_elapsed_ms_rollover_near_max()
 {
     hal::millis_t since = 0xFFFFFFF0;
@@ -26,6 +35,9 @@ void test_elapsed_ms_rollover_near_max()
     TEST_ASSERT_EQUAL_UINT32(32, TimeService::elapsed_ms(since, now));
 }
 
+/**
+ * @brief elapsed_ms() handles an exact wrap of the millis_t counter.
+ */
 void test_elapsed_ms_rollover_exact_wrap()
 {
     hal::millis_t since = 0xFFFFFFFF;
@@ -34,6 +46,9 @@ void test_elapsed_ms_rollover_exact_wrap()
     TEST_ASSERT_EQUAL_UINT32(1, TimeService::elapsed_ms(since, now));
 }
 
+/**
+ * @brief delay_ms() advances the clock by the requested duration.
+ */
 void test_delay_ms_advances_clock()
 {
     RealTimeService time;
@@ -42,6 +57,9 @@ void test_delay_ms_advances_clock()
     TEST_ASSERT_EQUAL_UINT32(100, time.now());
 }
 
+/**
+ * @brief Multiple delay_ms() calls accumulate on the clock.
+ */
 void test_delay_ms_multiple_calls_accumulate()
 {
     RealTimeService time;
@@ -51,6 +69,9 @@ void test_delay_ms_multiple_calls_accumulate()
     TEST_ASSERT_EQUAL_UINT32(80, time.now());
 }
 
+/**
+ * @brief delay_us() truncates sub-millisecond remainders down to ms.
+ */
 void test_delay_us_truncates_to_ms()
 {
     RealTimeService time;
@@ -59,6 +80,9 @@ void test_delay_us_truncates_to_ms()
     TEST_ASSERT_EQUAL_UINT32(1, time.now());
 }
 
+/**
+ * @brief delay_us() under 1ms truncates to zero.
+ */
 void test_delay_us_sub_ms_truncates_to_zero()
 {
     RealTimeService time;
@@ -67,6 +91,9 @@ void test_delay_us_sub_ms_truncates_to_zero()
     TEST_ASSERT_EQUAL_UINT32(0, time.now());
 }
 
+/**
+ * @brief delay_us() with an exact millisecond multiple advances correctly.
+ */
 void test_delay_us_exact_ms()
 {
     RealTimeService time;
@@ -75,6 +102,9 @@ void test_delay_us_exact_ms()
     TEST_ASSERT_EQUAL_UINT32(3, time.now());
 }
 
+/**
+ * @brief delay_ms() advances the clock so elapsed_ms() reflects the delay.
+ */
 void test_delay_ms_does_not_affect_elapsed_ms()
 {
     RealTimeService time;

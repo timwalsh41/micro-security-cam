@@ -7,90 +7,135 @@
 // Default values
 // ============================================================
 
+/**
+ * @brief defaults() returns an empty wifi ssid.
+ */
 void test_defaults_has_empty_wifi_ssid()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.wifi.ssid);
 }
 
+/**
+ * @brief defaults() returns an empty wifi password.
+ */
 void test_defaults_has_empty_wifi_password()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.wifi.password);
 }
 
+/**
+ * @brief defaults() returns an empty static ip.
+ */
 void test_defaults_has_empty_static_ip()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.wifi.static_ip);
 }
 
+/**
+ * @brief defaults() returns an empty gateway.
+ */
 void test_defaults_has_empty_gateway()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.wifi.gateway);
 }
 
+/**
+ * @brief defaults() returns an empty subnet mask.
+ */
 void test_defaults_has_empty_subnet_mask()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.wifi.subnet_mask);
 }
 
+/**
+ * @brief defaults() returns an empty ap ssid.
+ */
 void test_defaults_has_empty_ap_ssid()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.ap.ssid);
 }
 
+/**
+ * @brief defaults() returns an empty ap password.
+ */
 void test_defaults_has_empty_ap_password()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.ap.password);
 }
 
+/**
+ * @brief defaults() returns web port 80.
+ */
 void test_defaults_has_web_port_80()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_UINT16(80, d.web.port);
 }
 
+/**
+ * @brief defaults() returns an empty web password.
+ */
 void test_defaults_has_empty_web_password()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("", d.web.password);
 }
 
+/**
+ * @brief defaults() returns a camera capture interval of 20000ms.
+ */
 void test_defaults_has_camera_interval_20000()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_UINT32(20000, d.camera.capture_interval_ms);
 }
 
+/**
+ * @brief defaults() returns a video fps of 10.
+ */
 void test_defaults_has_video_fps_10()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
 }
 
+/**
+ * @brief defaults() returns a video resolution of VGA.
+ */
 void test_defaults_has_video_resolution_vga()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_STRING("VGA", d.video.resolution);
 }
 
+/**
+ * @brief defaults() returns a video clip duration of 60s.
+ */
 void test_defaults_has_video_clip_duration_60()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_UINT16(60, d.video.clip_duration_s);
 }
 
+/**
+ * @brief defaults() returns a video max file size of 0.
+ */
 void test_defaults_has_video_max_file_size_0()
 {
     ConfigData d = IniParser::defaults();
     TEST_ASSERT_EQUAL_UINT16(0, d.video.max_file_size_mb);
 }
 
+/**
+ * @brief defaults() returns a video jpeg quality of 10.
+ */
 void test_defaults_has_video_jpeg_quality_10()
 {
     ConfigData d = IniParser::defaults();
@@ -101,6 +146,9 @@ void test_defaults_has_video_jpeg_quality_10()
 // Empty / null input
 // ============================================================
 
+/**
+ * @brief parse() of empty input returns defaults.
+ */
 void test_empty_input_returns_defaults()
 {
     ConfigData d = IniParser::parse("", 0);
@@ -111,6 +159,9 @@ void test_empty_input_returns_defaults()
     TEST_ASSERT_EQUAL_STRING("VGA", d.video.resolution);
 }
 
+/**
+ * @brief parse() of null input returns defaults.
+ */
 void test_null_input_returns_defaults()
 {
     ConfigData d = IniParser::parse(nullptr, 0);
@@ -121,6 +172,9 @@ void test_null_input_returns_defaults()
 // Single section with one key
 // ============================================================
 
+/**
+ * @brief parse() reads a single wifi ssid key.
+ */
 void test_single_wifi_ssid()
 {
     const char* ini = "[wifi]\nssid=MyNetwork\n";
@@ -129,6 +183,9 @@ void test_single_wifi_ssid()
     TEST_ASSERT_EQUAL_STRING("", d.wifi.password);
 }
 
+/**
+ * @brief parse() reads a single wifi password key.
+ */
 void test_single_wifi_password()
 {
     const char* ini = "[wifi]\npassword=Secret123\n";
@@ -136,6 +193,9 @@ void test_single_wifi_password()
     TEST_ASSERT_EQUAL_STRING("Secret123", d.wifi.password);
 }
 
+/**
+ * @brief parse() reads all wifi static ip keys.
+ */
 void test_wifi_static_ip_all_keys()
 {
     const char* ini =
@@ -153,6 +213,9 @@ void test_wifi_static_ip_all_keys()
 // Multiple sections
 // ============================================================
 
+/**
+ * @brief parse() reads keys across multiple sections.
+ */
 void test_multiple_sections()
 {
     const char* ini =
@@ -199,6 +262,9 @@ void test_multiple_sections()
 // Comments and blank lines
 // ============================================================
 
+/**
+ * @brief parse() ignores comment lines.
+ */
 void test_comments_ignored()
 {
     const char* ini =
@@ -210,6 +276,9 @@ void test_comments_ignored()
     TEST_ASSERT_EQUAL_STRING("Test", d.wifi.ssid);
 }
 
+/**
+ * @brief parse() ignores blank lines.
+ */
 void test_blank_lines_ignored()
 {
     const char* ini = "\n\n[wifi]\n\nssid=Test\n\n\n";
@@ -221,6 +290,9 @@ void test_blank_lines_ignored()
 // Whitespace trimming
 // ============================================================
 
+/**
+ * @brief parse() trims whitespace around keys.
+ */
 void test_whitespace_around_key()
 {
     const char* ini = "[wifi]\n  ssid  =  TestNet\n";
@@ -228,6 +300,9 @@ void test_whitespace_around_key()
     TEST_ASSERT_EQUAL_STRING("TestNet", d.wifi.ssid);
 }
 
+/**
+ * @brief parse() trims whitespace around values.
+ */
 void test_whitespace_around_value()
 {
     const char* ini = "[wifi]\npassword=  secret  \n";
@@ -235,6 +310,9 @@ void test_whitespace_around_value()
     TEST_ASSERT_EQUAL_STRING("secret", d.wifi.password);
 }
 
+/**
+ * @brief parse() trims whitespace around section headers.
+ */
 void test_whitespace_around_section_header()
 {
     const char* ini = "  [wifi]  \nssid=Test\n";
@@ -246,6 +324,9 @@ void test_whitespace_around_section_header()
 // Unknown keys and sections
 // ============================================================
 
+/**
+ * @brief parse() ignores unknown keys.
+ */
 void test_unknown_keys_ignored()
 {
     const char* ini =
@@ -256,6 +337,9 @@ void test_unknown_keys_ignored()
     TEST_ASSERT_EQUAL_STRING("Test", d.wifi.ssid);
 }
 
+/**
+ * @brief parse() ignores unknown sections.
+ */
 void test_unknown_sections_ignored()
 {
     const char* ini =
@@ -271,6 +355,9 @@ void test_unknown_sections_ignored()
 // Missing keys retain defaults
 // ============================================================
 
+/**
+ * @brief parse() retains defaults for missing keys.
+ */
 void test_missing_keys_retain_defaults()
 {
     const char* ini =
@@ -291,6 +378,9 @@ void test_missing_keys_retain_defaults()
 // Malformed lines
 // ============================================================
 
+/**
+ * @brief parse() skips malformed lines without an equals sign.
+ */
 void test_malformed_line_without_equals_skipped()
 {
     const char* ini =
@@ -305,6 +395,9 @@ void test_malformed_line_without_equals_skipped()
 // Edge cases
 // ============================================================
 
+/**
+ * @brief parse() handles input without a trailing newline.
+ */
 void test_no_trailing_newline()
 {
     const char* ini = "[wifi]\nssid=Test";
@@ -312,6 +405,9 @@ void test_no_trailing_newline()
     TEST_ASSERT_EQUAL_STRING("Test", d.wifi.ssid);
 }
 
+/**
+ * @brief parse() handles a section header with no keys.
+ */
 void test_section_header_only()
 {
     const char* ini = "[wifi]\n";
@@ -320,6 +416,9 @@ void test_section_header_only()
     TEST_ASSERT_EQUAL_STRING("", d.wifi.password);
 }
 
+/**
+ * @brief parse() preserves equals signs within a value.
+ */
 void test_value_contains_equals()
 {
     const char* ini = "[wifi]\npassword=ab=cd\n";
@@ -327,6 +426,9 @@ void test_value_contains_equals()
     TEST_ASSERT_EQUAL_STRING("ab=cd", d.wifi.password);
 }
 
+/**
+ * @brief parse() truncates long values to the field size.
+ */
 void test_long_value_truncated_to_field_size()
 {
     char ini_buf[256];
@@ -339,6 +441,9 @@ void test_long_value_truncated_to_field_size()
                           static_cast<int>(strlen(d.wifi.password)));
 }
 
+/**
+ * @brief parse() treats section names case-insensitively.
+ */
 void test_case_insensitive_section_names()
 {
     const char* ini = "[WIFI]\nssid=Test\n";
@@ -346,6 +451,9 @@ void test_case_insensitive_section_names()
     TEST_ASSERT_EQUAL_STRING("Test", d.wifi.ssid);
 }
 
+/**
+ * @brief parse() treats key names case-insensitively.
+ */
 void test_case_insensitive_key_names()
 {
     const char* ini = "[wifi]\nSSID=Test\n";
@@ -353,6 +461,9 @@ void test_case_insensitive_key_names()
     TEST_ASSERT_EQUAL_STRING("Test", d.wifi.ssid);
 }
 
+/**
+ * @brief parse() ignores an out-of-range web port.
+ */
 void test_port_out_of_range_ignored()
 {
     const char* ini = "[web]\nport=99999\n";
@@ -360,6 +471,9 @@ void test_port_out_of_range_ignored()
     TEST_ASSERT_EQUAL_UINT16(80, d.web.port);
 }
 
+/**
+ * @brief parse() accepts a zero camera capture interval.
+ */
 void test_camera_interval_zero()
 {
     const char* ini = "[camera]\ncapture_interval_ms=0\n";
@@ -371,6 +485,9 @@ void test_camera_interval_zero()
 // Video section parsing
 // ============================================================
 
+/**
+ * @brief parse() reads all video section keys.
+ */
 void test_video_all_keys()
 {
     const char* ini =
@@ -388,6 +505,9 @@ void test_video_all_keys()
     TEST_ASSERT_EQUAL_UINT8(5, d.video.jpeg_quality);
 }
 
+/**
+ * @brief parse() retains defaults for missing video keys.
+ */
 void test_video_partial_keys_retain_defaults()
 {
     const char* ini =
@@ -401,6 +521,9 @@ void test_video_partial_keys_retain_defaults()
     TEST_ASSERT_EQUAL_UINT8(10, d.video.jpeg_quality);
 }
 
+/**
+ * @brief parse() ignores an out-of-range video fps.
+ */
 void test_video_fps_out_of_range_ignored()
 {
     const char* ini = "[video]\nfps=50\n";
@@ -408,6 +531,9 @@ void test_video_fps_out_of_range_ignored()
     TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
 }
 
+/**
+ * @brief parse() ignores a zero video fps.
+ */
 void test_video_fps_zero_ignored()
 {
     const char* ini = "[video]\nfps=0\n";
@@ -415,6 +541,9 @@ void test_video_fps_zero_ignored()
     TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
 }
 
+/**
+ * @brief parse() accepts the minimum video fps.
+ */
 void test_video_fps_minimum_accepted()
 {
     const char* ini = "[video]\nfps=1\n";
@@ -422,6 +551,9 @@ void test_video_fps_minimum_accepted()
     TEST_ASSERT_EQUAL_UINT16(1, d.video.fps);
 }
 
+/**
+ * @brief parse() accepts the maximum video fps.
+ */
 void test_video_fps_maximum_accepted()
 {
     const char* ini = "[video]\nfps=30\n";
@@ -429,6 +561,9 @@ void test_video_fps_maximum_accepted()
     TEST_ASSERT_EQUAL_UINT16(30, d.video.fps);
 }
 
+/**
+ * @brief parse() ignores an out-of-range video jpeg quality.
+ */
 void test_video_jpeg_quality_out_of_range_ignored()
 {
     const char* ini = "[video]\njpeg_quality=100\n";
@@ -440,6 +575,9 @@ void test_video_jpeg_quality_out_of_range_ignored()
 // Serialization
 // ============================================================
 
+/**
+ * @brief serialize() writes all default sections and values.
+ */
 void test_serialize_defaults()
 {
     ConfigData d = IniParser::defaults();
@@ -471,6 +609,9 @@ void test_serialize_defaults()
     TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask="));
 }
 
+/**
+ * @brief serialize() writes non-default values.
+ */
 void test_serialize_non_default_values()
 {
     ConfigData d = IniParser::defaults();
@@ -511,6 +652,9 @@ void test_serialize_non_default_values()
     TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=5"));
 }
 
+/**
+ * @brief serialize() then parse() round-trips default values.
+ */
 void test_roundtrip_defaults()
 {
     ConfigData original = IniParser::defaults();
@@ -540,6 +684,9 @@ void test_roundtrip_defaults()
                             parsed.video.jpeg_quality);
 }
 
+/**
+ * @brief serialize() then parse() round-trips custom values.
+ */
 void test_roundtrip_custom_values()
 {
     ConfigData original = IniParser::defaults();
@@ -585,6 +732,9 @@ void test_roundtrip_custom_values()
                             parsed.video.jpeg_quality);
 }
 
+/**
+ * @brief serialize() returns the bytes needed when the buffer is too small.
+ */
 void test_serialize_buffer_too_small_returns_bytes_needed()
 {
     ConfigData d = IniParser::defaults();
@@ -595,6 +745,9 @@ void test_serialize_buffer_too_small_returns_bytes_needed()
     TEST_ASSERT_GREATER_THAN(sizeof(buf), needed);
 }
 
+/**
+ * @brief serialize() with a null buffer returns the bytes needed.
+ */
 void test_serialize_null_buffer_returns_bytes_needed()
 {
     ConfigData d = IniParser::defaults();
@@ -606,6 +759,9 @@ void test_serialize_null_buffer_returns_bytes_needed()
     TEST_ASSERT_EQUAL(needed2, needed1);
 }
 
+/**
+ * @brief serialize() writes every key/value pair.
+ */
 void test_serialize_all_fields_present()
 {
     ConfigData d = IniParser::defaults();

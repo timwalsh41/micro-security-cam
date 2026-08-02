@@ -39,6 +39,9 @@ static bool any_log_contains(const std::string& needle)
 // Default config (before any load)
 // ============================================================
 
+/**
+ * @brief config() returns defaults before any load.
+ */
 void test_config_has_defaults_before_load()
 {
     LoggingService log = make_logger();
@@ -58,16 +61,25 @@ void test_config_has_defaults_before_load()
 // Constants
 // ============================================================
 
+/**
+ * @brief DEFAULT_CONFIG_PATH is /config.ini.
+ */
 void test_default_config_path()
 {
     TEST_ASSERT_EQUAL_STRING("/config.ini", ConfigService::DEFAULT_CONFIG_PATH);
 }
 
+/**
+ * @brief CONFIG_BUFFER_SIZE is 512.
+ */
 void test_config_buffer_size()
 {
     TEST_ASSERT_EQUAL_UINT32(512, ConfigService::CONFIG_BUFFER_SIZE);
 }
 
+/**
+ * @brief READ_TIMEOUT_MS is 5000.
+ */
 void test_read_timeout()
 {
     TEST_ASSERT_EQUAL_UINT32(5000, ConfigService::READ_TIMEOUT_MS);
@@ -77,6 +89,9 @@ void test_read_timeout()
 // Successful load
 // ============================================================
 
+/**
+ * @brief load() parses a valid config buffer.
+ */
 void test_load_valid_config()
 {
     LoggingService log = make_logger();
@@ -116,6 +131,9 @@ void test_load_valid_config()
     TEST_ASSERT_EQUAL_UINT8(5, cfg.video.jpeg_quality);
 }
 
+/**
+ * @brief load() logs the parsed buffer size.
+ */
 void test_load_logs_parse_size()
 {
     LoggingService log = make_logger();
@@ -127,6 +145,9 @@ void test_load_logs_parse_size()
     TEST_ASSERT_TRUE(any_log_contains("17 bytes"));
 }
 
+/**
+ * @brief load() logs the wifi ssid when set.
+ */
 void test_load_logs_wifi_ssid_when_set()
 {
     LoggingService log = make_logger();
@@ -138,6 +159,9 @@ void test_load_logs_wifi_ssid_when_set()
     TEST_ASSERT_TRUE(any_log_contains("MyNet"));
 }
 
+/**
+ * @brief load() logs the video config.
+ */
 void test_load_logs_video_config()
 {
     LoggingService log = make_logger();
@@ -154,6 +178,9 @@ void test_load_logs_video_config()
 // Empty / null buffer
 // ============================================================
 
+/**
+ * @brief load() returns false for an empty buffer.
+ */
 void test_load_empty_buffer_returns_false()
 {
     LoggingService log = make_logger();
@@ -162,6 +189,9 @@ void test_load_empty_buffer_returns_false()
     TEST_ASSERT_FALSE(svc.load(nullptr, 0));
 }
 
+/**
+ * @brief load() keeps defaults for an empty buffer.
+ */
 void test_load_empty_buffer_uses_defaults()
 {
     LoggingService log = make_logger();
@@ -176,6 +206,9 @@ void test_load_empty_buffer_uses_defaults()
     TEST_ASSERT_EQUAL_STRING("VGA", cfg.video.resolution);
 }
 
+/**
+ * @brief load() logs a warning for an empty buffer.
+ */
 void test_load_empty_buffer_logs_warning()
 {
     LoggingService log = make_logger();
@@ -190,6 +223,9 @@ void test_load_empty_buffer_logs_warning()
 // Partial config (missing sections)
 // ============================================================
 
+/**
+ * @brief load() preserves defaults for missing sections.
+ */
 void test_load_partial_config_preserves_defaults()
 {
     LoggingService log = make_logger();
@@ -211,6 +247,9 @@ void test_load_partial_config_preserves_defaults()
 // Reload
 // ============================================================
 
+/**
+ * @brief load() replaces the previous config on reload.
+ */
 void test_load_replaces_previous_config()
 {
     LoggingService log = make_logger();
@@ -229,6 +268,9 @@ void test_load_replaces_previous_config()
 // mutable_config
 // ============================================================
 
+/**
+ * @brief mutable_config() matches config() before modification.
+ */
 void test_mutable_config_same_as_config_before_modify()
 {
     LoggingService log = make_logger();
@@ -243,6 +285,9 @@ void test_mutable_config_same_as_config_before_modify()
                              rw.camera.capture_interval_ms);
 }
 
+/**
+ * @brief Changes via mutable_config() are visible through config().
+ */
 void test_mutable_config_modify_visible_through_config()
 {
     LoggingService log = make_logger();
@@ -260,6 +305,9 @@ void test_mutable_config_modify_visible_through_config()
     TEST_ASSERT_EQUAL_STRING("Modified", cfg.wifi.ssid);
 }
 
+/**
+ * @brief load() replaces mutable_config() changes.
+ */
 void test_mutable_config_persists_across_loads()
 {
     LoggingService log = make_logger();

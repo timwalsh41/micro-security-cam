@@ -65,7 +65,8 @@
       private:
           int m_my_variable;  
   };
-  ``
+  ```
+- Include function briefs for each individual test function in unit test files
 
 # Documentation
 

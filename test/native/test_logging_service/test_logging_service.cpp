@@ -16,6 +16,9 @@ static RealTimeService real_time;
 // Level formatting tests
 // ============================================================
 
+/**
+ * @brief debug() emits a DEBUG level tag.
+ */
 void test_debug_level_format()
 {
     LoggingService log(mock_backend, real_time);
@@ -26,6 +29,9 @@ void test_debug_level_format()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[DEBUG]") != std::string::npos);
 }
 
+/**
+ * @brief info() emits an INFO level tag.
+ */
 void test_info_level_format()
 {
     LoggingService log(mock_backend, real_time);
@@ -36,6 +42,9 @@ void test_info_level_format()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[INFO ]") != std::string::npos);
 }
 
+/**
+ * @brief warn() emits a WARN level tag.
+ */
 void test_warn_level_format()
 {
     LoggingService log(mock_backend, real_time);
@@ -46,6 +55,9 @@ void test_warn_level_format()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[WARN ]") != std::string::npos);
 }
 
+/**
+ * @brief error() emits an ERROR level tag.
+ */
 void test_error_level_format()
 {
     LoggingService log(mock_backend, real_time);
@@ -56,6 +68,9 @@ void test_error_level_format()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[ERROR]") != std::string::npos);
 }
 
+/**
+ * @brief log() with a WARNING level emits a WARN tag.
+ */
 void test_generic_log_method_level()
 {
     LoggingService log(mock_backend, real_time);
@@ -69,6 +84,9 @@ void test_generic_log_method_level()
 // Subsystem tests
 // ============================================================
 
+/**
+ * @brief The subsystem name appears in the output.
+ */
 void test_subsystem_appears_in_output()
 {
     LoggingService log(mock_backend, real_time);
@@ -78,6 +96,9 @@ void test_subsystem_appears_in_output()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[Camera]") != std::string::npos);
 }
 
+/**
+ * @brief Different subsystem names are preserved in the output.
+ */
 void test_subsystem_different_names()
 {
     LoggingService log(mock_backend, real_time);
@@ -91,6 +112,9 @@ void test_subsystem_different_names()
 // Printf formatting tests
 // ============================================================
 
+/**
+ * @brief printf-style formatting substitutes a string argument.
+ */
 void test_printf_formatting_string()
 {
     LoggingService log(mock_backend, real_time);
@@ -100,6 +124,9 @@ void test_printf_formatting_string()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("Photo saved") != std::string::npos);
 }
 
+/**
+ * @brief printf-style formatting substitutes an integer argument.
+ */
 void test_printf_formatting_int()
 {
     LoggingService log(mock_backend, real_time);
@@ -109,6 +136,9 @@ void test_printf_formatting_int()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("Count: 42") != std::string::npos);
 }
 
+/**
+ * @brief printf-style formatting substitutes multiple arguments.
+ */
 void test_printf_formatting_multiple_args()
 {
     LoggingService log(mock_backend, real_time);
@@ -122,6 +152,9 @@ void test_printf_formatting_multiple_args()
 // Convenience method tests
 // ============================================================
 
+/**
+ * @brief Convenience methods route to the correct log level.
+ */
 void test_convenience_methods_route_to_correct_level()
 {
     LoggingService log(mock_backend, real_time);
@@ -143,6 +176,9 @@ void test_convenience_methods_route_to_correct_level()
 // Timestamp tests
 // ============================================================
 
+/**
+ * @brief The timestamp appears in the output.
+ */
 void test_timestamp_appears_in_output()
 {
     LoggingService log(mock_backend, real_time);
@@ -152,6 +188,9 @@ void test_timestamp_appears_in_output()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[00012345]") != std::string::npos);
 }
 
+/**
+ * @brief A zero timestamp is formatted correctly.
+ */
 void test_timestamp_zero()
 {
     LoggingService log(mock_backend, real_time);
@@ -161,6 +200,9 @@ void test_timestamp_zero()
     TEST_ASSERT_TRUE(mock_backend.last_message.find("[00000000]") != std::string::npos);
 }
 
+/**
+ * @brief The timestamp updates across successive log calls.
+ */
 void test_timestamp_updates()
 {
     LoggingService log(mock_backend, real_time);
@@ -178,6 +220,9 @@ void test_timestamp_updates()
 // Full line structure test
 // ============================================================
 
+/**
+ * @brief A full log line has the expected structure.
+ */
 void test_full_line_format()
 {
     LoggingService log(mock_backend, real_time);
@@ -188,6 +233,9 @@ void test_full_line_format()
                              mock_backend.last_message.c_str());
 }
 
+/**
+ * @brief Multiple log calls accumulate in the backend.
+ */
 void test_multiple_calls_accumulate()
 {
     LoggingService log(mock_backend, real_time);

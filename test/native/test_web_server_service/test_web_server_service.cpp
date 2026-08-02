@@ -47,6 +47,9 @@ static ConfigData::WebConfig make_web_config(uint16_t port = 80,
 // check_basic_auth() tests
 // ============================================================
 
+/**
+ * @brief check_basic_auth() allows all requests when no password is set.
+ */
 void test_auth_empty_password_allows_all()
 {
     TEST_ASSERT_TRUE(check_basic_auth(nullptr, ""));
@@ -54,47 +57,74 @@ void test_auth_empty_password_allows_all()
     TEST_ASSERT_TRUE(check_basic_auth("Basic dXNlcjpwYXNz", ""));
 }
 
+/**
+ * @brief check_basic_auth() rejects a null auth header.
+ */
 void test_auth_null_header_rejected()
 {
     TEST_ASSERT_FALSE(check_basic_auth(nullptr, "secret"));
 }
 
+/**
+ * @brief check_basic_auth() rejects an empty auth header.
+ */
 void test_auth_empty_header_rejected()
 {
     TEST_ASSERT_FALSE(check_basic_auth("", "secret"));
 }
 
+/**
+ * @brief check_basic_auth() rejects a non-Basic auth scheme.
+ */
 void test_auth_non_basic_scheme_rejected()
 {
     TEST_ASSERT_FALSE(check_basic_auth("Bearer abc123", "secret"));
 }
 
+/**
+ * @brief check_basic_auth() accepts correct credentials.
+ */
 void test_auth_correct_credentials_pass()
 {
     TEST_ASSERT_TRUE(check_basic_auth("Basic dXNlcjpzZWNyZXQ=", "secret"));
 }
 
+/**
+ * @brief check_basic_auth() rejects a wrong password.
+ */
 void test_auth_wrong_password_rejected()
 {
     TEST_ASSERT_FALSE(check_basic_auth("Basic dXNlcjpzZWNyZXQ=", "wrong"));
 }
 
+/**
+ * @brief check_basic_auth() rejects a malformed header with no colon.
+ */
 void test_auth_malformed_no_colon_rejected()
 {
     TEST_ASSERT_FALSE(check_basic_auth("Basic dXNlcnNlY3JldA==", "secret"));
 }
 
+/**
+ * @brief check_basic_auth() rejects invalid base64.
+ */
 void test_auth_invalid_base64_rejected()
 {
     TEST_ASSERT_FALSE(check_basic_auth("Basic !!!invalid!!!", "secret"));
 }
 
+/**
+ * @brief check_basic_auth() handles base64 with padding.
+ */
 void test_auth_with_padding()
 {
     // "a:b" → base64 = "YTpi"
     TEST_ASSERT_TRUE(check_basic_auth("Basic YTpi", "b"));
 }
 
+/**
+ * @brief check_basic_auth() handles special characters in the password.
+ */
 void test_auth_special_characters()
 {
     // "admin:p@ss w0rd!" → base64
@@ -106,6 +136,9 @@ void test_auth_special_characters()
 // WebServerService init tests
 // ============================================================
 
+/**
+ * @brief init() registers the index route.
+ */
 void test_init_registers_index_route()
 {
     TestFixture f;
@@ -117,6 +150,9 @@ void test_init_registers_index_route()
                       f.hal.registered_routes[0].method);
 }
 
+/**
+ * @brief init() calls the HAL and logs success.
+ */
 void test_init_logs_success()
 {
     TestFixture f;
@@ -126,6 +162,9 @@ void test_init_logs_success()
     TEST_ASSERT_TRUE(f.log_backend.messages.size() > 0);
 }
 
+/**
+ * @brief init() logs an error but does not crash on HAL failure.
+ */
 void test_init_failure()
 {
     TestFixture f;
@@ -140,6 +179,9 @@ void test_init_failure()
 // WebServerService handle_index (landing page + auth) tests
 // ============================================================
 
+/**
+ * @brief handle_index() sends an HTML landing page.
+ */
 void test_handle_index_sends_html()
 {
     TestFixture f;
@@ -155,6 +197,9 @@ void test_handle_index_sends_html()
                      std::string::npos);
 }
 
+/**
+ * @brief handle_index() serves the page when no password is set.
+ */
 void test_handle_index_no_password()
 {
     TestFixture f;
@@ -166,6 +211,9 @@ void test_handle_index_no_password()
     TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief handle_index() returns 401 when no auth header is present.
+ */
 void test_handle_index_no_auth_header_returns_401()
 {
     TestFixture f;
@@ -178,6 +226,9 @@ void test_handle_index_no_auth_header_returns_401()
     TEST_ASSERT_EQUAL_INT(401, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief handle_index() returns 401 for a wrong password.
+ */
 void test_handle_index_wrong_password_returns_401()
 {
     TestFixture f;
@@ -190,6 +241,9 @@ void test_handle_index_wrong_password_returns_401()
     TEST_ASSERT_EQUAL_INT(401, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief handle_index() returns 200 for the correct password.
+ */
 void test_handle_index_correct_password()
 {
     TestFixture f;
@@ -202,6 +256,9 @@ void test_handle_index_correct_password()
     TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
 }
 
+/**
+ * @brief handle_index() returns 401 for a malformed auth header.
+ */
 void test_handle_index_malformed_auth_returns_401()
 {
     TestFixture f;

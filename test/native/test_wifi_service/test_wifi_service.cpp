@@ -96,14 +96,9 @@ void tearDown()
 {
 }
 
-// ============================================================
-// test_init_sta_success
-//
-// Mock WiFi connects on the first poll.  Verify is_connected()
-// returns true, local_ip() returns the mock IP, and begin_ap()
-// was never called.
-// ============================================================
-
+/**
+ * @brief Mock WiFi connects on the first poll; verify STA success.
+ */
 void test_init_sta_success()
 {
     TestFixture f;
@@ -126,14 +121,9 @@ void test_init_sta_success()
     TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "connected"));
 }
 
-// ============================================================
-// test_init_sta_timeout_falls_back_to_ap
-//
-// Mock WiFi never connects (status always DISCONNECTED).
-// After timeout_secs, WifiService falls back to AP mode.
-// is_connected() should remain false.
-// ============================================================
-
+/**
+ * @brief Mock WiFi never connects; init falls back to AP mode.
+ */
 void test_init_sta_timeout_falls_back_to_ap()
 {
     TestFixture f;
@@ -181,13 +171,9 @@ class QuickConnectWifiHal : public MockWifiHal
         }
 };
 
-// ============================================================
-// test_init_sta_quick_connect
-//
-// WiFi does not connect on the first poll but connects on the
-// second.  Verify is_connected() is true after init.
-// ============================================================
-
+/**
+ * @brief WiFi connects on the second poll; init succeeds.
+ */
 void test_init_sta_quick_connect()
 {
     QuickConnectWifiHal hal;
@@ -212,13 +198,9 @@ void test_init_sta_quick_connect()
     TEST_ASSERT_TRUE(any_log_contains(log_backend, "connected"));
 }
 
-// ============================================================
-// test_is_connected_reflects_hal
-//
-// After a successful STA init, is_connected() returns true.
-// After a failed init (timeout), is_connected() returns false.
-// ============================================================
-
+/**
+ * @brief is_connected() reflects the HAL state after init.
+ */
 void test_is_connected_reflects_hal()
 {
     // --- Case 1: successful connection ---
@@ -254,13 +236,9 @@ void test_is_connected_reflects_hal()
     }
 }
 
-// ============================================================
-// test_static_ip_applied_before_sta
-//
-// All three static IP fields are set.  Verify config_static()
-// is called with the correct values before begin_sta().
-// ============================================================
-
+/**
+ * @brief Static IP fields are applied before begin_sta().
+ */
 void test_static_ip_applied_before_sta()
 {
     TestFixture f;
@@ -285,13 +263,9 @@ void test_static_ip_applied_before_sta()
     TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "Configuring static IP"));
 }
 
-// ============================================================
-// test_static_ip_config_failure_falls_back_to_dhcp
-//
-// All three fields are set but config_static() returns false.
-// Verify that begin_sta() is still called (DHCP fallback).
-// ============================================================
-
+/**
+ * @brief Static IP config failure falls back to DHCP.
+ */
 void test_static_ip_config_failure_falls_back_to_dhcp()
 {
     TestFixture f;
@@ -313,13 +287,9 @@ void test_static_ip_config_failure_falls_back_to_dhcp()
     TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "Static IP configuration failed"));
 }
 
-// ============================================================
-// test_static_ip_missing_fields_skips_static
-//
-// Only static_ip is set (no gateway or subnet_mask).
-// Verify config_static() is NOT called and DHCP is used.
-// ============================================================
-
+/**
+ * @brief Missing static IP fields skip static config and use DHCP.
+ */
 void test_static_ip_missing_fields_skips_static()
 {
     TestFixture f;
@@ -341,14 +311,9 @@ void test_static_ip_missing_fields_skips_static()
     TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "No static IP config"));
 }
 
-// ============================================================
-// test_ap_static_ip_applied_before_begin_ap
-//
-// STA connection times out, all three AP static IP fields are
-// set.  Verify config_static_ap() is called with correct values
-// before begin_ap().
-// ============================================================
-
+/**
+ * @brief AP static IP fields are applied before begin_ap().
+ */
 void test_ap_static_ip_applied_before_begin_ap()
 {
     TestFixture f;
@@ -375,13 +340,9 @@ void test_ap_static_ip_applied_before_begin_ap()
     TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "Configuring AP static IP"));
 }
 
-// ============================================================
-// test_ap_static_ip_missing_fields_skips_static
-//
-// STA connection times out, only ap_ip is set.  Verify
-// config_static_ap() is NOT called (DHCP fallback).
-// ============================================================
-
+/**
+ * @brief Missing AP static IP fields skip static config.
+ */
 void test_ap_static_ip_missing_fields_skips_static()
 {
     TestFixture f;
@@ -403,14 +364,9 @@ void test_ap_static_ip_missing_fields_skips_static()
     TEST_ASSERT_TRUE(any_log_contains(f.log_backend, "No AP static IP config"));
 }
 
-// ============================================================
-// test_ap_static_ip_config_failure_logs_warning
-//
-// STA connection times out, all AP fields set but
-// config_static_ap() returns false.  Verify begin_ap() is still
-// called (falls back to default address).
-// ============================================================
-
+/**
+ * @brief AP static IP config failure logs a warning and falls back.
+ */
 void test_ap_static_ip_config_failure_logs_warning()
 {
     TestFixture f;
