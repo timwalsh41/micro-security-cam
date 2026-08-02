@@ -5,23 +5,32 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <functional>
 
 /**
  * @file mock_web_server_hal.h
- * @brief Configurable mock WebServerHal for native unit tests.
+ * @brief Configurable mock WebServerHal and RequestRef for native unit tests.
  *
- * Captures route registrations and simulates request/response
- * for testing route handlers without an actual HTTP server.
+ * Captures route registrations (with handlers) and simulates request
+ * dispatch via simulate_request(). Tests configure the mock request
+ * state on MockWebServerHal::mock_request before calling simulate_request(),
+ * then inspect mock_request.responses for the handler output.
  */
-class MockWebServerHal : public hal::WebServerHal
+
+/**
+ * @class MockRequestRef
+ * @brief RequestRef implementation for native tests.
+ *
+ * All request state (URI, method, args, headers, auth) is configurable
+ * via public members and set_* helpers. Response data is captured in
+ * the responses vector for test assertions.
+ */
+class MockRequestRef : public hal::RequestRef
 {
     public:
         // ============================================================
-        // Configurable return values
+        // Configurable request state
         // ============================================================
-
-        /** Value returned by begin(). */
-        bool begin_result{true};
 
         /** Simulated request URI. */
         char request_uri[128]{"/"};
@@ -29,32 +38,29 @@ class MockWebServerHal : public hal::WebServerHal
         /** Simulated request method. */
         hal::HttpMethod request_method{hal::HttpMethod::GET};
 
-        /** Simulated query parameter storage. */
-        char arg_buffer[128]{};
-        char arg_name_buf[64]{};
+        /** Simulated query parameters (name → value). */
+        static constexpr size_t MAX_ARGS = 4;
 
-        /** Simulated header value storage. */
-        char header_buffer[128]{};
-        char header_name_buf[64]{};
-
-        /** Simulated Basic Auth header. */
-        char auth_buffer[128]{};
-
-        // ============================================================
-        // Call tracking
-        // ============================================================
-
-        int begin_call_count{0};
-        int handle_client_call_count{0};
-        int stop_call_count{0};
-
-        struct RouteRegistration
+        struct ArgEntry
         {
-            std::string uri;
-            hal::HttpMethod method;
+            char name[64]{};
+            char value[128]{};
         };
-        std::vector<RouteRegistration> registered_routes;
+        ArgEntry args[MAX_ARGS]{};
+        size_t arg_count{0};
 
+        /** Simulated header (name → value). */
+        char header_name[64]{};
+        char header_value[128]{};
+
+        /** Simulated Basic Auth header value (with "Basic " prefix). */
+        char auth_value[128]{};
+
+        // ============================================================
+        // Response tracking
+        // ============================================================
+
+        /** Record of a send() call made by the handler. */
         struct ResponseRecord
         {
             int code{0};
@@ -63,35 +69,9 @@ class MockWebServerHal : public hal::WebServerHal
         };
         std::vector<ResponseRecord> responses;
 
-        /** Response code to return from send(). */
-        int last_send_code{200};
-        std::string last_send_content;
-
         // ============================================================
         // Interface implementation
         // ============================================================
-
-        bool begin(uint16_t /*port*/) override
-        {
-            begin_call_count++;
-            return begin_result;
-        }
-
-        void on(const char* uri, hal::HttpMethod method,
-                void (* /*handler*/)()) override
-        {
-            registered_routes.push_back({uri, method});
-        }
-
-        void handle_client() override
-        {
-            handle_client_call_count++;
-        }
-
-        void stop() override
-        {
-            stop_call_count++;
-        }
 
         const char* uri() const override
         {
@@ -105,33 +85,36 @@ class MockWebServerHal : public hal::WebServerHal
 
         const char* arg(const char* name) const override
         {
-            // Simple mock: return stored arg if name matches
-            if (strcmp(name, arg_name_buf) == 0)
+            if (name != nullptr)
             {
-                return arg_buffer;
+                for (size_t i = 0; i < arg_count; i++)
+                {
+                    if (strcmp(name, args[i].name) == 0)
+                    {
+                        return args[i].value;
+                    }
+                }
             }
             return "";
         }
 
         const char* header(const char* name) const override
         {
-            if (strcmp(name, header_name_buf) == 0)
+            if (name != nullptr && strcmp(name, header_name) == 0)
             {
-                return header_buffer;
+                return header_value;
             }
             return "";
         }
 
         const char* auth_header() const override
         {
-            return auth_buffer;
+            return auth_value;
         }
 
         void send(int code, const char* content_type,
                   const char* content) override
         {
-            last_send_code = code;
-            last_send_content = content ? content : "";
             ResponseRecord rec;
             rec.code = code;
             rec.content_type = content_type ? content_type : "";
@@ -142,48 +125,50 @@ class MockWebServerHal : public hal::WebServerHal
         void send(int code, const char* content_type,
                   const uint8_t* data, size_t len) override
         {
-            last_send_code = code;
-            last_send_content = std::string(reinterpret_cast<const char*>(data), len);
             ResponseRecord rec;
             rec.code = code;
             rec.content_type = content_type ? content_type : "";
-            rec.body = last_send_content;
+            rec.body = std::string(reinterpret_cast<const char*>(data), len);
             responses.push_back(rec);
         }
 
-        void send_header(int /*code*/, const char* /*content_type*/,
-                         size_t /*content_length*/) override
+        hal::StreamWriter* create_stream_writer() override
         {
-            // no-op for mock
-        }
-
-        void send_content(const uint8_t* data, size_t len) override
-        {
-            last_send_content = std::string(reinterpret_cast<const char*>(data), len);
+            return nullptr; // Phase 3C
         }
 
         // ============================================================
         // Helper methods for test setup
         // ============================================================
 
-        /** Configure a simulated query argument for the next arg() call. */
+        /** Configure a simulated query argument. */
         void set_arg(const char* name, const char* value)
         {
-            strncpy(arg_name_buf, name, sizeof(arg_name_buf) - 1);
-            strncpy(arg_buffer, value, sizeof(arg_buffer) - 1);
+            if (name == nullptr || arg_count >= MAX_ARGS)
+            {
+                return;
+            }
+            strncpy(args[arg_count].name, name,
+                    sizeof(args[arg_count].name) - 1);
+            args[arg_count].name[sizeof(args[arg_count].name) - 1] = '\0';
+            strncpy(args[arg_count].value, value,
+                    sizeof(args[arg_count].value) - 1);
+            args[arg_count].value[sizeof(args[arg_count].value) - 1] = '\0';
+            arg_count++;
         }
 
-        /** Configure a simulated header for the next header() call. */
+        /** Configure a simulated header. */
         void set_header(const char* name, const char* value)
         {
-            strncpy(header_name_buf, name, sizeof(header_name_buf) - 1);
-            strncpy(header_buffer, value, sizeof(header_buffer) - 1);
+            strncpy(header_name, name, sizeof(header_name) - 1);
+            header_name[sizeof(header_name) - 1] = '\0';
+            strncpy(header_value, value, sizeof(header_value) - 1);
+            header_value[sizeof(header_value) - 1] = '\0';
         }
 
         /** Configure a simulated Basic Auth header from user:password. */
         void set_auth(const char* user, const char* password)
         {
-            // Build "user:password" and Base64-encode it
             char raw[256];
             snprintf(raw, sizeof(raw), "%s:%s", user, password);
 
@@ -194,36 +179,130 @@ class MockWebServerHal : public hal::WebServerHal
 
             size_t len = strlen(raw);
             size_t out = 0;
-            auth_buffer[out++] = 'B';
-            auth_buffer[out++] = 'a';
-            auth_buffer[out++] = 's';
-            auth_buffer[out++] = 'i';
-            auth_buffer[out++] = 'c';
-            auth_buffer[out++] = ' ';
+            auth_value[out++] = 'B';
+            auth_value[out++] = 'a';
+            auth_value[out++] = 's';
+            auth_value[out++] = 'i';
+            auth_value[out++] = 'c';
+            auth_value[out++] = ' ';
 
             unsigned int accum = 0;
             int bits = 0;
-            for (size_t i = 0; i < len; i++)
+            for (size_t i = 0; i < len && out < sizeof(auth_value) - 1; i++)
             {
                 accum = (accum << 8) | static_cast<unsigned char>(raw[i]);
                 bits += 8;
-                while (bits >= 6 && out < sizeof(auth_buffer) - 1)
+                while (bits >= 6 && out < sizeof(auth_value) - 1)
                 {
                     bits -= 6;
-                    auth_buffer[out++] =
+                    auth_value[out++] =
                         TABLE[(accum >> bits) & 0x3F];
                 }
             }
-            if (bits > 0 && out < sizeof(auth_buffer) - 1)
+            if (bits > 0 && out < sizeof(auth_value) - 1)
             {
-                auth_buffer[out++] =
+                auth_value[out++] =
                     TABLE[(accum << (6 - bits)) & 0x3F];
             }
-            while (out % 4 != 6 && out < sizeof(auth_buffer) - 1)
+            while (out % 4 != 0 && out < sizeof(auth_value) - 1)
             {
-                auth_buffer[out++] = '=';
+                auth_value[out++] = '=';
             }
-            auth_buffer[out] = '\0';
+            auth_value[out] = '\0';
+        }
+};
+
+/**
+ * @class MockWebServerHal
+ * @brief Configurable mock WebServerHal for native unit tests.
+ *
+ * Stores route registrations with their std::function handlers.
+ * Tests configure mock_request state, then call simulate_request()
+ * to invoke a route's handler with that mock request.
+ */
+class MockWebServerHal : public hal::WebServerHal
+{
+    public:
+        // ============================================================
+        // Configurable return values
+        // ============================================================
+
+        /** Value returned by init(). */
+        bool init_result{true};
+
+        // ============================================================
+        // Call tracking
+        // ============================================================
+
+        int init_call_count{0};
+        int stop_call_count{0};
+
+        /** Record of a route registration. */
+        struct RouteRecord
+        {
+            std::string uri;
+            hal::HttpMethod method;
+            std::function<void(hal::RequestRef&)> handler;
+        };
+        std::vector<RouteRecord> registered_routes;
+
+        /**
+         * @brief Mock request object shared with simulate_request().
+         *
+         * Configure state on this object before calling simulate_request().
+         * After the call, inspect mock_request.responses for handler output.
+         */
+        MockRequestRef mock_request;
+
+        // ============================================================
+        // Interface implementation
+        // ============================================================
+
+        bool init(uint16_t /*port*/) override
+        {
+            init_call_count++;
+            return init_result;
+        }
+
+        void on(const char* uri, hal::HttpMethod method,
+                std::function<void(hal::RequestRef&)> handler) override
+        {
+            registered_routes.push_back({uri, method, std::move(handler)});
+        }
+
+        void stop() override
+        {
+            stop_call_count++;
+        }
+
+        // ============================================================
+        // Simulation helper
+        // ============================================================
+
+        /**
+         * @brief Simulates a request matching the given URI and method.
+         *
+         * Finds the registered handler and invokes it with mock_request.
+         * The test should configure mock_request before calling this.
+         *
+         * @param uri     Request URI to match.
+         * @param method  HTTP method to match.
+         * @return true if a handler was found and invoked.
+         */
+        bool simulate_request(const char* uri, hal::HttpMethod method)
+        {
+            // Clear responses from any previous simulation
+            mock_request.responses.clear();
+
+            for (auto& route : registered_routes)
+            {
+                if (route.uri == uri && route.method == method)
+                {
+                    route.handler(mock_request);
+                    return true;
+                }
+            }
+            return false;
         }
 };
 

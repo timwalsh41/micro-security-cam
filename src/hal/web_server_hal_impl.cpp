@@ -1,124 +1,37 @@
 #include "hal/web_server_hal_impl.h"
 #include <cstring>
 
-#include <WebServer.h>
+#include <ESPAsyncWebServer.h>
 #include <functional>
 
 namespace hal
 {
 
 // ============================================================
-// Constructor / Destructor
+// AsyncRequestRef
 // ============================================================
 
-WebServerHalImpl::WebServerHalImpl()
-    : m_server(nullptr)
+AsyncRequestRef::AsyncRequestRef(AsyncWebServerRequest* request)
+    : m_request(request)
 {
-
 }
 
-WebServerHalImpl::~WebServerHalImpl()
+const char* AsyncRequestRef::uri() const
 {
-    if (m_server != nullptr)
+    if (m_request != nullptr)
     {
-        delete m_server;
-    }
-
-    m_server = nullptr;
-}
-
-// ============================================================
-// Lifecycle
-// ============================================================
-
-bool WebServerHalImpl::begin(uint16_t port)
-{
-    if (m_server != nullptr)
-    {
-        delete m_server;
-    }
-
-    m_server = new WebServer(port);
-    m_server->begin();
-
-    return true;
-}
-
-void WebServerHalImpl::on(const char* uri, HttpMethod method,
-                          void (*handler)())
-{
-    if (m_server == nullptr)
-    {
-        return;
-    }
-
-    // Map our HttpMethod enum to Arduino HTTP method constants
-    HTTPMethod arduino_method = (method == HttpMethod::POST)
-        ? HTTP_POST
-        : HTTP_GET;
-
-    // Store the handler pointer and create a wrapper lambda
-    // that Arduino WebServer can call. We use a static array
-    // to keep handler function pointers alive for the Arduino
-    // WebServer lambdas, which capture them by value.
-    //
-    // The static array persists for the program lifetime, so
-    // the pointers remain valid for all WebServer callbacks.
-    // If MAX_ROUTES is exceeded, the route is silently not
-    // registered — see WebServerHalImpl::MAX_ROUTES.
-    static void (*s_handlers[WebServerHalImpl::MAX_ROUTES])();
-    static size_t s_count = 0;
-
-    if (s_count >= WebServerHalImpl::MAX_ROUTES)
-    {
-        return;
-    }
-
-    s_handlers[s_count] = handler;
-    void (*captured)() = s_handlers[s_count];
-    s_count++;
-
-    m_server->on(uri, arduino_method,
-                 [captured]() { captured(); });
-}
-
-void WebServerHalImpl::handle_client()
-{
-    if (m_server != nullptr)
-    {
-        m_server->handleClient();
-    }
-}
-
-void WebServerHalImpl::stop()
-{
-    if (m_server != nullptr)
-    {
-        m_server->stop();
-    }
-}
-
-// ============================================================
-// Request accessors
-// ============================================================
-
-const char* WebServerHalImpl::uri() const
-{
-    if (m_server != nullptr)
-    {
-        String u = m_server->uri();
-        strncpy(m_uri_buf, u.c_str(), URI_BUF_SIZE - 1);
+        strncpy(m_uri_buf, m_request->url().c_str(), URI_BUF_SIZE - 1);
         m_uri_buf[URI_BUF_SIZE - 1] = '\0';
         return m_uri_buf;
     }
     return "";
 }
 
-HttpMethod WebServerHalImpl::method() const
+HttpMethod AsyncRequestRef::method() const
 {
-    if (m_server != nullptr)
+    if (m_request != nullptr)
     {
-        HTTPMethod m = m_server->method();
+        auto m = m_request->method();
         if (m == HTTP_POST)
         {
             return HttpMethod::POST;
@@ -127,89 +40,117 @@ HttpMethod WebServerHalImpl::method() const
     return HttpMethod::GET;
 }
 
-const char* WebServerHalImpl::arg(const char* name) const
+const char* AsyncRequestRef::arg(const char* name) const
 {
-    if (m_server != nullptr && name != nullptr)
+    if (m_request != nullptr && name != nullptr)
     {
-        String val = m_server->arg(String(name));
-        strncpy(m_arg_value_buf, val.c_str(), ARG_BUF_SIZE - 1);
-        m_arg_value_buf[ARG_BUF_SIZE - 1] = '\0';
-        return m_arg_value_buf;
+        String val = m_request->arg(name);
+        strncpy(m_arg_buf, val.c_str(), ARG_BUF_SIZE - 1);
+        m_arg_buf[ARG_BUF_SIZE - 1] = '\0';
+        return m_arg_buf;
     }
     return "";
 }
 
-const char* WebServerHalImpl::header(const char* name) const
+const char* AsyncRequestRef::header(const char* name) const
 {
-    if (m_server != nullptr && name != nullptr)
+    if (m_request != nullptr && name != nullptr)
     {
-        String val = m_server->header(String(name));
-        strncpy(m_header_value_buf, val.c_str(), HEADER_BUF_SIZE - 1);
-        m_header_value_buf[HEADER_BUF_SIZE - 1] = '\0';
-        return m_header_value_buf;
+        String val = m_request->header(name);
+        strncpy(m_header_buf, val.c_str(), HEADER_BUF_SIZE - 1);
+        m_header_buf[HEADER_BUF_SIZE - 1] = '\0';
+        return m_header_buf;
     }
     return "";
 }
 
-const char* WebServerHalImpl::auth_header() const
+const char* AsyncRequestRef::auth_header() const
 {
-    if (m_server != nullptr)
+    if (m_request != nullptr)
     {
-        String auth = m_server->header("Authorization");
-        strncpy(m_auth_buf, auth.c_str(), HEADER_BUF_SIZE - 1);
+        String val = m_request->header("Authorization");
+        strncpy(m_auth_buf, val.c_str(), HEADER_BUF_SIZE - 1);
         m_auth_buf[HEADER_BUF_SIZE - 1] = '\0';
         return m_auth_buf;
     }
     return "";
 }
 
+void AsyncRequestRef::send(int code, const char* content_type,
+                           const char* content)
+{
+    if (m_request != nullptr)
+    {
+        m_request->send(code, content_type, content);
+    }
+}
+
+void AsyncRequestRef::send(int code, const char* content_type,
+                           const uint8_t* data, size_t len)
+{
+    if (m_request != nullptr)
+    {
+        m_request->send(code, content_type, data, len);
+    }
+}
+
+StreamWriter* AsyncRequestRef::create_stream_writer()
+{
+    return nullptr; // Phase 3C — AsyncWebStreamWriter
+}
+
 // ============================================================
-// Response senders
+// WebServerHalImpl
 // ============================================================
 
-void WebServerHalImpl::send(int code, const char* content_type,
-                            const char* content)
+WebServerHalImpl::WebServerHalImpl()
+    : m_server(nullptr)
 {
-    if (m_server != nullptr)
-    {
-        m_server->send(code, content_type, content);
-    }
 }
 
-void WebServerHalImpl::send(int code, const char* content_type,
-                            const uint8_t* data, size_t len)
+WebServerHalImpl::~WebServerHalImpl()
 {
-    if (m_server != nullptr)
-    {
-        m_server->send_P(code, content_type,
-                         reinterpret_cast<const char*>(data), len);
-    }
+    stop();
+    delete m_server;
+    m_server = nullptr;
 }
 
-void WebServerHalImpl::send_header(int code, const char* content_type,
-                                   size_t content_length)
+bool WebServerHalImpl::init(uint16_t port)
 {
-    if (m_server != nullptr)
-    {
-        m_server->setContentLength(content_length);
-        m_server->sendHeader("Access-Control-Allow-Origin", "*");
-        
-        // Store code and type for the subsequent send_content call.
-        // Arduino WebServer uses beginResponse for streaming.
-        (void)code;
-        (void)content_type;
-    }
+    stop();
+    delete m_server;
+
+    m_server = new AsyncWebServer(port);
+    m_server->begin();
+
+    return true;
 }
 
-void WebServerHalImpl::send_content(const uint8_t* data, size_t len)
+void WebServerHalImpl::on(const char* uri, HttpMethod method,
+                          std::function<void(RequestRef&)> handler)
+{
+    if (m_server == nullptr)
+    {
+        return;
+    }
+
+    WebRequestMethodComposite arduino_method = (method == HttpMethod::POST)
+        ? HTTP_POST
+        : HTTP_GET;
+
+    m_server->on(uri, arduino_method,
+                 [handler](AsyncWebServerRequest* request)
+                 {
+                     AsyncRequestRef ref(request);
+                     handler(ref);
+                 });
+}
+
+void WebServerHalImpl::stop()
 {
     if (m_server != nullptr)
     {
-        // For simple implementations, send the full response at once.
-        // Chunked streaming will be refined when MJPEG streaming
-        // is implemented.
-        (void)data;
-        (void)len;
+        m_server->end();
     }
 }
 

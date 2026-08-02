@@ -182,9 +182,6 @@ void loop()
         // Poll command transports (web, serial)
         command_handler.tick();
 
-        // Process HTTP requests
-        web_server_service.handle_client();
-
         // Orchestrator tick (schedule evaluation, mode transitions)
         system_orchestrator.tick();
 

@@ -275,7 +275,7 @@ skinparam ranksep 30
     }
 
     interface WebServerHal {
-        +begin(port)
+        +init(port)
         +on(uri, method, handler)
         +send(code, type, content)
     }

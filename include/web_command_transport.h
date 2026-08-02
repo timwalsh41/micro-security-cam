@@ -13,9 +13,6 @@
  * Routes HTTP requests to CommandHandler::dispatch(). Each
  * registered command becomes a thin HTTP endpoint.
  *
- * Since WebServerHal::on() requires a plain function pointer,
- * static trampolines route calls to the singleton instance.
- *
  * Implements CommandTransport to satisfy the interface contract,
  * but web requests are push-based — the actual dispatch happens
  * inline in the route callbacks, not through the polling model.
@@ -30,8 +27,6 @@ class WebCommandTransport : public CommandTransport
          *
          * Must be called after the web server is initialized and
          * all commands are registered with the CommandHandler.
-         * Only one instance may exist at a time due to the static
-         * trampoline pattern.
          *
          * @param password  Optional web password for Basic auth.
          *                  If null or empty, auth is skipped.
@@ -55,20 +50,12 @@ class WebCommandTransport : public CommandTransport
         CommandHandler& m_handler;
         char m_password[CONFIG_FIELD_MAX_LENGTH]{};
 
-        /** @brief Singleton instance for static trampolines. */
-        static WebCommandTransport* s_instance;
-
-        /** @brief Static trampoline for GET /status route. */
-        static void handle_status_trampoline();
-
-        /** @brief Static trampoline for GET /control route. */
-        static void handle_control_trampoline();
-
         /**
          * @brief Checks HTTP Basic auth against the configured password.
+         * @param request The incoming request (provides auth header).
          * @return true if auth passes or no password is configured.
          */
-        bool check_auth();
+        bool check_auth(hal::RequestRef& request);
 
         /**
          * @brief Maps a query parameter string to a CommandCode.
@@ -79,25 +66,29 @@ class WebCommandTransport : public CommandTransport
 
         /**
          * @brief Dispatches a command and sends a JSON response.
-         * @param code The command to dispatch.
+         * @param request The request to send the response through.
+         * @param code    The command to dispatch.
          */
-        void dispatch_and_respond(CommandCode code);
+        void dispatch_and_respond(hal::RequestRef& request,
+                                  CommandCode code);
 
         /**
          * @brief Dispatches a command with a binary payload and sends a JSON response.
-         * @param code         The command to dispatch.
-         * @param payload      Pointer to payload data (may be nullptr).
-         * @param payload_len  Length of payload in bytes.
+         * @param request     The request to send the response through.
+         * @param code        The command to dispatch.
+         * @param payload     Pointer to payload data (may be nullptr).
+         * @param payload_len Length of payload in bytes.
          */
-        void dispatch_and_respond(CommandCode code,
+        void dispatch_and_respond(hal::RequestRef& request,
+                                  CommandCode code,
                                   const uint8_t* payload,
                                   size_t payload_len);
 
         /** @brief Handler for GET /status — always dispatches GET_STATUS. */
-        void handle_status();
+        void handle_status(hal::RequestRef& request);
 
         /** @brief Handler for GET /control — dispatches the command from the "cmd" query param. */
-        void handle_control();
+        void handle_control(hal::RequestRef& request);
 };
 
 #endif // WEB_COMMAND_TRANSPORT_H

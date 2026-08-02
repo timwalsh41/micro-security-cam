@@ -4,9 +4,6 @@
 #include <cstdio>
 #include <cstdlib>
 
-// Static instance pointer for trampolines.
-WebCommandTransport* WebCommandTransport::s_instance = nullptr;
-
 WebCommandTransport::WebCommandTransport(hal::WebServerHal& web,
                                          CommandHandler& handler)
     : m_web(web)
@@ -17,8 +14,6 @@ WebCommandTransport::WebCommandTransport(hal::WebServerHal& web,
 
 void WebCommandTransport::register_routes(const char* password)
 {
-    s_instance = this;
-
     // Store password for auth checks
     if (password != nullptr)
     {
@@ -31,25 +26,16 @@ void WebCommandTransport::register_routes(const char* password)
     }
 
     m_web.on("/status", hal::HttpMethod::GET,
-             WebCommandTransport::handle_status_trampoline);
+             [this](hal::RequestRef& request)
+             {
+                 this->handle_status(request);
+             });
+
     m_web.on("/control", hal::HttpMethod::GET,
-             WebCommandTransport::handle_control_trampoline);
-}
-
-void WebCommandTransport::handle_status_trampoline()
-{
-    if (s_instance != nullptr)
-    {
-        s_instance->handle_status();
-    }
-}
-
-void WebCommandTransport::handle_control_trampoline()
-{
-    if (s_instance != nullptr)
-    {
-        s_instance->handle_control();
-    }
+             [this](hal::RequestRef& request)
+             {
+                 this->handle_control(request);
+             });
 }
 
 CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
@@ -82,12 +68,15 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     return CommandCode::GET_STATUS;
 }
 
-void WebCommandTransport::dispatch_and_respond(CommandCode code)
+void WebCommandTransport::dispatch_and_respond(
+    hal::RequestRef& request,
+    CommandCode code)
 {
-    dispatch_and_respond(code, nullptr, 0);
+    dispatch_and_respond(request, code, nullptr, 0);
 }
 
 void WebCommandTransport::dispatch_and_respond(
+    hal::RequestRef& request,
     CommandCode code,
     const uint8_t* payload,
     size_t payload_len)
@@ -105,8 +94,8 @@ void WebCommandTransport::dispatch_and_respond(
         {
             response_buf[response_len] = '\0';
         }
-        m_web.send(200, "application/json",
-                   reinterpret_cast<const char*>(response_buf));
+        request.send(200, "application/json",
+                     reinterpret_cast<const char*>(response_buf));
         return;
     }
 
@@ -122,46 +111,46 @@ void WebCommandTransport::dispatch_and_respond(
                  static_cast<uint8_t>(result));
     }
 
-    m_web.send(200, "application/json", json);
+    request.send(200, "application/json", json);
 }
 
-bool WebCommandTransport::check_auth()
+bool WebCommandTransport::check_auth(hal::RequestRef& request)
 {
-    const char* auth = m_web.auth_header();
+    const char* auth = request.auth_header();
 
     if (!check_basic_auth(auth, m_password))
     {
-        m_web.send(401, "application/json",
-                   "{\"error\":\"authentication required\"}");
+        request.send(401, "application/json",
+                     "{\"error\":\"authentication required\"}");
         return false;
     }
 
     return true;
 }
 
-void WebCommandTransport::handle_status()
+void WebCommandTransport::handle_status(hal::RequestRef& request)
 {
-    if (!check_auth())
+    if (!check_auth(request))
     {
         return;
     }
 
     // /status always returns GET_STATUS
-    dispatch_and_respond(CommandCode::GET_STATUS);
+    dispatch_and_respond(request, CommandCode::GET_STATUS);
 }
 
-void WebCommandTransport::handle_control()
+void WebCommandTransport::handle_control(hal::RequestRef& request)
 {
-    if (!check_auth())
+    if (!check_auth(request))
     {
         return;
     }
 
-    const char* cmd = m_web.arg("cmd");
+    const char* cmd = request.arg("cmd");
     if (cmd == nullptr || cmd[0] == '\0')
     {
-        m_web.send(400, "application/json",
-                   "{\"error\":\"missing 'cmd' parameter\"}");
+        request.send(400, "application/json",
+                     "{\"error\":\"missing 'cmd' parameter\"}");
         return;
     }
 
@@ -170,11 +159,11 @@ void WebCommandTransport::handle_control()
     // SET_TIME needs a Unix timestamp from the "ts" query parameter.
     if (code == CommandCode::SET_TIME)
     {
-        const char* ts_str = m_web.arg("ts");
+        const char* ts_str = request.arg("ts");
         if (ts_str == nullptr || ts_str[0] == '\0')
         {
-            m_web.send(400, "application/json",
-                       "{\"error\":\"missing 'ts' parameter\"}");
+            request.send(400, "application/json",
+                         "{\"error\":\"missing 'ts' parameter\"}");
             return;
         }
 
@@ -186,11 +175,11 @@ void WebCommandTransport::handle_control()
         payload[2] = static_cast<uint8_t>((ts >> 16) & 0xFF);
         payload[3] = static_cast<uint8_t>((ts >> 24) & 0xFF);
 
-        dispatch_and_respond(code, payload, sizeof(payload));
+        dispatch_and_respond(request, code, payload, sizeof(payload));
         return;
     }
 
-    dispatch_and_respond(code);
+    dispatch_and_respond(request, code);
 }
 
 // ============================================================

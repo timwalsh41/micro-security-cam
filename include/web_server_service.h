@@ -10,9 +10,10 @@
  * @brief HTTP web server service with route registration and auth.
  *
  * Manages web server lifecycle, HTTP Basic authentication, and
- * the main handle_client() loop. Routes are registered during init().
- * The landing page (GET /) is served here; command routes (/status,
- * /control) are registered by WebCommandTransport.
+ * the landing page (GET /). Routes are registered during init().
+ *
+ * Command routes (/status, /control) are registered by
+ * WebCommandTransport.
  */
 class WebServerService
 {
@@ -22,21 +23,11 @@ class WebServerService
         /**
          * @brief Initializes the web server with the given config.
          *
+         * Registers routes via HAL::on() with lambda handlers.
+         *
          * @param config Web server configuration from ConfigService.
          */
         void init(const ConfigData::WebConfig& config);
-
-        /**
-         * @brief Processes pending HTTP requests.
-         * Must be called periodically from the main loop.
-         */
-        void handle_client();
-
-        /**
-         * @brief Route handler for GET /.
-         * Public for use by static trampolines.
-         */
-        void handle_index();
 
     private:
         hal::WebServerHal& m_hal;
@@ -45,13 +36,15 @@ class WebServerService
 
         static constexpr const char* SUBSYSTEM = "WEB";
 
-        /** @brief Singleton instance for static trampolines. */
-        static WebServerService* s_instance;
+        /** @brief Route handler for GET /. */
+        void handle_index(hal::RequestRef& request);
 
-        /** @brief Static trampoline for GET / route. */
-        static void trampoline_index();
-
-        bool check_auth();
+        /**
+         * @brief Checks HTTP Basic auth against the configured password.
+         * @param request The incoming request (provides auth header).
+         * @return true if auth passes or no password is configured.
+         */
+        bool check_auth(hal::RequestRef& request);
 };
 
 #endif // WEB_SERVER_SERVICE_H

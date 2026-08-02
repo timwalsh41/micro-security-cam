@@ -15,7 +15,7 @@ The design follows a layered architecture that separates hardware access from ap
 │                  Application  (main.cpp)                    │
 │  setup() / loop() — wires components, runs the              │
 │  photo capture cycle, video recording state machine,        │
-│  and web server request handling                            │
+│  and system orchestration tick                              │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -115,26 +115,31 @@ Abstract interface for WiFi operations. Provides STA/AP mode selection, connecti
 
 **File**: `include/hal/web_server_hal.h`
 
-Abstract interface for HTTP server operations. Provides route registration, request inspection, and response sending.
+Abstract interface for HTTP server operations. Uses an **async, callback-driven** model: route handlers are registered as `std::function` closures, and the underlying server calls them when a matching request arrives. 
+
+Each request is represented by a per-request `RequestRef` object that provides accessors for URI, method, query args, headers, and an `auth_header()` convenience accessor. Responses are sent through the `RequestRef` object using `send()`.
 
 | Method | Purpose |
 |--------|---------|
-| `begin(port)` | Start the HTTP server on the given port |
-| `on(uri, method, handler)` | Register a route handler (plain function pointer) |
-| `handle_client()` | Process pending HTTP requests |
+| `init(port)` | Start the HTTP server on the given port |
+| `on(uri, method, handler)` | Register a route handler (`std::function<void(RequestRef&)>`) |
 | `stop()` | Stop the server |
-| `uri()` | Get the current request URI |
-| `method()` | Get the current request HTTP method |
+
+**`RequestRef`** per-request object:
+
+| Method | Purpose |
+|--------|---------|
+| `uri()` | Get the request URI |
+| `method()` | Get the request HTTP method |
 | `arg(name)` | Get a query parameter value |
 | `header(name)` | Get a request header value |
 | `auth_header()` | Get the `Authorization` header |
-| `send(code, type, content)` | Send a complete HTTP response |
-| `send_header(code, type, length)` | Send a response header (chunked mode) |
-| `send_content(data, len)` | Send response body content |
+| `send(code, type, content)` | Send a complete response (string body) |
+| `send(code, type, data, len)` | Send a complete response (binary body) |
 
-**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps the Arduino `WebServer` library. Uses a raw pointer (`new`/`delete`) for the server instance.
+**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
 
-**Mock**: `MockWebServerHal` (`test/mocks/native_mocks/mock_web_server_hal.h`) provides configurable return values and records registered routes and responses.
+**Mock**: `MockWebServerHal` (`test/mocks/native_mocks/mock_web_server_hal.h`) captures route registrations with their `std::function` handlers and provides `simulate_request(uri, method)` to invoke handlers with a configurable `MockRequestRef`.
 
 ### SerialHal
 
@@ -394,6 +399,20 @@ Testable natively using `MockLogBackend` for log verification and `RealTimeServi
 
 These components add WiFi connectivity, a web-based control interface, a protocol-agnostic command dispatch framework, and a top-level system coordinator.
 
+### HTTP Routes
+
+Complete list of HTTP endpoints exposed by the system, showing which class registers each route and how a request flows through it:
+
+| Method | Path | Registered By | Routing | Auth |
+|--------|------|---------------|---------|------|
+| GET | `/` | `WebServerService::init()` | `handle_index()` — serves the built-in HTML status page | Conditional¹ |
+| GET | `/status` | `WebCommandTransport::register_routes()` | `handle_status()` → `dispatch_and_respond(GET_STATUS)` → `CommandHandler::dispatch()` | Conditional¹ |
+| GET | `/control` | `WebCommandTransport::register_routes()` | `handle_control()` → `map_cmd_string(cmd)` → `dispatch_and_respond(code[, payload])` → `CommandHandler::dispatch()` | Conditional¹ |
+
+¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response.
+
+The `cmd` query parameter on `/control` selects the command to dispatch — see the **Web transport** table in the [Command Reference](#command-reference) for the mapping. `set_time` additionally requires a `ts` timestamp parameter, which the transport packs as a little-endian `uint32_t` payload.
+
 ### WifiService
 
 **Files**: `include/wifi_service.h`, `src/wifi_service.cpp`
@@ -441,29 +460,20 @@ Fully testable on native via `MockWifiHal`. Tests cover STA success, timeout fal
 
 #### Responsibility
 
-Manages HTTP route registration, HTTP Basic authentication, and the main `handle_client()` loop. Routes are registered during `init()`.
+Manages HTTP route registration and HTTP Basic authentication. Routes are registered during `init()`.
 
 #### Dependencies
 
 - `WebServerHal &` — abstract HTTP server interface (injected via constructor).
 - `LoggingService &` — for diagnostic output.
-- `CommandHandler &` — optional; set via `set_command_handler()` for `/status` and `/control` routes.
 
 #### Routes
 
-| Method | Path | Handler | Auth | Description |
-|--------|------|---------|------|-------------|
-| GET | `/` | `handle_index()` | No | Returns a built-in HTML status page |
-| GET | `/status` | `handle_status()` | Yes | Returns JSON status via CommandHandler |
-| GET | `/control` | `handle_control()` | Yes | Dispatches commands via CommandHandler |
+`WebServerService` registers only the landing page. See [HTTP Routes](#http-routes) for the complete route table; the command endpoints `/status` and `/control` are registered by `WebCommandTransport::register_routes()`.
 
 #### Authentication
 
-If a web password is configured, the service checks the `Authorization` header against the expected `Basic base64(user:pass)` value. If no password is configured, authentication is skipped.
-
-#### Static Trampolines
-
-Because `WebServerHal::on()` takes a plain `void(*)()` function pointer (lambdas with captures cannot convert), the service uses a static instance pointer with static callback methods. This is a known pattern required by the Arduino `WebServer` API.
+If a web password is configured, `handle_index()` checks the `Authorization` header via `request.auth_header()` against the expected `Basic base64(user:pass)` value. If no password is configured, authentication is skipped. The `/status` and `/control` routes are registered by `WebCommandTransport::register_routes()`, which has its own auth checks.
 
 ### CommandHandler
 
@@ -508,18 +518,11 @@ Bridges HTTP routes to `CommandHandler::dispatch()`. Each registered command bec
 
 #### Routes
 
-| Method | Path | Query Param | Description |
-|--------|------|-------------|-------------|
-| GET | `/status` | `cmd` (optional) | Returns status or dispatches command |
-| GET | `/control` | `cmd` | Dispatches command |
+Registers the command endpoints `/status` and `/control` (see [HTTP Routes](#http-routes)).
 
 #### Command Mapping
 
 See the **Web transport** table in the **[Command Reference](#command-reference)** for the mapping of query values to CommandCodes.
-
-#### Static Trampolines
-
-Like `WebServerService`, this class uses a static instance pointer with static callback methods because `WebServerHal::on()` requires plain function pointers.
 
 ### SerialCommandTransport
 
@@ -622,11 +625,12 @@ Every command returns a `CommandResult` enum value:
 
 | Query Value | Command | Notes |
 |-------------|---------|-------|
-| *(none)* | `GET_STATUS` | Default when `cmd` is omitted |
+| *(none)* or empty | — | Returns `400` — the `cmd` parameter is required |
 | `start` | `START_RECORDING` | |
 | `stop` | `STOP_RECORDING` | |
 | `photo` | `TAKE_PHOTO` | |
 | `config` | `GET_CONFIG` | |
+| `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 
 The web transport sends a JSON response body for all commands:
 
@@ -1072,7 +1076,7 @@ The `setup()` function composes all system components in a layered initializatio
 5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step.
 7. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
-8. **Web server init** — `WebServerService::init()` registers HTTP routes (`/`, `/status`, `/control`). The `WebCommandTransport` is added to the `CommandHandler`, and the web server's command handler reference is set.
+8. **Web server init** — `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. The `WebCommandTransport` is added to the `CommandHandler`.
 9. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
 10. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers.
 
@@ -1090,9 +1094,9 @@ This section captures end-to-end interaction sequences between major system comp
 
 This workflow covers two phases: **registration** (one-time wiring at startup) and **runtime dispatch** (an HTTP request arrives and triggers a command).
 
-**Registration phase** — `SystemOrchestrator` registers command handler callbacks with `CommandHandler`, then `WebCommandTransport` wires the HTTP routes for `/status` and `/control` on `WebServerHal`. The web server's `handle_client()` loop will invoke these route callbacks when matching requests arrive.
+**Registration phase** — `SystemOrchestrator` registers command handler callbacks with `CommandHandler`, then `WebCommandTransport` wires the HTTP routes for `/status` and `/control` on `WebServerHal`. The async server calls these route callbacks when matching requests arrive — no polling needed.
 
-**Runtime dispatch** — A client sends `GET /control?cmd=start` to the ESP32. The main loop calls `web_server_service.handle_client()`, which delegates to the `WebServerHal`. The HAL invokes the registered trampoline, which routes through `WebCommandTransport` for auth checking and command mapping, then calls `CommandHandler::dispatch()`. The dispatcher finds the `START_RECORDING` handler (registered by `SystemOrchestrator`), executes it, and the response flows back through the same chain as a JSON HTTP response.
+**Runtime dispatch** — A client sends `GET /control?cmd=start` to the ESP32. The `AsyncWebServer` (inside `WebServerHalImpl`) receives the request and invokes the registered lambda, which forwards to `WebCommandTransport` for auth checking and command mapping, then calls `CommandHandler::dispatch()`. The dispatcher finds the `START_RECORDING` handler (registered by `SystemOrchestrator`), executes it, and the response flows back through the same chain as a JSON HTTP response.
 
 ```plantuml
 @startuml
@@ -1105,7 +1109,7 @@ participant "main()\nsetup" as MAIN
 participant "SystemOrchestrator" as ORCH
 participant "CommandHandler" as CMDH
 participant "WebCommandTransport" as WCT
-participant "WebServerHal" as WSH
+participant "WebServerHalImpl" as WSH
 participant "HTTP Client\n(Browser)" as HTTP_CLIENT
 
 ' ==================================================================
@@ -1129,7 +1133,10 @@ deactivate CMDH
 ORCH -> CMDH : register_handler(STOP_RECORDING, fn)
 ORCH -> CMDH : register_handler(TAKE_PHOTO, fn)
 ORCH -> CMDH : register_handler(SET_TIME, fn)
-note right: Six handlers total —\nall registered before\nroutes are wired
+ORCH -> CMDH : register_handler(GET_CONFIG, fn)
+ORCH -> CMDH : register_handler(SET_CONFIG, fn)
+ORCH -> CMDH : register_handler(GET_CONFIG_VALUE, fn)
+ORCH -> CMDH : register_handler(SET_CONFIG_VALUE, fn)
 
 ORCH --> MAIN : return
 deactivate ORCH
@@ -1137,13 +1144,15 @@ deactivate ORCH
 MAIN -> WCT : register_routes(password)
 activate WCT
 
-WCT -> WSH : on("/status", GET, handle_status_trampoline)
+WCT -> WSH : on("/status", GET, [this](RequestRef& req) { handle_status(req); })
 activate WSH
+note right: Lambda captures this —\nno static trampoline
 WSH --> WCT : ok
 deactivate WSH
 
-WCT -> WSH : on("/control", GET, handle_control_trampoline)
+WCT -> WSH : on("/control", GET, [this](RequestRef& req) { handle_control(req); })
 activate WSH
+note right: Same pattern for\n/control route
 WSH --> WCT : ok
 deactivate WSH
 
@@ -1153,26 +1162,19 @@ deactivate WCT
 ' ==================================================================
 ' Runtime dispatch phase
 ' ==================================================================
-=== Runtime Dispatch (loop) ===
+=== Runtime Dispatch (async callback) ===
 
 HTTP_CLIENT -> WSH : HTTP GET /control?cmd=start
-note right: Client request arrives\nin handle_client()
+note right: AsyncWebServer receives\nrequest and invokes the\nregistered lambda callback
 
-' Main loop calls handle_client()
-MAIN -> WSH : handle_client()
-activate WSH
-
-' WebServerHal invokes the registered trampoline
-WSH -> WCT : handle_control_trampoline()
+' AsyncWebServer calls the lambda directly — no handle_client() polling
+WSH -> WCT : handle_control(request_ref)
 activate WCT
+note right: Lambda creates AsyncRequestRef\nand forwards to WCT
 
 ' Auth check
-WCT -> WCT : check_auth()
-note right: Verifies password\nagainst Authorization\nheader (if configured)
-
-' Map query string → command code
-WCT -> WCT : map_cmd_string("start")
-note right: "start" → START_RECORDING
+WCT -> WCT : check_auth(request)
+note right: request.auth_header()\nvs configured password
 
 ' Dispatch command
 WCT -> CMDH : dispatch(START_RECORDING, payload, len, response, &responseLen)
@@ -1214,8 +1216,8 @@ deactivate WSH
 The diagram illustrates the complete round-trip:
 
 1. **Registration** — `SystemOrchestrator` registers handler lambdas with `CommandHandler` for each `CommandCode`. Only then does `WebCommandTransport::register_routes()` wire the HTTP endpoints. This ordering ensures that by the time a request arrives, every handler is in the dispatch table.
-2. **Request arrival** — The main loop calls `WebServerService::handle_client()` (which delegates to `WebServerHal::handle_client()`). This is a blocking poll that processes one pending HTTP request.
-3. **Trampoline dispatch** — The `WebServerHal` invokes the static trampoline function registered for `/control`, which routes to `WebCommandTransport::handle_control()`.
+2. **Request arrival** — The `AsyncWebServer` (inside `WebServerHalImpl`) receives the HTTP request and invokes the registered lambda for `/control`, which forwards to `WebCommandTransport::handle_control(request)`.
+3. **Lambda dispatch** — The lambda creates an `AsyncRequestRef` wrapping the `AsyncWebServerRequest` and passes it to `WebCommandTransport::handle_control()`.
 4. **Authentication** — If a web password is configured, `check_auth()` validates the `Authorization` header against it. Unauthenticated requests receive a `401` response immediately.
 5. **Command mapping & dispatch** — `map_cmd_string()` translates the `cmd` query parameter (e.g., `"start"`) into the corresponding `CommandCode` (`START_RECORDING`). `dispatch_and_respond()` calls `CommandHandler::dispatch()`, which scans its handler table and invokes the matching `CommandHandlerFn` lambda.
 6. **Handler execution** — The lambda (capturing the `SystemOrchestrator`) calls the appropriate domain method (e.g., `handle_start_recording()` → `m_video.start_recording()`).
