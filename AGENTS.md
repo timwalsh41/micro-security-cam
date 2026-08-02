@@ -20,6 +20,7 @@
         - Each subfolder represents a single test suite, typically a single implementation file with a set of tests defined and then gathered within one `main()` function
         - If there is reason to do so, the tests could be broken out across multiple implementation files, but still need to be gathered and executed in a single `main()`
     - To run a specific test suite, use the `-f` option and specify the path to the test suite relative to the `test/` folder, e.g. `pio test -e native -f native/test_sd_write_controller`
+- Use `uv` for Python package management and script execution
 
 # Development guidelines
 

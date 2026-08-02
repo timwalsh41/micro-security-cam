@@ -70,6 +70,28 @@ static void reset_capture()
     g_dispatch_count = 0;
 }
 
+/**
+ * @brief Handler that writes no response payload (exercises the fallback path).
+ */
+static CommandResult no_response_handler(
+    const uint8_t* /*payload*/, size_t /*len*/,
+    uint8_t* /*response*/, size_t& responseLen)
+{
+    responseLen = 0;
+    return CommandResult::SUCCESS;
+}
+
+/**
+ * @brief Handler that writes no response and returns an error result.
+ */
+static CommandResult error_no_response_handler(
+    const uint8_t* /*payload*/, size_t /*len*/,
+    uint8_t* /*response*/, size_t& responseLen)
+{
+    responseLen = 0;
+    return CommandResult::INVALID_STATE;
+}
+
 struct TestFixture
 {
     MockWebServerHal hal;
@@ -439,6 +461,61 @@ void test_set_time_zero_timestamp()
 }
 
 // ============================================================
+// Fallback JSON response path (handler writes no payload)
+// ============================================================
+
+/**
+ * @brief A successful command with no response payload sends {"result":"ok"}.
+ */
+void test_fallback_success_no_payload()
+{
+    // Use a dedicated HAL + handler so only the no-response route is registered.
+    MockWebServerHal hal;
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger(log_backend, time);
+    CommandHandler no_resp_handler(logger);
+    no_resp_handler.register_handler(CommandCode::GET_STATUS,
+                                     no_response_handler);
+    WebCommandTransport no_resp_transport(hal, no_resp_handler);
+    no_resp_transport.register_routes("");
+
+    hal.simulate_request("/status", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("application/json",
+                             hal.mock_request.responses[0].content_type.c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"ok\"}",
+                             hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief A failing command with no payload sends {"result":"error","code":N}.
+ */
+void test_fallback_error_no_payload()
+{
+    // Use a fresh HAL + command so only the /status route is registered.
+    MockWebServerHal hal;
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger(log_backend, time);
+    CommandHandler err_handler(logger);
+    err_handler.register_handler(CommandCode::GET_STATUS,
+                                 error_no_response_handler);
+    WebCommandTransport err_transport(hal, err_handler);
+    err_transport.register_routes("");
+
+    hal.simulate_request("/status", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, hal.mock_request.responses[0].code);
+    // INVALID_STATE = 0x03
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":3}",
+                             hal.mock_request.responses[0].body.c_str());
+}
+
+// ============================================================
 // main
 // ============================================================
 
@@ -473,6 +550,10 @@ int main()
     RUN_TEST(test_set_time_empty_ts_returns_400);
     RUN_TEST(test_set_time_with_timestamp);
     RUN_TEST(test_set_time_zero_timestamp);
+
+    // Fallback JSON response path
+    RUN_TEST(test_fallback_success_no_payload);
+    RUN_TEST(test_fallback_error_no_payload);
 
     return UNITY_END();
 }

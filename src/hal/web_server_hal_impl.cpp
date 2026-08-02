@@ -29,6 +29,7 @@ const char* AsyncRequestRef::uri() const
 
 HttpMethod AsyncRequestRef::method() const
 {
+    // GET/POST-only mapping limitation is documented in the header
     if (m_request != nullptr)
     {
         auto m = m_request->method();

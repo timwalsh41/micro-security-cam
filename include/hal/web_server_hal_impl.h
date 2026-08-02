@@ -7,7 +7,8 @@
  * @file web_server_hal_impl.h
  * @brief ESP32 concrete implementation of WebServerHal using AsyncWebServer.
  *
- * Implements WebServerHal interface.
+ * Wraps the ESPAsyncWebServer library behind the abstract WebServerHal
+ * interface. Route handlers use std::function with captures.
  */
 
 /** Forward declaration for AsyncWebServer and AsyncWebServerRequest */
@@ -19,14 +20,6 @@ namespace hal
 
 /** Forward declaration for stream writers */
 class StreamWriter;
-
-/**
- * @file web_server_hal_impl.h
- * @brief ESP32 concrete implementation of WebServerHal using AsyncWebServer.
- *
- * Wraps the ESPAsyncWebServer library behind the abstract WebServerHal
- * interface. Route handlers use std::function with captures.
- */
 
 /**
  * @class AsyncRequestRef
@@ -42,6 +35,15 @@ class AsyncRequestRef : public RequestRef
         explicit AsyncRequestRef(AsyncWebServerRequest* request);
 
         const char* uri() const override;
+
+        /**
+         * @brief Returns the HTTP method of the request.
+         *
+         * Only GET and POST are mapped. Any other method (PUT, DELETE,
+         * HEAD, etc.) is reported as GET. This is acceptable because only
+         * GET and POST routes are registered, but callers should not rely
+         * on method() to distinguish non-GET/POST methods.
+         */
         HttpMethod method() const override;
         const char* arg(const char* name) const override;
         const char* header(const char* name) const override;
