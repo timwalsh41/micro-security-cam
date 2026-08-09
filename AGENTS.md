@@ -9,6 +9,7 @@
 - We use PlatformIO for environment management (BSP, libraries, build, test).
     - Refer to `platformio.ini` for details on the environment setup and included libraries
 - To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source ~/.platformio/penv/bin/activate`
+    - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source .pio/penv/bin/activate && pio test -e native`
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
     - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests
@@ -33,9 +34,11 @@
 - Use namespaces liberally to group like functionality
 - Follow the single responsibility principle when designing classes
 - Use interface classes where appropriate to make dependencies injectable for testing purposes
+- Do not isolate platform-specific code from platform-agnostic logical/service/controller code using #ifdef guards (`#ifdef UNIT_TESTING`) to exlude it from native unit tests; rather, any platform specific code should exist in a separate module with an appropriate interface and not included in native test build
 - Use `#ifdef` guards on all headers
 - Prefer 3rd party libraries to building functionality from scratch
 - Create Javadoc style docstrings for classes and functions
+- Verify `native` environment tests pass and `seeed_xiao_esp32s3` environment build succeeds
 
 # Style
 
@@ -75,7 +78,6 @@
 - Be concise but comprehensive when editing this file - review it in its entirety to ensure no redundant information is added
 - This is a record of the design architecture, NOT a record of the implementation history - do not refer to how a feature or implementation has changed, or what plan or project phase features were introduced or modifed, just document the current state
 - Do not call out the number of tests per module, this is a number that may vary over time, does not add useful information to the user understanding at this level of abstraction, and is prone to get out of date.
-
 - In documentation markdowns, enclose all symbols and filenames in `backticks`
 
 # Other

@@ -34,6 +34,9 @@ class MockSdCardHal : public hal::SdCardHal
         /** Value returned by create_dir(). */
         bool create_dir_result{true};
 
+        /** Value returned by seek(). */
+        bool seek_result{true};
+
         /** Value returned by is_initialized(). */
         bool initialized_state{true};
 
@@ -67,6 +70,9 @@ class MockSdCardHal : public hal::SdCardHal
         /** Number of times create_dir() has been called. */
         int create_dir_call_count{0};
 
+        /** Number of times seek() has been called. */
+        int seek_call_count{0};
+
         /** The path argument from the most recent open() call. */
         const char* last_open_path{nullptr};
 
@@ -87,6 +93,9 @@ class MockSdCardHal : public hal::SdCardHal
 
         /** The path argument from the most recent create_dir() call. */
         const char* last_create_dir_path{nullptr};
+
+        /** The position argument from the most recent seek() call. */
+        uint32_t last_seek_pos{0};
 
         // ============================================================
         // Interface implementation
@@ -136,6 +145,13 @@ class MockSdCardHal : public hal::SdCardHal
         void close() override
         {
             close_call_count++;
+        }
+
+        bool seek(uint32_t pos) override
+        {
+            seek_call_count++;
+            last_seek_pos = pos;
+            return seek_result;
         }
 
         bool create_dir(const char* path) override

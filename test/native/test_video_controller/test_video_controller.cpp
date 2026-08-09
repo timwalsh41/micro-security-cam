@@ -1,8 +1,10 @@
 #include <unity.h>
 #include "video_controller.h"
 #include "camera_controller.h"
+#include "sd_controller.h"
 #include "mock_camera_hal.h"
 #include "mock_sd_card_hal.h"
+#include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include <cstring>
 
@@ -12,6 +14,7 @@
 
 static constexpr uint16_t TEST_FPS = 10;
 static constexpr uint16_t TEST_CLIP_DURATION_S = 5;
+static constexpr uint16_t TEST_FRAME_COUNT = TEST_FPS * TEST_CLIP_DURATION_S;
 static constexpr uint16_t TEST_WIDTH = 640;
 static constexpr uint16_t TEST_HEIGHT = 480;
 static constexpr size_t FAKE_JPEG_SIZE = 100;
@@ -26,6 +29,9 @@ static constexpr size_t FAKE_JPEG_SIZE = 100;
  * Creates mock HALs, services, and a configured VideoController.
  * Initializes the camera and video controller so tests can focus
  * on recording behavior rather than setup.
+ * Uses MockCaptureScheduler for deterministic
+ * synchronous frame capture. on_frame_capture() triggers the
+ * scheduler callback synchronously.
  */
 struct TestFixture
 {
@@ -33,16 +39,17 @@ struct TestFixture
     MockSdCardHal sd_hal;
     MockLogBackend log_backend;
     RealTimeService time;
-    CameraController camera_ctrl;
-    PeripheralManager peripheral;
     LoggingService logger;
+    SdController sd_controller;
+    CameraController camera_ctrl;
+    MockCaptureScheduler capture_scheduler;
     VideoController video;
 
     TestFixture()
-        : camera_ctrl(camera_hal)
-        , peripheral(time, sd_hal)
-        , logger(log_backend, time)
-        , video(camera_ctrl, peripheral, time, logger)
+        : logger(log_backend, time)
+        , sd_controller(time, sd_hal)
+        , camera_ctrl(camera_hal)
+        , video(camera_ctrl, sd_controller, time, logger, capture_scheduler)
     {
         // Initialize camera
         camera_hal.init_result = hal::CameraInitResult::SUCCESS;
@@ -65,6 +72,17 @@ struct TestFixture
     {
         memset(camera_hal.frame_buffer, 0xAB, FAKE_JPEG_SIZE);
         camera_hal.capture_result = {camera_hal.frame_buffer, FAKE_JPEG_SIZE};
+    }
+
+    /**
+     * @brief Drives a single frame capture via the mock scheduler.
+     *
+     * Calls capture_scheduler.on_frame_capture() which synchronously
+     * invokes the VideoController frame callback.
+     */
+    void capture_one_frame()
+    {
+        capture_scheduler.on_frame_capture();
     }
 };
 
@@ -148,7 +166,7 @@ void test_start_recording_fails_when_already_recording()
 }
 
 /**
- * @brief stop_recording() triggers clip close on next tick.
+ * @brief stop_recording() triggers clip close on next on_frame_capture().
  */
 void test_stop_recording_transitions_to_idle()
 {
@@ -158,15 +176,13 @@ void test_stop_recording_transitions_to_idle()
 
     f.video.start_recording();
 
-    // Advance time past one frame interval to capture a frame
-    set_mock_millis(1100);
-    f.video.tick();
+    // Capture a frame
+    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
-    // Stop recording
+    // Stop recording, then capture one more frame to process the stop
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
+    f.capture_one_frame();
 
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
     TEST_ASSERT_FALSE(f.video.is_recording());
@@ -199,14 +215,14 @@ void test_first_frame_captured_immediately()
     set_mock_millis(5000);
 
     f.video.start_recording();
-    f.video.tick();
+    f.capture_one_frame();
 
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
     TEST_ASSERT_EQUAL_INT(1, f.camera_hal.capture_call_count);
 }
 
 /**
- * @brief Frames are captured at the configured FPS interval.
+ * @brief Frames are captured via successive on_frame_capture() calls.
  */
 void test_frames_captured_at_configured_interval()
 {
@@ -216,18 +232,17 @@ void test_frames_captured_at_configured_interval()
 
     f.video.start_recording();
 
-    // Tick at each frame interval — should capture exactly one frame each
+    // Capture 5 frames via on_frame_capture()
     for (uint32_t i = 0; i < 5; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);  // 100ms = 10 FPS
-        f.video.tick();
+        f.capture_one_frame();
     }
 
     TEST_ASSERT_EQUAL_UINT32(5, f.video.frames_recorded());
 }
 
 /**
- * @brief No frame captured when interval has not elapsed.
+ * @brief No frame captured when capture is not triggered.
  */
 void test_no_frame_when_interval_not_elapsed()
 {
@@ -236,13 +251,9 @@ void test_no_frame_when_interval_not_elapsed()
     set_mock_millis(1000);
 
     f.video.start_recording();
-    f.video.tick();  // Captures first frame
+    f.capture_one_frame();  // Captures first frame
 
-    // Advance time by less than the frame interval
-    set_mock_millis(1050);  // Only 50ms elapsed (need 100ms)
-    f.video.tick();
-
-    // Should still be at 1 frame
+    // Without calling on_frame_capture(), no new frame
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 }
 
@@ -261,60 +272,15 @@ void test_clip_closes_at_duration_limit()
 
     f.video.start_recording();
 
-    // Record for 5 seconds at 10 FPS = 50 frames
-    for (uint32_t i = 0; i < 50; i++)
+    // Record for desired frame count
+    for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
+        f.capture_one_frame();
     }
 
-    // 50th frame triggers duration limit → STOPPING
-    TEST_ASSERT_EQUAL_UINT32(50, f.video.frames_recorded());
-    TEST_ASSERT_EQUAL(RecordingState::STOPPING, f.video.state());
-
-    // Process the STOPPING state — auto-rotates to new clip
-    f.video.tick();
-
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    // 50th frame triggers duration limit → auto-rotates to new clip
+    TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // Reset after auto-rotation
     TEST_ASSERT_TRUE(f.video.is_recording());
-    TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // Reset for new clip
-}
-
-/**
- * @brief Clip auto-closes at frame-count limit (max_frames()).
- */
-void test_clip_closes_at_max_frames()
-{
-    // Configure a very long clip duration to ensure max_frames() is hit first
-    TestFixture f;
-    f.setup_fake_frame();
-    ConfigData::VideoConfig config;
-    config.fps = TEST_FPS;
-    strcpy(config.resolution, "VGA");
-    config.clip_duration_s = 0;
-    config.max_file_size_mb = 0;
-    config.jpeg_quality = 10;
-    f.video.init(config, TEST_WIDTH, TEST_HEIGHT);
-
-    set_mock_millis(1000);
-    f.video.start_recording();
-
-    // Record up to max_frames()
-    uint32_t limit = f.video.max_frames();
-    for (uint32_t i = 0; i < limit; i++)
-    {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
-    }
-
-    TEST_ASSERT_EQUAL_UINT32(limit, f.video.frames_recorded());
-    TEST_ASSERT_EQUAL(RecordingState::STOPPING, f.video.state());
-
-    // Process the STOPPING state — auto-rotates to new clip
-    f.video.tick();
-
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
-    TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
 }
 
 // ============================================================
@@ -347,21 +313,18 @@ void test_clip_closes_at_file_size_limit()
     // but cap at a safe maximum to avoid test timeout.
     for (uint32_t i = 0; i < 100000; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
+        f.capture_one_frame();
 
-        if (f.video.state() == RecordingState::STOPPING)
+        // Check if auto-rotation happened (frames_recorded reset to 0)
+        if (f.video.frames_recorded() == 0 && i > 0)
         {
             break;
         }
     }
 
-    TEST_ASSERT_EQUAL(RecordingState::STOPPING, f.video.state());
-    TEST_ASSERT_GREATER_THAN(0u, f.video.file_size());
+    TEST_ASSERT_TRUE(f.video.is_recording());
 
-    // Process STOPPING — auto-rotates to new clip
-    f.video.tick();
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    // Auto-rotated to new clip
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
 }
 
@@ -370,7 +333,7 @@ void test_clip_closes_at_file_size_limit()
 // ============================================================
 
 /**
- * @brief After a clip auto-closes, the next tick opens a new clip.
+ * @brief After a clip auto-closes, the next capture continues in a new clip.
  */
 void test_new_clip_opens_after_auto_close()
 {
@@ -380,20 +343,14 @@ void test_new_clip_opens_after_auto_close()
 
     f.video.start_recording();
 
-    // Record for exactly the clip duration (50 frames = 5s @ 10 FPS)
-    for (uint32_t i = 0; i < 50; i++)
+    // Record for exactly the clip duration
+    for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
+        f.capture_one_frame();
     }
 
-    // Clip auto-closed, state is STOPPING
-    TEST_ASSERT_EQUAL(RecordingState::STOPPING, f.video.state());
-
-    // Process the STOPPING state — auto-rotates to new clip
-    f.video.tick();
-
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    // Auto-rotated to new clip
+    TEST_ASSERT_TRUE(f.video.is_recording());
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
 }
 
@@ -409,20 +366,17 @@ void test_explicit_stop_after_rotation_goes_to_idle()
     f.video.start_recording();
 
     // Record until clip duration limit triggers auto-rotation
-    for (uint32_t i = 0; i < 50; i++)
+    for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
+        f.capture_one_frame();
     }
 
-    // Process STOPPING → auto-rotates to new clip
-    f.video.tick();
+    // Auto-rotated to new clip
     TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
 
     // Now explicitly stop
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
+    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
     TEST_ASSERT_FALSE(f.video.is_recording());
@@ -448,8 +402,7 @@ void test_create_dir_called_on_open_clip()
 
     // Stop recording
     f.video.stop_recording();
-    f.video.tick();
-    f.video.tick();
+    f.capture_one_frame();
 }
 
 // ============================================================
@@ -467,14 +420,13 @@ void test_rapid_start_stop()
 
     f.video.start_recording();
 
-    // No time has elapsed — tick captures first frame but no interval boundary
-    f.video.tick();
+    // Capture one frame
+    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
     // Stop immediately
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
+    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // Reset after close
@@ -485,9 +437,9 @@ void test_rapid_start_stop()
 // ============================================================
 
 /**
- * @brief Frame chunks are accumulated during recording for replay at close.
+ * @brief Frame chunks are written directly to SD during recording.
  */
-void test_frame_chunks_accumulated()
+void test_frames_written_to_sd()
 {
     TestFixture f;
     f.setup_fake_frame();
@@ -498,21 +450,15 @@ void test_frame_chunks_accumulated()
     // Capture 3 frames
     for (uint32_t i = 0; i < 3; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
+        f.capture_one_frame();
     }
 
     TEST_ASSERT_EQUAL_UINT32(3, f.video.frames_recorded());
+    // Each frame should have triggered an SD write
+    TEST_ASSERT_GREATER_OR_EQUAL(3, f.sd_hal.write_call_count);
 
-    // File size should be > 0 (header + 3 frame chunks)
-    TEST_ASSERT_GREATER_THAN(0u, f.video.file_size());
-
-    // Close the clip
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
-
-    // After close, frames_recorded resets
+    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
 }
 
@@ -530,12 +476,11 @@ void test_file_path_generated_on_start()
     set_mock_millis(86400000u);  // 1 day since epoch
 
     f.video.start_recording();
-    f.video.tick();  // Captures first frame
+    f.capture_one_frame();  // Captures first frame
 
     // Stop and close
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
+    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     // Verify the SD HAL received file operations
     TEST_ASSERT_GREATER_THAN(0, f.sd_hal.open_call_count);
@@ -559,16 +504,14 @@ void test_avi_frame_count_matches()
     // Record 10 frames
     for (uint32_t i = 0; i < 10; i++)
     {
-        set_mock_millis(1000 + (i + 1) * 100);
-        f.video.tick();
+        f.capture_one_frame();
     }
 
     TEST_ASSERT_EQUAL_UINT32(10, f.video.frames_recorded());
 
     // Close the clip
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
+    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     // The SD HAL should have been called for open + writes + close
     TEST_ASSERT_GREATER_THAN(0, f.sd_hal.open_call_count);
@@ -594,10 +537,8 @@ void test_clip_close_with_sd_write_failure()
     f.video.start_recording();
 
     // Capture a few frames
-    set_mock_millis(1100);
-    f.video.tick();
-    set_mock_millis(1200);
-    f.video.tick();
+    f.capture_one_frame();
+    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
 
     // Now make the SD write fail
@@ -605,8 +546,7 @@ void test_clip_close_with_sd_write_failure()
 
     // Stop recording — close_clip() will attempt SD writes that fail
     f.video.stop_recording();
-    f.video.tick();  // RECORDING → STOPPING
-    f.video.tick();  // STOPPING → close_clip() → IDLE
+    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     // Should still transition to IDLE without crash
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
@@ -621,7 +561,7 @@ void test_clip_close_with_sd_write_failure()
  * @brief Capture failure during recording is handled gracefully.
  *
  * If the camera fails to capture a frame, the frame count should
- * not increment and recording should continue on the next tick.
+ * not increment and recording should continue on the next frame.
  */
 void test_frame_capture_failure_during_recording()
 {
@@ -632,32 +572,29 @@ void test_frame_capture_failure_during_recording()
     f.video.start_recording();
 
     // First frame succeeds
-    f.video.tick();
+    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
     // Make capture fail
     f.camera_hal.capture_result = {nullptr, 0};
 
-    // Tick at the right interval — capture will fail
-    set_mock_millis(1100);
-    f.video.tick();
+    // Next capture will fail
+    f.capture_one_frame();
 
     // Frame count should NOT have incremented
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
     TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
 
-    // Restore capture and tick again — should succeed
+    // Restore capture and try again — should succeed
     f.setup_fake_frame();
-    set_mock_millis(1200);
-    f.video.tick();
+    f.capture_one_frame();
 
     TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
     TEST_ASSERT_TRUE(f.video.is_recording());
 
     // Clean up
     f.video.stop_recording();
-    f.video.tick();
-    f.video.tick();
+    f.capture_one_frame();
 }
 
 // ============================================================
@@ -665,9 +602,9 @@ void test_frame_capture_failure_during_recording()
 // ============================================================
 
 /**
- * @brief State transitions don't crash when tick() is called rapidly.
+ * @brief Rapid frame captures don't crash or corrupt state.
  */
-void test_rapid_ticks_stability()
+void test_rapid_captures_stability()
 {
     TestFixture f;
     f.setup_fake_frame();
@@ -675,15 +612,14 @@ void test_rapid_ticks_stability()
 
     f.video.start_recording();
 
-    // Rapidly tick many times with advancing time
+    // Rapidly capture many frames
     for (uint32_t i = 0; i < 200; i++)
     {
-        set_mock_millis(i * 50);
-        f.video.tick();
+        f.capture_one_frame();
     }
 
     // Should complete without crash
-    // Final state depends on timing, just verify no assertion failure
+    // Final state depends on clip rotation, just verify no assertion failure
     TEST_ASSERT_TRUE(f.video.state() == RecordingState::IDLE ||
                      f.video.state() == RecordingState::RECORDING);
 }
@@ -794,7 +730,6 @@ int main()
 
     // Clip rotation
     RUN_TEST(test_clip_closes_at_duration_limit);
-    RUN_TEST(test_clip_closes_at_max_frames);
     RUN_TEST(test_clip_closes_at_file_size_limit);
     RUN_TEST(test_new_clip_opens_after_auto_close);
     RUN_TEST(test_explicit_stop_after_rotation_goes_to_idle);
@@ -806,7 +741,7 @@ int main()
     RUN_TEST(test_rapid_start_stop);
 
     // Frame accumulation
-    RUN_TEST(test_frame_chunks_accumulated);
+    RUN_TEST(test_frames_written_to_sd);
 
     // File naming
     RUN_TEST(test_file_path_generated_on_start);
@@ -815,7 +750,7 @@ int main()
     RUN_TEST(test_avi_frame_count_matches);
 
     // Stability
-    RUN_TEST(test_rapid_ticks_stability);
+    RUN_TEST(test_rapid_captures_stability);
 
     // Error handling
     RUN_TEST(test_clip_close_with_sd_write_failure);

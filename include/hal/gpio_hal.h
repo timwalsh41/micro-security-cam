@@ -17,7 +17,9 @@ namespace hal
 {
 
 /** @brief GPIO pin shared by the LED and SD card chip-select. */
-constexpr uint8_t LED_PIN = 21;
+constexpr uint8_t SHARED_PIN = 21;
+constexpr uint8_t LED_PIN = SHARED_PIN;
+constexpr uint8_t SD_CS_PIN = SHARED_PIN;
 
 /** @brief Logic-low level. */
 constexpr uint8_t PIN_LOW = 0;

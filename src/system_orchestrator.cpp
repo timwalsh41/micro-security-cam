@@ -157,22 +157,44 @@ CommandResult SystemOrchestrator::handle_stop_recording(
 
 CommandResult SystemOrchestrator::handle_take_photo(
     const uint8_t* /* payload */, size_t /* len */,
-    uint8_t* /* response */, size_t& /* responseLen */)
+    uint8_t* response, size_t& responseLen)
 {
-    // Placeholder implementation - just obtains the camera frame 
-    // and discards it, pending full implementation on VideoController
-    // refactor to own all SD I/O
-
-    CameraCaptureResult result = m_camera.capture_frame();
-    if (result != CameraCaptureResult::SUCCESS)
+    if (m_video.is_recording())
     {
-        m_log.error(SUBSYSTEM, "Photo capture failed");
+        m_log.warn(SUBSYSTEM, "Take photo rejected — recording in progress");
+        return CommandResult::INVALID_STATE;
+    }
+
+    // Build photo path from unix timestamp
+    uint32_t seconds = m_time.unix_now();
+    uint32_t ss = seconds % 60;
+    uint32_t mm = (seconds / 60) % 60;
+    uint32_t hh = (seconds / 3600) % 24;
+    uint32_t day_of_year = (seconds / 86400u) % 365;
+    uint32_t year = 1970 + (seconds / (86400u * 365u));
+    uint32_t month = (day_of_year / 30) + 1;
+    uint32_t day = (day_of_year % 30) + 1;
+
+    char photo_path[64];
+    snprintf(photo_path, sizeof(photo_path),
+             "/%04u%02u%02u/%04u%02u%02u_%02u%02u%02u.jpg",
+             year, month, day,
+             year, month, day, hh, mm, ss);
+
+    if (!m_video.capture_photo(photo_path))
+    {
+        m_log.error(SUBSYSTEM, "Photo capture/write failed");
         return CommandResult::INTERNAL_ERROR;
     }
 
-    hal::CameraFrame frame = m_camera.get_frame();
-    m_log.info(SUBSYSTEM, "Photo captured (%u bytes)", frame.len);
-    m_camera.release_frame();
+    // Return path in response
+    size_t path_len = strnlen(photo_path, sizeof(photo_path));
+    if (path_len >= CommandHandler::MAX_RESPONSE_SIZE)
+    {
+        return CommandResult::INTERNAL_ERROR;
+    }
+    memcpy(response, photo_path, path_len);
+    responseLen = path_len;
 
     return CommandResult::SUCCESS;
 }

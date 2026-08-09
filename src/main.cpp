@@ -6,11 +6,15 @@
 #include "hal/sd_card_hal_impl.h"
 #include "hal/wifi_hal_impl.h"
 #include "hal/web_server_hal_impl.h"
+#include "hal/timer_hal_impl.h"
+#include "hal/gpio_hal.h"
 #include "camera_controller.h"
 #include "video_controller.h"
+#include "capture_scheduler_esp32.h"
 #include "time_service.h"
 #include "logging_service.h"
-#include "peripheral_manager.h"
+#include "sd_controller.h"
+#include "led_state_machine.h"
 #include "config_service.h"
 #include "wifi_service.h"
 #include "web_server_service.h"
@@ -19,26 +23,60 @@
 #include "serial_command_transport.h"
 #include "system_orchestrator.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 using hal::millis_t;
 
 namespace constants
 {
-    constexpr millis_t LED_ON_TIME_MS = 1000;
-    constexpr millis_t DEFAULT_CAMERA_CAPTURE_INTERVAL_MS = 20000;
-    constexpr millis_t PERIPHERAL_MANAGER_TICK_TIME_MS = 5;
+    constexpr millis_t LED_TICK_TIME_MS = 5;
 }
 
-// --- Core services ---
+// --- HAL implementations ---
 RealTimeService real_time;
 hal::SerialHalImpl serial_hal{115200};
 hal::SerialLogBackend log_backend{serial_hal};
 LoggingService logger{log_backend, real_time};
-ConfigService config_service{logger};
-hal::SdCardHalImpl sd_hal{SD_CS};
-PeripheralManager peripheral_manager{real_time, sd_hal};
+hal::SdCardHalImpl sd_hal{hal::SD_CS_PIN};
 hal::CameraHalImpl camera_hal;
+hal::TimerHalImpl timer_hal;
+
+// --- FreeRTOS mutex for shared GPIO 21 (LED / SD CS) ---
+SemaphoreHandle_t sd_active_mutex = nullptr;
+
+/**
+ * @brief CS signal callback for SdController sync I/O.
+ *
+ * Acquires the shared GPIO mutex on CS_ACTIVE and releases on
+ * CS_INACTIVE, ensuring exclusive access to the shared pin
+ * during SD transactions.
+ */
+void cs_signal(peripherals::SdSignal signal)
+{
+    if (!sd_active_mutex)
+    {
+        return;
+    }
+
+    if (signal == peripherals::SdSignal::CS_ACTIVE)
+    {
+        xSemaphoreTake(sd_active_mutex, portMAX_DELAY);
+        hal::digital_write(hal::LED_PIN, hal::PIN_LOW);   // CS active = LOW
+    }
+    else
+    {
+        hal::digital_write(hal::LED_PIN, hal::PIN_HIGH);  // CS inactive = HIGH
+        xSemaphoreGive(sd_active_mutex);
+    }
+}
+
+// --- Service-layer objects ---
+SdController sd_controller{real_time, sd_hal, cs_signal};
+LedStateMachine led_sm{real_time};
 CameraController camera_ctrl{camera_hal};
-VideoController video_controller{camera_ctrl, peripheral_manager, real_time, logger};
+CaptureSchedulerEsp32 capture_scheduler{timer_hal};
+VideoController video_controller{camera_ctrl, sd_controller, real_time, logger, capture_scheduler};
 PlatformInitializer platform_init;
 hal::WifiHalImpl wifi_hal_impl;
 hal::WebServerHalImpl web_server_hal_impl;
@@ -47,32 +85,35 @@ CommandHandler command_handler{logger};
 WebCommandTransport web_transport{web_server_hal_impl, command_handler};
 SerialCommandTransport serial_transport{serial_hal};
 WebServerService web_server_service{web_server_hal_impl, logger};
+ConfigService config_service{logger};
 SystemOrchestrator system_orchestrator{
     video_controller, camera_ctrl, command_handler,
     real_time, config_service, logger};
 
-millis_t last_peripheral_tick_time_ms = 0;
-millis_t last_capture_time_ms = 0;
-uint32_t image_count = 1;
-millis_t camera_capture_interval_ms = constants::DEFAULT_CAMERA_CAPTURE_INTERVAL_MS;
+millis_t last_led_tick_time_ms = 0;
 
-void take_photo(uint32_t image_count)
+/**
+ * @brief Updates the LED pin based on LedStateMachine output.
+ *
+ * Non-blocking: skips the update if the SD mutex is held (SD
+ * transaction in progress). SD takes priority over LED.
+ */
+void update_led()
 {
-    CameraCaptureResult result = camera_ctrl.capture_frame();
-    if (result != CameraCaptureResult::SUCCESS)
+    if (!sd_active_mutex)
     {
-        logger.error("CAMERA", "Failed to capture frame");
         return;
     }
 
-    hal::CameraFrame frame = camera_ctrl.get_frame();
+    // Try to acquire without blocking — skip if SD owns the pin
+    if (xSemaphoreTake(sd_active_mutex, 0) != pdTRUE)
+    {
+        return;
+    }
 
-    char file_name[32];
-    snprintf(file_name, sizeof(file_name), "/image%u.jpg", image_count);
-    peripheral_manager.write_file(file_name, frame.data, frame.len, 1000u);
-    camera_ctrl.release_frame();
-
-    logger.info("CAMERA", "Saved picture: %s", file_name);
+    bool led_on = led_sm.tick();
+    hal::digital_write(hal::LED_PIN, led_on ? hal::PIN_LOW : hal::PIN_HIGH);
+    xSemaphoreGive(sd_active_mutex);
 }
 
 void setup()
@@ -84,33 +125,38 @@ void setup()
 
     logger.info("MAIN", "Starting initialization");
 
-    peripheral_manager.init();
-    peripheral_manager.blink(250, 250);
+    // --- Create FreeRTOS mutex for shared GPIO pin ---
+    sd_active_mutex = xSemaphoreCreateMutex();
+
+    // --- Initialize GPIO and LED ---
+    hal::set_pin_as_output(hal::LED_PIN);
+
+    // Initial blink sequence using the mutex-guarded LED
+    led_sm.set_mode(LedMode::BLINK, 250, 250);
     {
         auto now = real_time.now();
-
-        while (real_time.now() < (now + 3000))
+        while (TimeService::elapsed_ms(now, real_time.now()) < 3000)
         {
-            peripheral_manager.tick();
-            real_time.delay_ms(constants::PERIPHERAL_MANAGER_TICK_TIME_MS);
+            update_led();
+            real_time.delay_ms(constants::LED_TICK_TIME_MS);
         }
     }
-    peripheral_manager.turn_led_off();
+    led_sm.set_mode(LedMode::OFF);
+    update_led();
 
     // --- Initialize SD card ---
-    if (peripheral_manager.init_sd_card() != hal::SdInitResult::SUCCESS)
+    if (sd_controller.init_card() != hal::SdInitResult::SUCCESS)
     {
         logger.error("MAIN", "SD initialization failed");
         return;
     }
     logger.info("MAIN", "SD initialized");
 
-    // --- Load config FIRST (needs SD card) ---
+    // --- Load config (needs SD card) ---
     uint8_t config_buf[ConfigService::CONFIG_BUFFER_SIZE];
-    size_t bytes_read = 0;
-    peripheral_manager.read_file(ConfigService::DEFAULT_CONFIG_PATH,
-                                 config_buf, sizeof(config_buf),
-                                 &bytes_read, ConfigService::READ_TIMEOUT_MS);
+    size_t bytes_read = sd_controller.read_sync(
+        ConfigService::DEFAULT_CONFIG_PATH,
+        config_buf, sizeof(config_buf));
     logger.info("MAIN", "Config read: %zu / %zu bytes",
                 bytes_read, ConfigService::CONFIG_BUFFER_SIZE);
     config_service.load(config_buf, bytes_read);
@@ -119,6 +165,7 @@ void setup()
     CameraImageConfig cam_image_config;
     cam_image_config.resolution = config_service.config().camera.resolution;
     cam_image_config.jpeg_quality = config_service.config().camera.jpeg_quality;
+    cam_image_config.fb_count = 2;
     ResolvedCameraParams cam_params = build_camera_config(cam_image_config, logger);
     hal::CameraInitResult cam_result = camera_ctrl.init(cam_params);
     if (cam_result != hal::CameraInitResult::SUCCESS)
@@ -134,13 +181,6 @@ void setup()
     video_controller.init(config_service.config().video,
                           camera_ctrl.get_params().width,
                           camera_ctrl.get_params().height);
-
-    // --- Apply capture interval from config ---
-    if (config_service.config().camera.capture_interval_ms > 0)
-    {
-        camera_capture_interval_ms = config_service.config().camera.capture_interval_ms;
-        logger.info("MAIN", "Capture interval: %u ms", camera_capture_interval_ms);
-    }
 
     // --- Initialize WiFi ---
     wifi_service.init(config_service.config().wifi,
@@ -164,63 +204,20 @@ void setup()
 
 void loop()
 {
-    RecordingState last_video_state = video_controller.state();
+    // Poll command transports (web, serial)
+    command_handler.tick();
 
-    if (camera_ctrl.is_initialized() && peripheral_manager.is_sd_card_initialized())
+    // Orchestrator tick (schedule evaluation, mode transitions)
+    system_orchestrator.tick();
+
+    // LED state machine tick (non-blocking, skips if SD owns pin)
+    update_led();
+
+    // Periodic heartbeat log
+    hal::millis_t now = real_time.now();
+    if (now % 5000 < constants::LED_TICK_TIME_MS)
     {
-        auto now = real_time.now();
-
-        if (TimeService::elapsed_ms(last_peripheral_tick_time_ms, now) >= constants::PERIPHERAL_MANAGER_TICK_TIME_MS)
-        {
-            peripheral_manager.tick();
-            last_peripheral_tick_time_ms = now;
-        }
-
-        // Advance video recording state machine
-        video_controller.tick();
-
-        // Poll command transports (web, serial)
-        command_handler.tick();
-
-        // Orchestrator tick (schedule evaluation, mode transitions)
-        system_orchestrator.tick();
-
-        // LED feedback: video state takes precedence over photo capture
-        if (video_controller.state() != last_video_state)
-        {
-            switch (video_controller.state())
-            {
-                case RecordingState::RECORDING:
-                    peripheral_manager.blink(200, 200);
-                    break;
-                case RecordingState::STOPPING:
-                    peripheral_manager.pulse_led(500);
-                    break;
-                case RecordingState::IDLE:
-                    // LED controlled by other logic below
-                    break;
-            }
-            last_video_state = video_controller.state();
-        }
-
-        /*
-        if (TimeService::elapsed_ms(last_capture_time_ms, now) >= camera_capture_interval_ms)
-        {
-            if (!video_controller.is_recording())
-            {
-                peripheral_manager.pulse_led(constants::LED_ON_TIME_MS);
-            }
-            last_capture_time_ms = now;
-            logger.info("MAIN", "Capturing image...");
-            take_photo(image_count);
-            image_count++;
-        }
-        */
-        
-        if (now % 5000 == 0)
-        {
-            logger.info("MAIN", "Looping...");
-            real_time.delay_ms(2);
-        }
+        logger.info("MAIN", "Looping...");
+        real_time.delay_ms(2);
     }
 }

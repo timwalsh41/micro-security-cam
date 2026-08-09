@@ -77,6 +77,16 @@ void SdCardHalImpl::close()
     }
 }
 
+bool SdCardHalImpl::seek(uint32_t pos)
+{
+    if (!m_file_open)
+    {
+        return false;
+    }
+
+    return m_file.seek(pos);
+}
+
 bool SdCardHalImpl::create_dir(const char* path)
 {
     return SD.mkdir(path);

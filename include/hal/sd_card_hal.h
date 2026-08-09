@@ -100,6 +100,17 @@ class SdCardHal
         virtual void close() = 0;
 
         /**
+         * @brief Seeks to a byte position within the currently open file.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         * The file must have been opened in WRITE or READ mode.
+         *
+         * @param pos The byte offset from the beginning of the file.
+         * @return true if the seek succeeded, false otherwise.
+         */
+        virtual bool seek(uint32_t pos) = 0;
+
+        /**
          * @brief Creates a directory on the SD card.
          *
          * Must only be called when the chip-select pin is asserted.

@@ -6,8 +6,10 @@
 #include "time_service.h"
 #include "config_service.h"
 #include "logging_service.h"
+#include "sd_controller.h"
 #include "mock_camera_hal.h"
 #include "mock_sd_card_hal.h"
+#include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include <cstring>
 
@@ -21,8 +23,9 @@ struct TestFixture
     MockSdCardHal sd_hal;
     MockLogBackend log_backend;
     RealTimeService time;
+    SdController sd_controller;
     CameraController camera_ctrl;
-    PeripheralManager peripheral;
+    MockCaptureScheduler capture_scheduler;
     LoggingService logger;
     VideoController video;
     ConfigService config;
@@ -30,10 +33,10 @@ struct TestFixture
     SystemOrchestrator orchestrator;
 
     TestFixture()
-        : camera_ctrl(camera_hal)
-        , peripheral(time, sd_hal)
+        : sd_controller(time, sd_hal)
+        , camera_ctrl(camera_hal)
         , logger(log_backend, time)
-        , video(camera_ctrl, peripheral, time, logger)
+        , video(camera_ctrl, sd_controller, time, logger, capture_scheduler)
         , config(logger)
         , cmd_handler(logger)
         , orchestrator(video, camera_ctrl, cmd_handler, time, config, logger)
@@ -45,9 +48,28 @@ struct TestFixture
         vconfig.fps = 10;
         strcpy(vconfig.resolution, "VGA");
         vconfig.clip_duration_s = 60;
+        vconfig.max_file_size_mb = 0;
+        vconfig.jpeg_quality = 10;
         video.init(vconfig, 640, 480);
 
         orchestrator.init();
+    }
+
+    /**
+     * @brief Configures the mock camera to return a fake JPEG frame.
+     */
+    void setup_fake_frame()
+    {
+        memset(camera_hal.frame_buffer, 0xAB, 64);
+        camera_hal.capture_result = {camera_hal.frame_buffer, 64};
+    }
+
+    /**
+     * @brief Drives a single frame capture via the mock scheduler.
+     */
+    void capture_one_frame()
+    {
+        capture_scheduler.on_frame_capture();
     }
 };
 
@@ -157,12 +179,14 @@ void test_start_recording_fails_if_already_recording()
  * @brief STOP_RECORDING delegates to VideoController.
  *
  * Note: stop_recording() sets a flag; the actual state transition
- * to IDLE happens on the next tick(). We call tick() here to
- * complete the transition before asserting.
+ * to IDLE happens on the next on_frame_capture(). We call
+ * capture_one_frame() here to complete the transition before
+ * asserting.
  */
 void test_stop_recording_delegates()
 {
     TestFixture f;
+    f.setup_fake_frame();
 
     dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
     TEST_ASSERT_TRUE(f.video.is_recording());
@@ -174,27 +198,59 @@ void test_stop_recording_delegates()
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
 
-    // Tick to complete the stop transition
-    f.video.tick();
+    // Capture one frame to complete the stop transition
+    f.capture_one_frame();
     TEST_ASSERT_FALSE(f.video.is_recording());
 }
 
 /**
- * @brief TAKE_PHOTO captures a frame from the camera.
+ * @brief TAKE_PHOTO captures a frame and saves to SD.
  */
 void test_take_photo_captures_frame()
 {
     TestFixture f;
+    set_mock_millis(1234567890u);
 
     // Configure mock camera to return a frame
     memset(f.camera_hal.frame_buffer, 0x42, 64);
     f.camera_hal.capture_result = {f.camera_hal.frame_buffer, 64};
 
-    CommandResult result = dispatch_cmd(
-        f.cmd_handler, CommandCode::TAKE_PHOTO);
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
 
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+
+    // Verify the camera captured a frame
+    TEST_ASSERT_GREATER_THAN(0, f.camera_hal.capture_call_count);
+
+    // Verify response contains a path
+    TEST_ASSERT_GREATER_THAN(0u, response_len);
+}
+
+/**
+ * @brief TAKE_PHOTO returns INVALID_STATE when recording.
+ */
+void test_take_photo_fails_when_recording()
+{
+    TestFixture f;
+    set_mock_millis(1000);
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INVALID_STATE),
         static_cast<uint8_t>(result));
 }
 
@@ -257,6 +313,7 @@ void test_set_config_returns_invalid_state()
 void test_tick_does_not_crash()
 {
     TestFixture f;
+    f.setup_fake_frame();
 
     // Should be safe to call tick() in any state
     f.orchestrator.tick();
@@ -265,8 +322,12 @@ void test_tick_does_not_crash()
     dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
     f.orchestrator.tick();
 
+    // Capture a frame during recording
+    f.capture_one_frame();
+
     // Stop, tick again
     dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
+    f.capture_one_frame();  // Completes the stop transition
     f.orchestrator.tick();
 
     TEST_ASSERT_TRUE(true);  // If we got here, no crash
@@ -286,6 +347,7 @@ int main()
     RUN_TEST(test_start_recording_fails_if_already_recording);
     RUN_TEST(test_stop_recording_delegates);
     RUN_TEST(test_take_photo_captures_frame);
+    RUN_TEST(test_take_photo_fails_when_recording);
     RUN_TEST(test_set_time_sets_offset);
     RUN_TEST(test_set_time_invalid_payload);
     RUN_TEST(test_set_config_returns_invalid_state);

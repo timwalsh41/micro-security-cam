@@ -7,14 +7,15 @@
 // ============================================================
 
 VideoController::VideoController(CameraController& cam,
-                                 PeripheralManager& peripheral,
+                                 SdController& sd,
                                  TimeService& time,
-                                 LoggingService& log)
+                                 LoggingService& log,
+                                 ICaptureScheduler& scheduler)
     : m_camera(cam)
-    , m_peripheral(peripheral)
+    , m_sd(sd)
     , m_time(time)
     , m_log(log)
-    , m_sd_buffer(peripheral)
+    , m_scheduler(scheduler)
 {
 }
 
@@ -41,122 +42,6 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 }
 
 // ============================================================
-// Frame size estimation
-// ============================================================
-
-uint32_t VideoController::avg_bytes_per_frame() const
-{
-    uint32_t pixels = static_cast<uint32_t>(m_width) * m_height;
-
-    // Base bytes-per-pixel decreases with resolution (JPEG spatial redundancy)
-    float bpp_base;
-    if (pixels <= (320u * 240u))
-    {
-        bpp_base = 0.40f;
-    }
-    else if (pixels <= (640u * 480u))
-    {
-        bpp_base = 0.20f;
-    }
-    else if (pixels <= (1024u * 768u))
-    {
-        bpp_base = 0.12f;
-    }
-    else
-    {
-        bpp_base = 0.08f;
-    }
-
-    // Quality scaling: quality 10 ≈ base, quality 1 ≈ 3× base
-    float quality_scale = 1.0f + 0.2f * (10 - m_config.jpeg_quality);
-
-    return static_cast<uint32_t>(pixels * bpp_base * quality_scale);
-}
-
-uint32_t VideoController::max_frames() const
-{
-    uint32_t avg = avg_bytes_per_frame();
-    return (avg > 0) ? static_cast<uint32_t>(CLIP_BUFFER_RAM_SIZE / avg)
-                     : 1;
-}
-
-// ============================================================
-// State machine
-// ============================================================
-
-void VideoController::tick()
-{
-    if (m_state == RecordingState::STOPPING)
-    {
-        // Save the explicit-stop flag before close_clip() clears it
-        bool explicit_stop = m_stop_clip;
-        close_clip();
-
-        // Auto-rotation: if stop was not explicitly requested,
-        // open a new clip and resume recording
-        if (!explicit_stop)
-        {
-            open_clip();
-            if (m_avi_writer.is_open())
-            {
-                m_state = RecordingState::RECORDING;
-                m_log.info(SUBSYSTEM, "New clip: %s", m_file_path);
-                return;
-            }
-        }
-
-        m_state = RecordingState::IDLE;
-        return;
-    }
-
-    if (m_state != RecordingState::RECORDING)
-    {
-        return;
-    }
-
-    // Check if stop was requested
-    if (m_stop_clip)
-    {
-        m_state = RecordingState::STOPPING;
-        return;
-    }
-
-    // Frame pacing: check if enough time has elapsed
-    hal::millis_t now = m_time.now();
-    hal::millis_t elapsed = TimeService::elapsed_ms(m_last_frame_time, now);
-
-    if (elapsed >= m_frame_interval_ms)
-    {
-        capture_and_write_frame();
-        m_last_frame_time = now;
-
-        // Check clip termination conditions
-        if (m_config.clip_duration_s > 0 &&
-            m_frames_recorded >=
-                static_cast<uint32_t>(m_config.fps) * m_config.clip_duration_s)
-        {
-            m_state = RecordingState::STOPPING;
-            return;
-        }
-
-        if (m_config.max_file_size_mb > 0 &&
-            m_file_size >= static_cast<uint32_t>(m_config.max_file_size_mb) *
-                               1024UL * 1024UL)
-        {
-            m_state = RecordingState::STOPPING;
-            return;
-        }
-
-        if (m_frames_recorded >= max_frames())
-        {
-            m_log.warn(SUBSYSTEM, "Max frames reached, closing clip");
-            m_state = RecordingState::STOPPING;
-            return;
-        }
-    }
-}
-
-// ============================================================
 // Recording control
 // ============================================================
 
@@ -176,6 +61,11 @@ bool VideoController::start_recording()
     }
 
     m_state = RecordingState::RECORDING;
+
+    // Start the capture scheduler — invokes capture_and_write_frame() on each frame
+    m_scheduler.start(m_frame_interval_ms,
+                      [this]() { capture_and_write_frame(); });
+
     m_log.info(SUBSYSTEM, "Recording started: %s", m_file_path);
     return true;
 }
@@ -185,8 +75,53 @@ void VideoController::stop_recording()
     if (m_state == RecordingState::RECORDING)
     {
         m_stop_clip = true;
+
+        m_scheduler.stop();
     }
 }
+
+bool VideoController::capture_photo(const char* path)
+{
+    if (m_state != RecordingState::IDLE)
+    {
+        m_log.warn(SUBSYSTEM, "capture_photo rejected: not idle");
+        return false;
+    }
+
+    CameraCaptureResult result = m_camera.capture_frame();
+    if (result != CameraCaptureResult::SUCCESS)
+    {
+        m_log.warn(SUBSYSTEM, "Photo capture failed");
+        return false;
+    }
+
+    hal::CameraFrame frame = m_camera.get_frame();
+
+    // Write JPEG data directly (no AVI framing)
+    bool ok = m_sd.write_sync(path, frame.data, frame.len,
+                              hal::FileOpenMode::WRITE);
+
+    m_camera.release_frame();
+
+    if (ok)
+    {
+        m_log.info(SUBSYSTEM, "Photo saved: %s (%u bytes)", path, frame.len);
+    }
+    else
+    {
+        m_log.warn(SUBSYSTEM, "Photo SD write failed: %s", path);
+    }
+    return ok;
+}
+
+void VideoController::set_stream_service(void* /*stream_service*/)
+{
+    // TODO: wire to StreamService in future phase
+}
+
+// ============================================================
+// State queries
+// ============================================================
 
 bool VideoController::is_recording() const
 {
@@ -214,22 +149,12 @@ uint32_t VideoController::file_size() const
 
 void VideoController::open_clip()
 {
-    hal::millis_t now = m_time.now();
-    m_clip_start_time = now;
-
-    // TEMPORARY IMPLEMENTATION - pending unix time integration
-    // Build file path from current timestamp
-    // Pattern: /YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
-    // Convert milliseconds to seconds for time formatting
-    // Note: Date calculation uses a simplified 365-day/year, 30-day/month
-    // model. Month/day will drift from real calendar dates. A full calendar
-    // implementation (e.g. mktime) can replace this when needed.
-    uint32_t seconds = static_cast<uint32_t>(now / 1000u);
+    // Build file path from unix timestamp
+    uint32_t seconds = m_time.unix_now();
     uint32_t ss = seconds % 60;
     uint32_t mm = (seconds / 60) % 60;
     uint32_t hh = (seconds / 3600) % 24;
 
-    // Use day-of-year for date (simplified — not a full calendar)
     uint32_t day_of_year = (seconds / 86400u) % 365;
     uint32_t year = 1970 + (seconds / (86400u * 365u));
     uint32_t month = (day_of_year / 30) + 1;
@@ -250,57 +175,52 @@ void VideoController::open_clip()
              year, month, day, hh, mm, ss,
              m_width, m_height, m_config.fps);
 
-    // Open AVI writer
+    // Store clip path for close_clip()
+    strncpy(m_clip_path, m_file_path, sizeof(m_clip_path) - 1);
+    m_clip_path[sizeof(m_clip_path) - 1] = '\0';
+
+    // Open AVI writer (generates header in memory)
     m_avi_writer.open(m_file_path, m_config.fps, m_width, m_height);
 
-    // Open SD write buffer
-    m_sd_buffer.open(m_file_path);
+    // Write placeholder header to SD at position 0
+    AviBytes hdr = m_avi_writer.header();
+    if (hdr.data && hdr.len > 0)
+    {
+        write_to_sd(hdr.data, hdr.len);
+    }
 
     // Reset clip state
-    m_frame_chunks.clear();
     m_frames_recorded = 0;
     m_file_size = 0;
-    m_last_frame_time = now - m_frame_interval_ms;
 }
 
 void VideoController::close_clip()
 {
-    // Finalize the AVI (patches header, builds index)
+    // Finalize AVI (patches header, builds index)
     m_avi_writer.close();
 
-    // Buffer the patched header
-    AviBytes hdr = m_avi_writer.patched_header();
-    if (hdr.data && hdr.len > 0)
-    {
-        m_sd_buffer.buffer_frame(hdr.data, hdr.len);
-    }
-
-    // Buffer all accumulated frame chunks
-    for (size_t i = 0; i < m_frame_chunks.size(); i++)
-    {
-        const FrameChunk& chunk = m_frame_chunks[i];
-        m_sd_buffer.buffer_frame(chunk.data.data(), chunk.data.size());
-    }
-
-    // Buffer the frame index
+    // Append index to the file
     AviBytes idx = m_avi_writer.index();
     if (idx.data && idx.len > 0)
     {
-        m_sd_buffer.buffer_frame(idx.data, idx.len);
+        write_to_sd(idx.data, idx.len);
     }
 
-    // Single flush to SD
-    m_sd_buffer.flush();
-    m_sd_buffer.reset();
+    // Seek to position 0 and overwrite the placeholder header
+    AviBytes hdr = m_avi_writer.patched_header();
+    if (hdr.data && hdr.len > 0)
+    {
+        write_at_offset(m_clip_path, 0, hdr.data, hdr.len);
+    }
 
     m_log.info(SUBSYSTEM, "Clip closed: %s (%u frames, %u bytes)",
-               m_file_path, m_frames_recorded, m_file_size);
+               m_clip_path, m_frames_recorded, m_file_size);
 
     // Clean up
-    m_frame_chunks.clear();
     m_frames_recorded = 0;
     m_file_size = 0;
     m_stop_clip = false;
+    m_avi_writer = AviWriter();  // Reset writer state
 }
 
 // ============================================================
@@ -318,22 +238,69 @@ void VideoController::capture_and_write_frame()
 
     hal::CameraFrame frame = m_camera.get_frame();
 
-    // Format as AVI chunk
+    // Format as AVI chunk and write to SD
     m_avi_writer.write_frame(frame.data, frame.len);
 
-    // Copy the chunk to our accumulator
-    // (last_frame_chunk() is only valid until next write_frame())
     AviBytes chunk = m_avi_writer.last_frame_chunk();
     if (chunk.data && chunk.len > 0)
     {
-        FrameChunk fc;
-        fc.data.assign(chunk.data, chunk.data + chunk.len);
-        m_frame_chunks.push_back(fc);
+        write_to_sd(chunk.data, chunk.len);
         m_file_size += static_cast<uint32_t>(chunk.len);
     }
 
     m_camera.release_frame();
     m_frames_recorded++;
+
+    // Check clip termination conditions (auto-rotation)
+    bool clip_limit_reached = false;
+    if (m_config.clip_duration_s > 0 &&
+        m_frames_recorded >=
+            static_cast<uint32_t>(m_config.fps) * m_config.clip_duration_s)
+    {
+        clip_limit_reached = true;
+    }
+    else if (m_config.max_file_size_mb > 0 &&
+             m_file_size >= static_cast<uint32_t>(m_config.max_file_size_mb) *
+                                1024UL * 1024UL)
+    {
+        clip_limit_reached = true;
+    }
+
+    // Handle clip closure
+    if (m_stop_clip || clip_limit_reached)
+    {
+        bool explicit_stop = m_stop_clip;
+        close_clip();
+
+        if (!explicit_stop)
+        {
+            // Auto-rotation: open new clip and resume
+            open_clip();
+            if (m_avi_writer.is_open())
+            {
+                m_log.info(SUBSYSTEM, "New clip: %s", m_clip_path);
+            }
+        }
+        else
+        {
+            m_state = RecordingState::IDLE;
+        }
+    }
+}
+
+// ============================================================
+// SD I/O helpers
+// ============================================================
+
+bool VideoController::write_to_sd(const uint8_t* data, size_t len)
+{
+    return m_sd.write_sync(m_file_path, data, len, hal::FileOpenMode::APPEND);
+}
+
+bool VideoController::write_at_offset(const char* path, uint32_t offset,
+                                      const uint8_t* data, size_t len)
+{
+    return m_sd.write_at_sync(path, offset, data, len);
 }
 
 // ============================================================
@@ -342,5 +309,5 @@ void VideoController::capture_and_write_frame()
 
 void VideoController::create_directory(const char* path)
 {
-    m_peripheral.create_dir(path, 1000);
+    m_sd.create_dir_sync(path);
 }

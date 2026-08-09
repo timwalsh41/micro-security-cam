@@ -3,9 +3,9 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include "time_service.h"
 #include "hal/sd_card_hal.h"
-#include "pin_arbitrator.h"
 
 /**
  * @file sd_controller.h
@@ -15,6 +15,30 @@
  * chip-select (CS) pin assertion and de-assertion around SD card
  * read and write operations, ensuring proper timing between transactions.
  */
+
+namespace peripherals
+{
+    /**
+     * @brief Describes the SD card's current request for the shared CS pin.
+     *
+     * The SD controller drives this signal to indicate what the
+     * chip-select pin should do. When IDLE, the caller may apply
+     * the LED's request instead.
+     */
+    enum class SdSignal : uint8_t
+    {
+        IDLE,           ///< SD doesn't care; caller decides
+        CS_ACTIVE,      ///< SD needs CS driven LOW (during activation/writing)
+        CS_INACTIVE     ///< SD needs CS driven HIGH (during deactivation timing)
+    };
+}
+
+/**
+ * @brief Function type for driving the CS pin during sync I/O.
+ *
+ * @param signal The desired SdSignal for the CS pin.
+ */
+using CsSignalFn = std::function<void(peripherals::SdSignal)>;
 
 /**
  * @brief Result of an SD card write operation.
@@ -74,7 +98,8 @@ class SdController
          * @param time   Reference to a TimeService used for timing.
          * @param sd_hal Reference to an SdCardHal used for hardware I/O.
          */
-        explicit SdController(TimeService& time, hal::SdCardHal& sd_hal);
+        explicit SdController(TimeService& time, hal::SdCardHal& sd_hal,
+                              CsSignalFn cs_signal_fn = nullptr);
 
         /**
          * @brief Advances the state machine and returns the desired CS signal.
@@ -86,7 +111,7 @@ class SdController
          *  - CS_ACTIVE:   SD needs CS driven LOW (during activation/writing).
          *  - CS_INACTIVE: SD needs CS driven HIGH (during deactivation timing).
          *
-         * Feed the return value directly into PinArbitrator::resolve().
+         * Callers apply the returned signal directly to the physical CS pin.
          *
          * @return peripherals::SdSignal describing the desired CS pin state.
          */
@@ -189,6 +214,53 @@ class SdController
         /** Minimum time CS must be asserted before starting I/O (ms). */
         static constexpr hal::millis_t ACTIVATE_TIME_MS = 1;
 
+        // ============================================================
+        // Synchronous I/O methods
+        // ============================================================
+
+        /**
+         * @brief Synchronous write: asserts CS, performs write, de-asserts CS.
+         *
+         * @param path File path to write to.
+         * @param data Pointer to data buffer.
+         * @param len  Number of bytes to write.
+         * @param mode Open mode (WRITE truncates, APPEND preserves).
+         * @return true if write succeeded.
+         */
+        bool write_sync(const char* path, const uint8_t* data, size_t len,
+                        hal::FileOpenMode mode = hal::FileOpenMode::APPEND);
+
+        /**
+         * @brief Synchronous read: asserts CS, performs read, de-asserts CS.
+         *
+         * @param path        File path to read from.
+         * @param buffer      Buffer to read into.
+         * @param buffer_size Maximum bytes to read.
+         * @return Number of bytes read (0 on failure).
+         */
+        size_t read_sync(const char* path, uint8_t* buffer, size_t buffer_size);
+
+        /**
+         * @brief Synchronous directory creation: asserts CS, creates dir, de-asserts CS.
+         *
+         * @param path Directory path to create.
+         * @return true if creation succeeded.
+         */
+        bool create_dir_sync(const char* path);
+
+        /**
+         * @brief Synchronous seek-and-write: asserts CS, opens, seeks, writes, closes.
+         *
+         * Used for overwriting the AVI header at position 0 after recording.
+         *
+         * @param path   File path to open.
+         * @param offset Byte offset to seek to before writing.
+         * @param data   Pointer to data buffer.
+         * @param len    Number of bytes to write.
+         * @return true if seek + write succeeded.
+         */
+        bool write_at_sync(const char* path, uint32_t offset, const uint8_t* data, size_t len);
+
     private:
         /**
          * @brief Internal states of the SD I/O protocol state machine.
@@ -210,11 +282,13 @@ class SdController
         {
             READ,
             WRITE,
-            CREATE_DIR
+            CREATE_DIR,
+            SEEK_WRITE
         };
 
         TimeService& m_time;
         hal::SdCardHal& m_sd_hal;
+        CsSignalFn m_cs_signal_fn;
 
         SdState m_state{SdState::IDLE};
         hal::millis_t m_last_state_change_ms{0};
@@ -231,6 +305,7 @@ class SdController
         // Write-specific parameters
         const uint8_t* m_write_data{nullptr};
         size_t m_write_len{0};
+        uint32_t m_write_offset{0};
         SdWriteResult m_write_result{SdWriteResult::SUCCESS};
 
         // Read-specific parameters
@@ -244,6 +319,12 @@ class SdController
 
         // Internal function to advance state
         void set_state(SdState next_state);
+
+        /** Assert CS (drive LOW) via the signal callback. */
+        void cs_assert();
+
+        /** De-assert CS (drive HIGH) via the signal callback. */
+        void cs_deassert();
 };
 
 #endif // SD_CONTROLLER_H

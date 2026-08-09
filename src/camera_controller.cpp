@@ -101,6 +101,7 @@ ResolvedCameraParams build_camera_config(
     hal::CameraConfig hal_config;
     hal_config.frame_size = framesize;
     hal_config.jpeg_quality = jpeg_quality;
+    hal_config.fb_count = user_config.fb_count;
 
     ResolvedCameraParams params;
     params.hal_config = hal_config;

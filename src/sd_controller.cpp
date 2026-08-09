@@ -7,9 +7,11 @@ using hal::millis_t;
 // Construction
 // ============================================================
 
-SdController::SdController(TimeService& time, hal::SdCardHal& sd_hal)
+SdController::SdController(TimeService& time, hal::SdCardHal& sd_hal,
+                           CsSignalFn cs_signal_fn)
     : m_time(time)
     , m_sd_hal(sd_hal)
+    , m_cs_signal_fn(cs_signal_fn)
 {
 }
 
@@ -74,22 +76,35 @@ peripherals::SdSignal SdController::tick()
                     m_read_result = SdReadResult::FILE_OPEN_FAILED;
                 }
             }
+            else if (m_operation == SdOperation::SEEK_WRITE)
+            {
+                // Open, seek to offset, write, close
+                if (!m_sd_hal.open(m_io_path, hal::FileOpenMode::WRITE))
+                {
+                    m_write_result = SdWriteResult::FILE_OPEN_FAILED;
+                }
+                else if (!m_sd_hal.seek(m_write_offset))
+                {
+                    m_write_result = SdWriteResult::FILE_WRITE_ERROR;
+                }
+                else if (!m_sd_hal.write(m_write_data, m_write_len))
+                {
+                    m_write_result = SdWriteResult::FILE_WRITE_ERROR;
+                }
+            }
+            else if (m_operation == SdOperation::WRITE)
+            {
+                if (!m_sd_hal.write(m_write_data, m_write_len))
+                {
+                    m_write_result = SdWriteResult::FILE_WRITE_ERROR;
+                }
+            }
             else
             {
-                if (m_operation == SdOperation::WRITE)
-                {
-                    if (!m_sd_hal.write(m_write_data, m_write_len))
-                    {
-                        m_write_result = SdWriteResult::FILE_WRITE_ERROR;
-                    }
-                }
-                else
-                {
-                    m_bytes_read = m_sd_hal.read(m_read_buffer, m_read_buffer_size);
-                    m_read_result = (m_bytes_read > 0)
-                        ? SdReadResult::SUCCESS
-                        : SdReadResult::FILE_READ_EMPTY;
-                }
+                m_bytes_read = m_sd_hal.read(m_read_buffer, m_read_buffer_size);
+                m_read_result = (m_bytes_read > 0)
+                    ? SdReadResult::SUCCESS
+                    : SdReadResult::FILE_READ_EMPTY;
             }
             if (m_operation != SdOperation::CREATE_DIR)
             {
@@ -197,4 +212,66 @@ void SdController::set_state(SdController::SdState next_state)
 {
     m_state = next_state;
     m_last_state_change_ms = m_time.now();
+}
+
+// ============================================================
+// Synchronous I/O methods
+// ============================================================
+
+void SdController::cs_assert()
+{
+    if (m_cs_signal_fn)
+    {
+        m_cs_signal_fn(peripherals::SdSignal::CS_ACTIVE);
+    }
+}
+
+void SdController::cs_deassert()
+{
+    if (m_cs_signal_fn)
+    {
+        m_cs_signal_fn(peripherals::SdSignal::CS_INACTIVE);
+    }
+}
+
+bool SdController::write_sync(const char* path, const uint8_t* data, size_t len,
+                              hal::FileOpenMode mode)
+{
+    cs_assert();
+    bool ok = m_sd_hal.open(path, mode) && m_sd_hal.write(data, len);
+    m_sd_hal.close();
+    cs_deassert();
+    return ok;
+}
+
+size_t SdController::read_sync(const char* path, uint8_t* buffer, size_t buffer_size)
+{
+    cs_assert();
+    size_t bytes_read = 0;
+    if (m_sd_hal.open(path, hal::FileOpenMode::READ))
+    {
+        bytes_read = m_sd_hal.read(buffer, buffer_size);
+    }
+    m_sd_hal.close();
+    cs_deassert();
+    return bytes_read;
+}
+
+bool SdController::create_dir_sync(const char* path)
+{
+    cs_assert();
+    bool ok = m_sd_hal.create_dir(path);
+    cs_deassert();
+    return ok;
+}
+
+bool SdController::write_at_sync(const char* path, uint32_t offset, const uint8_t* data, size_t len)
+{
+    cs_assert();
+    bool ok = m_sd_hal.open(path, hal::FileOpenMode::WRITE)
+              && m_sd_hal.seek(offset)
+              && m_sd_hal.write(data, len);
+    m_sd_hal.close();
+    cs_deassert();
+    return ok;
 }
