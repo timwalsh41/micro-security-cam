@@ -42,13 +42,11 @@ class ICaptureScheduler
 
         /**
          * @brief Stops the capture scheduler and releases resources.
-         *
          */
         virtual void stop() = 0;
 
         /**
          * @brief Called when a frame capture should be triggered.
-         *
          *
          * Must be safe to call from interrupt context.
          */

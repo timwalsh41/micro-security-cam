@@ -6,6 +6,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <functional>
+
 /**
  * @file capture_scheduler_esp32.h
  * @brief ESP32 implementation of ICaptureScheduler.

@@ -8,8 +8,8 @@
 
 - We use PlatformIO for environment management (BSP, libraries, build, test).
     - Refer to `platformio.ini` for details on the environment setup and included libraries
-- To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source .pio/penv/bin/activate`
-    - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source .pio/penv/bin/activate && pio test -e native`
+- To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source ~/.platformio/penv/bin/activate`
+    - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source ~/.platformio/penv/bin/activate && pio test -e native`
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
     - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests
@@ -35,6 +35,7 @@
 - Follow the single responsibility principle when designing classes
 - Use interface classes where appropriate to make dependencies injectable for testing purposes
 - Do not isolate platform-specific code from platform-agnostic logical/service/controller code using #ifdef guards (`#ifdef UNIT_TESTING`) to exlude it from native unit tests; rather, any platform specific code should exist in a separate module with an appropriate interface and not included in native test build
+- Include what you use - if a header or implementation file uses another header's definitions then include it directly as opposed to relying on indirect transitive inclusion
 - Use `#ifdef` guards on all headers
 - Prefer 3rd party libraries to building functionality from scratch
 - Create Javadoc style docstrings for classes and functions
