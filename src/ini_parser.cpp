@@ -258,7 +258,7 @@ ConfigData IniParser::parse(const char* content, size_t length)
                     {
                         bool valid = false;
                         uint32_t parsed = get_uint_val(val_start, val_len, &valid);
-                        if (valid && parsed <= UINT16_MAX)
+                        if (valid && parsed >= 1 && parsed <= UINT16_MAX)
                         {
                             config.web.port = static_cast<uint16_t>(parsed);
                         }

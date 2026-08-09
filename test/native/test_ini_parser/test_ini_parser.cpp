@@ -472,6 +472,16 @@ void test_port_out_of_range_ignored()
 }
 
 /**
+ * @brief parse() ignores a zero web port.
+ */
+void test_port_zero_ignored()
+{
+    const char* ini = "[web]\nport=0\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(80, d.web.port);
+}
+
+/**
  * @brief parse() accepts a zero camera capture interval.
  */
 void test_camera_interval_zero()
@@ -869,6 +879,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_case_insensitive_section_names);
     RUN_TEST(test_case_insensitive_key_names);
     RUN_TEST(test_port_out_of_range_ignored);
+    RUN_TEST(test_port_zero_ignored);
     RUN_TEST(test_camera_interval_zero);
 
     // Video section parsing

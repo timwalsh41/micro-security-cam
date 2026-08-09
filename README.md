@@ -61,7 +61,7 @@ pio test -e seeed_xiao_esp32s3_test
 
 ## Configuration
 
-The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used.
+The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used. The config file is limited to 512 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
 
 ### Example Config File
 
@@ -131,6 +131,8 @@ mic_gain=2
 | `[video]` | `mic_gain` | integer | `2` | Microphone gain (1–8) |
 
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
+
+Boolean keys accept `true` or `false` (case-insensitive); any other value is parsed as `false`.
 
 ### Adding a New Config Section
 

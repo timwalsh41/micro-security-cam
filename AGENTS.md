@@ -8,7 +8,7 @@
 
 - We use PlatformIO for environment management (BSP, libraries, build, test).
     - Refer to `platformio.ini` for details on the environment setup and included libraries
-- To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source ~/.platformio/penv/bin/activate`
+- To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source .pio/penv/bin/activate`
     - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source .pio/penv/bin/activate && pio test -e native`
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
