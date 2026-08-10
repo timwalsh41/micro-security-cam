@@ -10,6 +10,8 @@
     - Refer to `platformio.ini` for details on the environment setup and included libraries
 - To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source ~/.platformio/penv/bin/activate`
     - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source ~/.platformio/penv/bin/activate && pio test -e native`
+    - Do not execute tool calls with `requestAllowNetwork=true` by default - in the environment settings are whitelisted domains that will be required for PlatformIO command calls, if we hit a blocked domain we'll add it to the whitelist; only use `requestAllowNetwork=true` if truly needed
+- Use terminal commands to read files outside of the project folder
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
     - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests

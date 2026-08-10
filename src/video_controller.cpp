@@ -63,8 +63,16 @@ bool VideoController::start_recording()
     m_state = RecordingState::RECORDING;
 
     // Start the capture scheduler — invokes capture_and_write_frame() on each frame
-    m_scheduler.start(m_frame_interval_ms,
-                      [this]() { capture_and_write_frame(); });
+    if (!m_scheduler.start(m_frame_interval_ms,
+                           [this]() { capture_and_write_frame(); }))
+    {
+        // Scheduler busy (e.g. a task left over from a timed-out stop):
+        // undo the just-opened clip and stay in IDLE
+        close_clip();
+        m_state = RecordingState::IDLE;
+        m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
+        return false;
+    }
 
     m_log.info(SUBSYSTEM, "Recording started: %s", m_file_path);
     return true;
@@ -149,31 +157,39 @@ uint32_t VideoController::file_size() const
 
 void VideoController::open_clip()
 {
-    // Build file path from unix timestamp
+    // Build file path from unix timestamp (UTC)
     uint32_t seconds = m_time.unix_now();
-    uint32_t ss = seconds % 60;
-    uint32_t mm = (seconds / 60) % 60;
-    uint32_t hh = (seconds / 3600) % 24;
 
-    uint32_t day_of_year = (seconds / 86400u) % 365;
-    uint32_t year = 1970 + (seconds / (86400u * 365u));
-    uint32_t month = (day_of_year / 30) + 1;
-    uint32_t day = (day_of_year % 30) + 1;
+    char date[9];
+    char time_str[7];
+    if (!TimeFormatter::format_date(seconds, date, sizeof(date)) ||
+        !TimeFormatter::format_time(seconds, time_str, sizeof(time_str)))
+    {
+        m_log.warn(SUBSYSTEM, "Failed to format timestamp");
+        return;
+    }
 
     // Build directory path: /YYYYMMDD
     char dir_path[16];
-    snprintf(dir_path, sizeof(dir_path), "/%04u%02u%02u",
-             year, month, day);
+    snprintf(dir_path, sizeof(dir_path), "/%s", date);
 
     // Create the parent directory on the SD card
     create_directory(dir_path);
 
     // Build file path: /YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
-    snprintf(m_file_path, sizeof(m_file_path),
-             "/%04u%02u%02u/%04u%02u%02u_%02u%02u%02u_%ux%u_%ufps.avi",
-             year, month, day,
-             year, month, day, hh, mm, ss,
+    char base_path[sizeof(m_file_path)];
+    snprintf(base_path, sizeof(base_path),
+             "/%s/%s_%s_%ux%u_%ufps.avi",
+             date, date, time_str,
              m_width, m_height, m_config.fps);
+
+    // Avoid clobbering a clip from an earlier recording within the same
+    // second by uniquifying with a serial suffix
+    if (!make_unique_path(base_path, m_file_path, sizeof(m_file_path)))
+    {
+        m_log.warn(SUBSYSTEM, "Could not allocate unique clip path");
+        return;
+    }
 
     // Store clip path for close_clip()
     strncpy(m_clip_path, m_file_path, sizeof(m_clip_path) - 1);
@@ -214,7 +230,9 @@ void VideoController::close_clip()
     }
 
     m_log.info(SUBSYSTEM, "Clip closed: %s (%u frames, %u bytes)",
-               m_clip_path, m_frames_recorded, m_file_size);
+               m_clip_path,
+               static_cast<uint32_t>(m_frames_recorded),
+               static_cast<uint32_t>(m_file_size));
 
     // Clean up
     m_frames_recorded = 0;
@@ -229,6 +247,14 @@ void VideoController::close_clip()
 
 void VideoController::capture_and_write_frame()
 {
+    // Guard against stale callbacks (e.g. a task notification that was
+    // already queued when stop was requested): never capture outside
+    // the RECORDING state.
+    if (m_state != RecordingState::RECORDING)
+    {
+        return;
+    }
+
     CameraCaptureResult result = m_camera.capture_frame();
     if (result != CameraCaptureResult::SUCCESS)
     {
@@ -301,6 +327,15 @@ bool VideoController::write_at_offset(const char* path, uint32_t offset,
                                       const uint8_t* data, size_t len)
 {
     return m_sd.write_at_sync(path, offset, data, len);
+}
+
+bool VideoController::make_unique_path(const char* base_path, char* out, size_t out_size)
+{
+    return PathUtils::make_unique_path(
+        base_path,
+        [this](const char* path) { return m_sd.exists_sync(path); },
+        out,
+        out_size);
 }
 
 // ============================================================

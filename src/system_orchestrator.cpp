@@ -1,4 +1,5 @@
 #include "system_orchestrator.h"
+#include "time_formatter.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -165,21 +166,28 @@ CommandResult SystemOrchestrator::handle_take_photo(
         return CommandResult::INVALID_STATE;
     }
 
-    // Build photo path from unix timestamp
+    // Build photo path from unix timestamp (UTC)
     uint32_t seconds = m_time.unix_now();
-    uint32_t ss = seconds % 60;
-    uint32_t mm = (seconds / 60) % 60;
-    uint32_t hh = (seconds / 3600) % 24;
-    uint32_t day_of_year = (seconds / 86400u) % 365;
-    uint32_t year = 1970 + (seconds / (86400u * 365u));
-    uint32_t month = (day_of_year / 30) + 1;
-    uint32_t day = (day_of_year % 30) + 1;
 
+    char date[9];
+    char time_str[7];
+    if (!TimeFormatter::format_date(seconds, date, sizeof(date)) ||
+        !TimeFormatter::format_time(seconds, time_str, sizeof(time_str)))
+    {
+        m_log.error(SUBSYSTEM, "Failed to format timestamp");
+        return CommandResult::INTERNAL_ERROR;
+    }
+
+    char base_path[64];
+    snprintf(base_path, sizeof(base_path), "/%s/%s_%s.jpg", date, date, time_str);
+
+    // Avoid overwriting a photo taken within the same second
     char photo_path[64];
-    snprintf(photo_path, sizeof(photo_path),
-             "/%04u%02u%02u/%04u%02u%02u_%02u%02u%02u.jpg",
-             year, month, day,
-             year, month, day, hh, mm, ss);
+    if (!m_video.make_unique_path(base_path, photo_path, sizeof(photo_path)))
+    {
+        m_log.error(SUBSYSTEM, "Could not allocate unique photo path");
+        return CommandResult::INTERNAL_ERROR;
+    }
 
     if (!m_video.capture_photo(photo_path))
     {

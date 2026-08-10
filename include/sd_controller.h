@@ -249,9 +249,22 @@ class SdController
         bool create_dir_sync(const char* path);
 
         /**
+         * @brief Synchronous file-existence check: asserts CS, checks, de-asserts CS.
+         *
+         * All SD I/O goes through this controller so the shared CS/LED pin
+         * remains properly arbitrated.
+         *
+         * @param path File path to check.
+         * @return true if the file exists.
+         */
+        bool exists_sync(const char* path);
+
+        /**
          * @brief Synchronous seek-and-write: asserts CS, opens, seeks, writes, closes.
          *
          * Used for overwriting the AVI header at position 0 after recording.
+         * Opens with READ_WRITE mode so existing file content is preserved
+         * and only the bytes at @p offset are replaced.
          *
          * @param path   File path to open.
          * @param offset Byte offset to seek to before writing.
@@ -282,8 +295,7 @@ class SdController
         {
             READ,
             WRITE,
-            CREATE_DIR,
-            SEEK_WRITE
+            CREATE_DIR
         };
 
         TimeService& m_time;
@@ -305,7 +317,6 @@ class SdController
         // Write-specific parameters
         const uint8_t* m_write_data{nullptr};
         size_t m_write_len{0};
-        uint32_t m_write_offset{0};
         SdWriteResult m_write_result{SdWriteResult::SUCCESS};
 
         // Read-specific parameters

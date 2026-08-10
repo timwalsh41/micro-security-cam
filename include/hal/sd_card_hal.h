@@ -33,7 +33,8 @@ enum class FileOpenMode : uint8_t
 {
     READ,               ///< Open file for reading
     WRITE,              ///< Open file for writing (truncates if exists)
-    APPEND              ///< Open file for writing (preserves existing content)
+    APPEND,             ///< Open file for writing (preserves existing content)
+    READ_WRITE          ///< Open file for reading/writing (preserves existing content)
 };
 
 /**
@@ -62,7 +63,7 @@ class SdCardHal
          * Must only be called when the chip-select pin is asserted.
          *
          * @param path The file path to open.
-         * @param mode The open mode (READ or WRITE).
+         * @param mode The open mode (READ, WRITE, APPEND, or READ_WRITE).
          * @return true if the file was opened successfully, false otherwise.
          */
         virtual bool open(const char* path, FileOpenMode mode) = 0;
@@ -71,7 +72,7 @@ class SdCardHal
          * @brief Writes data to the currently open file.
          *
          * Must only be called when the chip-select pin is asserted.
-         * The file must have been opened in WRITE mode.
+         * The file must have been opened in WRITE, APPEND, or READ_WRITE mode.
          *
          * @param data Pointer to the data buffer to write.
          * @param len Number of bytes to write.
@@ -83,7 +84,7 @@ class SdCardHal
          * @brief Reads data from the currently open file.
          *
          * Must only be called when the chip-select pin is asserted.
-         * The file must have been opened in READ mode.
+         * The file must have been opened in READ or READ_WRITE mode.
          *
          * @param buffer Pointer to the buffer to read into.
          * @param len Maximum number of bytes to read.
@@ -103,7 +104,7 @@ class SdCardHal
          * @brief Seeks to a byte position within the currently open file.
          *
          * Must only be called when the chip-select pin is asserted.
-         * The file must have been opened in WRITE or READ mode.
+         * The file must be currently open.
          *
          * @param pos The byte offset from the beginning of the file.
          * @return true if the seek succeeded, false otherwise.
@@ -120,6 +121,16 @@ class SdCardHal
          * @return true if the directory was created (or already existed), false otherwise.
          */
         virtual bool create_dir(const char* path) = 0;
+
+        /**
+         * @brief Checks whether a file exists on the SD card.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         *
+         * @param path The file path to check.
+         * @return true if the file exists, false otherwise.
+         */
+        virtual bool exists(const char* path) = 0;
 
         /**
          * @brief Checks whether the SD card has been successfully initialized, e.g. hardware

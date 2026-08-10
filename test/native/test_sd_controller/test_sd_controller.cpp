@@ -750,6 +750,125 @@ void test_full_read_cycle_state_sequence()
 }
 
 // ============================================================
+// write_at_sync — READ_WRITE in-place update
+// ============================================================
+
+/**
+ * @brief write_at_sync() overwrites a region without truncating the file.
+ *
+ * A pre-existing 8-byte file updated at offset 0 with a 4-byte header
+ * must keep its original size; only the first 4 bytes change.
+ */
+void test_write_at_sync_preserves_existing_content()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    // Seed an 8-byte file: AA BB CC DD 11 22 33 44
+    sd_hal.seed_file("/clip.avi", {0xAA, 0xBB, 0xCC, 0xDD,
+                                    0x11, 0x22, 0x33, 0x44});
+
+    uint8_t hdr[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    TEST_ASSERT_TRUE(ctrl.write_at_sync("/clip.avi", 0, hdr, sizeof(hdr)));
+
+    // Size unchanged — READ_WRITE must not truncate
+    const std::vector<uint8_t>& content = sd_hal.files["/clip.avi"];
+    TEST_ASSERT_EQUAL_UINT32(8, content.size());
+
+    // First 4 bytes replaced, tail preserved
+    TEST_ASSERT_EQUAL_UINT8(0xDE, content[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xAD, content[1]);
+    TEST_ASSERT_EQUAL_UINT8(0xBE, content[2]);
+    TEST_ASSERT_EQUAL_UINT8(0xEF, content[3]);
+    TEST_ASSERT_EQUAL_UINT8(0x11, content[4]);
+    TEST_ASSERT_EQUAL_UINT8(0x44, content[7]);
+}
+
+/**
+ * @brief write_at_sync() opens READ_WRITE, seeks, and writes.
+ */
+void test_write_at_sync_uses_read_write_mode_and_seek()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/clip.avi", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
+
+    uint8_t hdr[] = {0xAA, 0xBB};
+    TEST_ASSERT_TRUE(ctrl.write_at_sync("/clip.avi", 4, hdr, sizeof(hdr)));
+
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
+    TEST_ASSERT_EQUAL_STRING("/clip.avi", sd_hal.last_open_path);
+    TEST_ASSERT_EQUAL(hal::FileOpenMode::READ_WRITE, sd_hal.last_open_mode);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.seek_call_count);
+    TEST_ASSERT_EQUAL_UINT32(4, sd_hal.last_seek_pos);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.write_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
+}
+
+/**
+ * @brief write_at_sync() fails cleanly when open() fails.
+ */
+void test_write_at_sync_open_failed()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.open_result = false;
+
+    uint8_t hdr[] = {0xAA, 0xBB};
+    TEST_ASSERT_FALSE(ctrl.write_at_sync("/clip.avi", 0, hdr, sizeof(hdr)));
+
+    // open attempted, seek/write skipped, close still called for cleanup
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
+    TEST_ASSERT_EQUAL_INT(0, sd_hal.seek_call_count);
+    TEST_ASSERT_EQUAL_INT(0, sd_hal.write_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
+}
+
+// ============================================================
+// exists_sync
+// ============================================================
+
+/**
+ * @brief exists_sync() reports true for a file present on the card.
+ */
+void test_exists_sync_true_when_file_present()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/clip.avi", {0x01, 0x02});
+
+    TEST_ASSERT_TRUE(ctrl.exists_sync("/clip.avi"));
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.exists_call_count);
+    TEST_ASSERT_EQUAL_STRING("/clip.avi", sd_hal.last_exists_path);
+}
+
+/**
+ * @brief exists_sync() reports false for a missing file.
+ */
+void test_exists_sync_false_when_file_absent()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    TEST_ASSERT_FALSE(ctrl.exists_sync("/missing.avi"));
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.exists_call_count);
+    TEST_ASSERT_EQUAL_STRING("/missing.avi", sd_hal.last_exists_path);
+}
+
+// ============================================================
 // Unity boilerplate
 // ============================================================
 
@@ -790,6 +909,15 @@ int main(int argc, char **argv)
     RUN_TEST(test_read_file_open_failed);
     RUN_TEST(test_read_stalls_without_time_advance);
     RUN_TEST(test_full_read_cycle_state_sequence);
+
+    // write_at_sync (READ_WRITE in-place update)
+    RUN_TEST(test_write_at_sync_preserves_existing_content);
+    RUN_TEST(test_write_at_sync_uses_read_write_mode_and_seek);
+    RUN_TEST(test_write_at_sync_open_failed);
+
+    // exists_sync
+    RUN_TEST(test_exists_sync_true_when_file_present);
+    RUN_TEST(test_exists_sync_false_when_file_absent);
 
     return UNITY_END();
 }

@@ -1,6 +1,7 @@
 #ifndef VIDEO_CONTROLLER_H
 #define VIDEO_CONTROLLER_H
 
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include "camera_controller.h"
@@ -10,6 +11,8 @@
 #include "logging_service.h"
 #include "capture_scheduler.h"
 #include "ini_parser.h"
+#include "path_utils.h"
+#include "time_formatter.h"
 
 /**
  * @file video_controller.h
@@ -49,8 +52,7 @@
 enum class RecordingState : uint8_t
 {
     IDLE,       ///< Not recording
-    RECORDING,  ///< Actively capturing and writing frames
-    STOPPING    ///< Closing current clip (flushing to SD)
+    RECORDING   ///< Actively capturing and writing frames
 };
 
 /**
@@ -110,11 +112,13 @@ class VideoController
         bool start_recording();
 
         /**
-         * @brief Stops the current recording session.
+         * @brief Stops the current recording session synchronously.
          *
-         * Flags the current clip for closure. The actual stop occurs
-         * when the scheduler delivers the next frame callback. Safe to
-         * call in any state — no-op if not recording.
+         * Flags the current clip for closure and stops the capture
+         * scheduler, waiting (bounded) for the capture task to run its
+         * final frame callback, which closes the clip. On successful
+         * return the state is IDLE. Safe to call in any state — no-op
+         * if not recording.
          */
         void stop_recording();
 
@@ -129,6 +133,20 @@ class VideoController
          * @return true if the photo was captured and written successfully.
          */
         bool capture_photo(const char* path);
+
+        /**
+         * @brief Builds a unique SD path from a candidate path.
+         *
+         * If the candidate already exists on the SD card, a serial
+         * suffix (_1, _2, ...) is inserted before the extension. Used
+         * for paths generated outside the clip lifecycle, e.g. photos.
+         *
+         * @param base_path Candidate path that may already exist.
+         * @param out       Buffer receiving the unique path.
+         * @param out_size  Size of the output buffer.
+         * @return true if a unique path was written to @p out.
+         */
+        bool make_unique_path(const char* base_path, char* out, size_t out_size);
 
         /**
          * @brief Returns whether the controller is actively recording.
@@ -237,11 +255,11 @@ class VideoController
         AviWriter m_avi_writer;
 
         // State
-        RecordingState m_state{RecordingState::IDLE};
-        bool m_stop_clip{false};
+        std::atomic<RecordingState> m_state{RecordingState::IDLE};
+        std::atomic<bool> m_stop_clip{false};
         hal::millis_t m_frame_interval_ms{100};
-        uint32_t m_frames_recorded{0};
-        uint32_t m_file_size{0};
+        std::atomic<uint32_t> m_frames_recorded{0};
+        std::atomic<uint32_t> m_file_size{0};
         ConfigData::VideoConfig m_config{};
         uint16_t m_width{640};    ///< Validated capture width in pixels
         uint16_t m_height{480};   ///< Validated capture height in pixels

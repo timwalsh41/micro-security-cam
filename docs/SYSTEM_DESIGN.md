@@ -70,8 +70,17 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | Interface | File | Responsibility |
 |-----------|------|----------------|
 | `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
-| `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
+| `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
 | `TimerHal` | `include/hal/timer_hal.h` | Hardware timer abstraction for periodic ISR callbacks. Provides `init(interval_us, isr)`, `set_frequency()`, `start()`, `stop()`. |
+
+**`hal::FileOpenMode`** — file open modes supported by `SdCardHal::open()`:
+
+| Mode | Semantics |
+|------|-----------|
+| `READ` | Open for reading; file must exist |
+| `WRITE` | Open for writing; truncates existing content |
+| `APPEND` | Open for writing; preserves existing content, writes at end |
+| `READ_WRITE` | Open for reading/writing; preserves existing content, writes at seek position (maps to `"r+"` in `SdCardHalImpl`) |
 | `GpioHal` | `include/hal/gpio_hal.h` | Thin forwarding wrappers for `pinMode()` and `digitalWrite()`. No logic — pure indirection. |
 | `TimeHal` | `include/hal/time_hal.h` | Forwarding functions for Arduino `millis()`, `delay()`, and microsecond delays. Defines the `millis_t` type alias. |
 | `LogBackend` | `include/hal/log_backend.h` | Abstract interface for log output destinations. Receives fully formatted log lines from `LoggingService`. |
@@ -84,7 +93,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | Implementation | Wraps |
 |---------------|-------|
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
-| `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/close/seek) |
+| `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/read/close/seek) |
 | `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
@@ -166,8 +175,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | Mock | Tracks | Configurable |
 |------|--------|-------------|
 | `MockCameraHal` | `init_call_count`, `capture_call_count`, `release_call_count`, `deinit_call_count` | `init_result`, `capture_result`, `initialized_state`, `capabilities` |
-| `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count` | `init_result`, `open_result`, `write_result`, `seek_result` |
-| `MockTimerHal` | `init_call_count`, `start_call_count`, `stop_call_count` | `trigger()` method for synchronous ISR invocation in tests |
+| `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `file_content` (seed content) |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
@@ -201,7 +209,7 @@ The `tick()` method advances the state machine and returns the desired LED state
 
 **File**: `include/sd_controller.h`
 
-Manages the SD card I/O lifecycle with a chip-select (CS) timing protocol. Supports read, write, write-at-offset, and directory creation operations. Owns a state machine that sequences CS assertion and de-assertion around file I/O:
+Manages the SD card I/O lifecycle with a chip-select (CS) timing protocol. Supports read, write, write-at-offset, file-existence checks, and directory creation operations. Owns a state machine that sequences CS assertion and de-assertion around file I/O:
 
 ```
 IDLE → PRE_DEACTIVATE_CS → ACTIVATE_CS → IO_ACTIVE → END_IO → POST_DEACTIVATE_CS → IDLE
@@ -227,7 +235,33 @@ The synchronous methods are intended for use from FreeRTOS task context where bl
 - `write_sync(path, data, len, mode)` — asserts CS, opens file, writes, closes, deasserts CS.
 - `read_sync(path, buffer, buffer_size)` — asserts CS, opens file, reads, closes, deasserts CS.
 - `create_dir_sync(path)` — asserts CS, creates directory, deasserts CS.
-- `write_at_sync(path, offset, data, len)` — asserts CS, opens file, seeks to offset, writes, closes, deasserts CS.
+- `exists_sync(path)` — asserts CS, checks whether the file exists, deasserts CS. All SD I/O goes through this controller so the shared CS/LED pin remains properly arbitrated.
+- `write_at_sync(path, offset, data, len)` — asserts CS, opens file in `READ_WRITE` mode (preserves existing content), seeks to offset, writes, closes, deasserts CS. Used for overwriting the AVI header at position 0 after recording.
+
+### TimeFormatter
+
+**Files**: `include/time_formatter.h`, `src/time_formatter.cpp`
+
+Static UTC date/time formatting helpers used by file-naming code (AVI clip paths, photo paths). Uses `gmtime_r()` so dates account for leap years and month lengths, with no timezone dependency (all times are UTC).
+
+| Method | Purpose |
+|--------|---------|
+| `format_date(unix_seconds, out, size)` | Formats a Unix timestamp as `YYYYMMDD` (UTC) |
+| `format_time(unix_seconds, out, size)` | Formats a Unix timestamp as `HHMMSS` (UTC) |
+
+Safe to call from task context; not safe from ISR context (uses `gmtime_r`, which may take a lock in newlib).
+
+### PathUtils
+
+**Files**: `include/path_utils.h`, `src/path_utils.cpp`
+
+Generates non-colliding file paths by appending serial suffixes (`_1`, `_2`, ...) before the file extension until a non-existent path is found, e.g. `photo.jpg` → `photo_1.jpg`. Decoupled from any specific storage layer via an injected `ExistsFn` callback.
+
+| Method | Purpose |
+|--------|---------|
+| `make_unique_path(base_path, exists, out, out_size)` | Finds a non-existent path by appending serial suffixes; capped at `MAX_SUFFIX_ATTEMPTS` (100) |
+
+`VideoController::make_unique_path()` wraps this with an `exists_sync()` callback so photo paths never overwrite an existing file.
 
 ### LoggingService
 
@@ -611,7 +645,7 @@ Every command returns a `CommandResult` enum value:
 |------|---------|---------|---------------|--------|
 | `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"state":int,"frames":uint32,"file_size":uint32}` | Returns current recording state, state machine value, frame count, and accumulated file size. No side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Returns `INVALID_STATE` if already recording, `INTERNAL_ERROR` if recording fails to start. |
-| `0x11` | `STOP_RECORDING` | None | None | Requests a graceful stop of the current recording session. On ESP32, the capture task processes the stop, closes the clip, and transitions to IDLE. |
+| `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session synchronously: flags the clip for closure, stops the capture scheduler, and waits (bounded) for the capture task to run its final frame callback, which closes the clip and transitions to IDLE. On return the state is `IDLE`. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` if recording, `INTERNAL_ERROR` if capture or write fails. |
 | `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
 | `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
@@ -730,20 +764,23 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 
 ```
                                    start_recording()              clip limit / stop_recording()
-      ┌──────────┐ ──────────────────────────────────► ┌───────────┐ ────────────────────►  ┌───────────┐
-      │   IDLE   │ ◄───────────────────────────────── ◆│ RECORDING │ ◄─────────────────── ◆ │  STOPPING │
-      └──────────┘  explicit stop (via STOPPING)       └───────────┘  auto-rotate (new clip)└───────────┘
+      ┌──────────┐ ──────────────────────────────────► ┌───────────┐
+      │   IDLE   │ ◄───────────────────────────────── ◆│ RECORDING │
+      └──────────┘  explicit stop (synchronous)        └───────────┘  auto-rotate (new clip)
 ```
 
 - **IDLE** — Not recording. Awaits `start_recording()` or `capture_photo()`.
 - **RECORDING** — Actively capturing and writing frames at the configured FPS. Clip auto-rotates when duration or file size limit is reached.
-- **STOPPING** — Closing current clip (flushing AVI header and writing final index to SD). Transitions to RECORDING (auto-rotate) or IDLE (explicit stop).
+
+`stop_recording()` is **synchronous**: it flags the current clip for closure, stops the capture scheduler, and blocks (bounded) until the capture task runs its final frame callback, which closes the clip and returns the state to `IDLE`. On successful return the state is always `IDLE`, so `GET_STATUS` reports `recording:false` immediately and a subsequent `start_recording()` succeeds right away.
 
 ### Capture Scheduling
 
 `VideoController` delegates all capture scheduling to an injected `ICaptureScheduler`. This keeps platform-specific concerns (FreeRTOS tasks, timer ISRs) entirely outside the controller. `start_recording()` calls `m_scheduler.start(interval_ms, callback)` and `stop_recording()` calls `m_scheduler.stop()`.
 
-On ESP32, `CaptureSchedulerEsp32` implements the scheduler using a hardware timer (`TimerHalImpl`) and a FreeRTOS capture task pinned to CPU0 (APP_CPU). The timer ISR sends a task notification to wake the capture task, which invokes the frame callback. This keeps the main loop (CPU1) free for WiFi, web server, and LED management. The capture task also handles stop requests: when `stop()` is called, it stops the timer and gives a notification to unblock the task, which runs one final callback (to process any pending clip closure) before exiting.
+On ESP32, `CaptureSchedulerEsp32` implements the scheduler using a hardware timer (`TimerHalImpl`) and a FreeRTOS capture task pinned to CPU0 (APP_CPU). The timer ISR sends a task notification to wake the capture task, which invokes the frame callback. This keeps the main loop (CPU1) free for WiFi, web server, and LED management.
+
+`start()` returns `false` if the scheduler is already running (no second task is created), and `stop()` is synchronous: it sets a stop flag, stops the timer, wakes the task, and joins it with a bounded wait (`STOP_JOIN_TIMEOUT_MS`). The task runs one final callback (to process any pending clip closure) before exiting. Cross-task state (`TaskHandle_t`, stop flag) is `std::atomic` so the ISR and task never act on a dangling handle.
 
 ### Recording Sequence Diagram
 
@@ -845,7 +882,7 @@ deactivate TASK
 
 end
 
-== Explicit Stop ==
+== Explicit Stop (synchronous) ==
 
 MAIN -> VC : stop_recording()
 activate VC
@@ -854,6 +891,9 @@ VC -> CS : stop()
 activate CS
 CS -> TMR : stop()
 CS -> TASK : xTaskNotifyGive()
+CS -> TASK : join (bounded wait on exit semaphore)
+note right: stop() blocks until the\ntask has run its final\ncallback and exited
+CS --> VC : return
 deactivate CS
 deactivate VC
 
@@ -869,7 +909,8 @@ SD --> SDC
 deactivate SDC
 VC -> SDC : write_at_sync(path, 0, patched_hdr)
 activate SDC
-SDC -> SD : open → seek(0) → write(hdr) → close()
+SDC -> SD : open(READ_WRITE) → seek(0) → write(hdr) → close()
+note right: READ_WRITE preserves\nexisting content; only\nthe header bytes are\nreplaced
 SD --> SDC
 deactivate SDC
 VC -> VC : state = IDLE
@@ -888,7 +929,7 @@ Frames are written to SD incrementally during recording:
 
 1. Each frame's JPEG data is written immediately via `SdController::write_sync()`.
 2. `AviWriter::last_frame_chunk()` provides the formatted AVI chunk for each frame.
-3. At clip close, the AVI header is patched via `SdController::write_at_sync()` (seek to offset 0, overwrite with patched header).
+3. At clip close, the AVI header is patched via `SdController::write_at_sync()` (seek to offset 0, overwrite with patched header). `write_at_sync()` opens the file in `READ_WRITE` mode so existing content is preserved and only the header bytes are replaced — the clip is never truncated.
 4. The frame index is appended via `SdController::write_sync()`.
 
 This approach avoids large RAM buffers and enables reasonable clip-close times (~1 SD transaction per frame).
@@ -900,7 +941,7 @@ Files are written to the SD card with the pattern:
 /YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
 ```
 
-Date and time are derived from `millis()` using a simplified calendar model (not a full RTC-based calendar).
+Date and time are derived from the Unix timestamp via `TimeFormatter` (`gmtime_r`-based UTC formatting). If a generated path already exists on the SD card, a serial suffix (`_1`, `_2`, ...) is inserted before the extension via `PathUtils` (through `VideoController::make_unique_path()`), so clips and photos never overwrite an existing file.
 
 ### Clip Rotation
 
@@ -912,7 +953,7 @@ When a clip reaches `clip_duration_s` or `max_file_size_mb`, the clip is closed 
 ```
 /YYYYMMDD/YYYYMMDD_HHMMSS_photo.jpg
 ```
-Returns the file path on success. Returns `INVALID_STATE` if currently recording.
+Returns the file path on success. Returns `INVALID_STATE` if currently recording. The caller (e.g. `SystemOrchestrator::handle_take_photo()`) builds the base path from the Unix timestamp via `TimeFormatter` and resolves collisions via `VideoController::make_unique_path()` before calling `capture_photo()`.
 
 ### Init Signature
 
@@ -1162,7 +1203,7 @@ The diagram illustrates the complete round-trip:
 | Environment | Platform | Purpose | Test Filter |
 |------------|----------|---------|-------------|
 | `native` | Host (macOS/Linux) | Unit tests for all pure logic | `native/*` |
-| `seeed_xiao_esp32s3_test` | ESP32 | Hardware integration tests | `hardware_tests` |
+| `seeed_xiao_esp32s3_test` | ESP32 | Hardware integration tests | `hardware/*` |
 
 ### Test Structure
 
@@ -1183,7 +1224,13 @@ test/
     test_time_service/              ← Time service tests
     test_video_controller/          ← Video recording orchestration
     test_wifi_service/              ← WiFi lifecycle tests
+    test_time_formatter/            ← TimeFormatter UTC formatting
+    test_path_utils/                ← PathUtils collision avoidance
   hardware/                         ← ESP32 integration tests
+    test_timer_hal_impl/            ← TimerHalImpl periodic ISR behavior
+    test_capture_scheduler_esp32/   ← CaptureSchedulerEsp32 task/timer lifecycle
+    test_sd_card_hal_impl/          ← Real SD card open-mode semantics
+    test_video_controller_esp32/    ← End-to-end AVI clip recording
   mocks/
     native_mocks/                   ← Mock HAL classes + mock Arduino
     embedded_mocks/                 ← Mocks for ESP32 test env
@@ -1221,5 +1268,5 @@ pio test -e seeed_xiao_esp32s3_test
 |------------|----------|---------|-----------|
 | `seeed_xiao_esp32s3` | espressif32 | Production firmware build & flash | `-DCAMERA_MODEL_XIAO_ESP32S3` |
 | `seeed_xiao_esp32s3_debug` | espressif32 | Debug build with USB-JTAG | Adds `-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1 -DDEBUG_MODE` |
-| `seeed_xiao_esp32s3_test` | espressif32 | Hardware integration tests | Extends target env; `lib_extra_dirs = test/mocks` |
+| `seeed_xiao_esp32s3_test` | espressif32 | Hardware integration tests | Extends target env; `lib_extra_dirs = test/mocks`; `test_build_src = yes`; `build_src_filter = +<*> -<main.cpp>` |
 | `native` | native | Host unit tests | `-DUNIT_TESTING -I include -I test` |

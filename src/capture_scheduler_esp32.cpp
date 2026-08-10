@@ -9,17 +9,25 @@
 CaptureSchedulerEsp32::CaptureSchedulerEsp32(hal::TimerHal& timer)
     : m_timer(timer)
 {
+    m_exit_sem = xSemaphoreCreateBinary();
 }
 
 // ============================================================
 // Start / stop
 // ============================================================
 
-void CaptureSchedulerEsp32::start(uint32_t interval_ms,
+bool CaptureSchedulerEsp32::start(uint32_t interval_ms,
                                   std::function<void()> frame_callback)
 {
+    // Guard against a second task while one is still running (e.g. from
+    // a stop() that timed out). Never overwrite the live callback.
+    if (m_task.load(std::memory_order_relaxed) != nullptr)
+    {
+        return false;
+    }
+
     m_callback = frame_callback;
-    m_stop_requested = false;
+    m_stop_requested.store(false, std::memory_order_relaxed);
 
     // Configure timer ISR to call on_frame_capture()
     m_timer.init(interval_ms * 1000, [this]() { on_frame_capture(); });
@@ -28,27 +36,54 @@ void CaptureSchedulerEsp32::start(uint32_t interval_ms,
     // Arduino setup()/loop() run on APP_CPU (CPU1); pinning the
     // capture task to PRO_CPU keeps CPU1 free for WiFi, web server,
     // and LED management.
+    TaskHandle_t task = nullptr;
     xTaskCreatePinnedToCore(
         capture_task_entry,
         "capture",
         4096,
         this,
         configMAX_PRIORITIES - 1,
-        &m_task,
+        &task,
         PRO_CPU_NUM);
 
+    m_task.store(task, std::memory_order_relaxed);
     m_timer.start();
+    return true;
 }
 
 void CaptureSchedulerEsp32::stop()
 {
-    m_stop_requested = true;
+    TaskHandle_t task = m_task.load(std::memory_order_relaxed);
+    if (task == nullptr)
+    {
+        return;
+    }
+
+    m_stop_requested.store(true, std::memory_order_relaxed);
     m_timer.stop();
 
-    // Wake the task so it can observe the stop flag and exit
-    if (m_task != nullptr)
+    // Wake the task so it can run its final callback and observe the
+    // stop flag before exiting.
+    xTaskNotifyGive(task);
+
+    // Drain any stale exit signal before waiting (e.g. from a previous
+    // stop() that timed out), then join the task with a bounded wait.
+    if (m_exit_sem != nullptr)
     {
-        xTaskNotifyGive(m_task);
+        xSemaphoreTake(m_exit_sem, 0);
+        if (xSemaphoreTake(m_exit_sem,
+                           pdMS_TO_TICKS(STOP_JOIN_TIMEOUT_MS)) == pdTRUE)
+        {
+            // Task has exited; allow a future start()
+            m_task.store(nullptr, std::memory_order_relaxed);
+        }
+        // On timeout the task handle is retained so start() refuses to
+        // create a second task; the consumer's fail-safe is that the
+        // next frame callback still closes its clip.
+    }
+    else
+    {
+        m_task.store(nullptr, std::memory_order_relaxed);
     }
 }
 
@@ -58,10 +93,13 @@ void CaptureSchedulerEsp32::stop()
 
 void CaptureSchedulerEsp32::on_frame_capture()
 {
-    if (m_task != nullptr)
+    // Relaxed load: m_task is only cleared after the task has fully
+    // exited (post-join), so the ISR can never act on a dangling handle.
+    TaskHandle_t task = m_task.load(std::memory_order_relaxed);
+    if (task != nullptr)
     {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        vTaskNotifyGiveFromISR(m_task, &xHigherPriorityTaskWoken);
+        vTaskNotifyGiveFromISR(task, &xHigherPriorityTaskWoken);
         if (xHigherPriorityTaskWoken)
         {
             portYIELD_FROM_ISR();
@@ -90,8 +128,12 @@ void CaptureSchedulerEsp32::capture_task_entry(void* pvParameters)
         }
 
         // Check if stop was requested — exit after the final callback
-        if (self->m_stop_requested)
+        if (self->m_stop_requested.load(std::memory_order_relaxed))
         {
+            if (self->m_exit_sem != nullptr)
+            {
+                xSemaphoreGive(self->m_exit_sem);
+            }
             vTaskDelete(nullptr);
             return;
         }

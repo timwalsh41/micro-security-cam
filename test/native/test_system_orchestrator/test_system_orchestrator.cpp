@@ -12,6 +12,7 @@
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include <cstring>
+#include <string>
 
 // ============================================================
 // Test fixture
@@ -255,6 +256,71 @@ void test_take_photo_fails_when_recording()
 }
 
 /**
+ * @brief TAKE_PHOTO returns INTERNAL_ERROR and no path when SD write fails.
+ */
+void test_take_photo_sd_write_failure()
+{
+    TestFixture f;
+    set_mock_millis(1234567890u);
+
+    memset(f.camera_hal.frame_buffer, 0x42, 64);
+    f.camera_hal.capture_result = {f.camera_hal.frame_buffer, 64};
+    f.sd_hal.write_result = false;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INTERNAL_ERROR),
+        static_cast<uint8_t>(result));
+
+    // No path echoed in the response
+    TEST_ASSERT_EQUAL_UINT32(0, response_len);
+}
+
+/**
+ * @brief Two photos within the same second get distinct, non-clobbering paths.
+ *
+ * The second photo must be written to a uniquified path (_1 suffix)
+ * rather than overwriting the first.
+ */
+void test_take_photo_uniquifies_same_second_collision()
+{
+    TestFixture f;
+    set_mock_millis(1234567890u);
+
+    memset(f.camera_hal.frame_buffer, 0x42, 64);
+    f.camera_hal.capture_result = {f.camera_hal.frame_buffer, 64};
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    // First photo
+    CommandResult result1 = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result1));
+    std::string first_path(reinterpret_cast<char*>(response), response_len);
+    TEST_ASSERT_GREATER_THAN(0u, first_path.size());
+
+    // Second photo — same timestamp
+    CommandResult result2 = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result2));
+    std::string second_path(reinterpret_cast<char*>(response), response_len);
+
+    // Both files exist and are distinct
+    TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(first_path.c_str(), second_path.c_str()));
+}
+
+/**
  * @brief SET_TIME sets the unix time offset.
  */
 void test_set_time_sets_offset()
@@ -348,6 +414,8 @@ int main()
     RUN_TEST(test_stop_recording_delegates);
     RUN_TEST(test_take_photo_captures_frame);
     RUN_TEST(test_take_photo_fails_when_recording);
+    RUN_TEST(test_take_photo_sd_write_failure);
+    RUN_TEST(test_take_photo_uniquifies_same_second_collision);
     RUN_TEST(test_set_time_sets_offset);
     RUN_TEST(test_set_time_invalid_payload);
     RUN_TEST(test_set_config_returns_invalid_state);

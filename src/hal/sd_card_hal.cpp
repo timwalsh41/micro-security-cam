@@ -40,6 +40,13 @@ bool SdCardHalImpl::open(const char* path, hal::FileOpenMode mode)
     {
         m_file = SD.open(path, FILE_APPEND);
     }
+    else if (mode == hal::FileOpenMode::READ_WRITE)
+    {
+        // "r+": open for reading and writing without truncating.
+        // The mode string is passed to fopen(), so this preserves
+        // existing content for in-place header patching.
+        m_file = SD.open(path, "r+");
+    }
     else
     {
         m_file = SD.open(path, FILE_WRITE);
@@ -90,6 +97,11 @@ bool SdCardHalImpl::seek(uint32_t pos)
 bool SdCardHalImpl::create_dir(const char* path)
 {
     return SD.mkdir(path);
+}
+
+bool SdCardHalImpl::exists(const char* path)
+{
+    return SD.exists(path);
 }
 
 bool SdCardHalImpl::is_initialized() const

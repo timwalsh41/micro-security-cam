@@ -166,7 +166,7 @@ void test_start_recording_fails_when_already_recording()
 }
 
 /**
- * @brief stop_recording() triggers clip close on next on_frame_capture().
+ * @brief stop_recording() synchronously closes the clip and returns to IDLE.
  */
 void test_stop_recording_transitions_to_idle()
 {
@@ -180,9 +180,9 @@ void test_stop_recording_transitions_to_idle()
     f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
-    // Stop recording, then capture one more frame to process the stop
+    // stop_recording() synchronously closes the clip: the scheduler runs
+    // one final callback which observes m_stop_clip and transitions to IDLE
     f.video.stop_recording();
-    f.capture_one_frame();
 
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
     TEST_ASSERT_FALSE(f.video.is_recording());
@@ -242,9 +242,13 @@ void test_frames_captured_at_configured_interval()
 }
 
 /**
- * @brief No frame captured when capture is not triggered.
+ * @brief No frame is captured without a scheduler trigger.
+ *
+ * Frame pacing is the hardware timer's responsibility (see
+ * CaptureSchedulerEsp32); the mock scheduler only fires on explicit
+ * on_frame_capture() calls, so frames must not accumulate on their own.
  */
-void test_no_frame_when_interval_not_elapsed()
+void test_no_frame_without_scheduler_trigger()
 {
     TestFixture f;
     f.setup_fake_frame();
@@ -374,9 +378,8 @@ void test_explicit_stop_after_rotation_goes_to_idle()
     // Auto-rotated to new clip
     TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
 
-    // Now explicitly stop
+    // Now explicitly stop — synchronously closes the clip
     f.video.stop_recording();
-    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
     TEST_ASSERT_FALSE(f.video.is_recording());
@@ -400,9 +403,8 @@ void test_create_dir_called_on_open_clip()
     // create_dir should have been called at least once for the parent directory
     TEST_ASSERT_GREATER_THAN(0, f.sd_hal.create_dir_call_count);
 
-    // Stop recording
+    // Stop recording — synchronously closes the clip
     f.video.stop_recording();
-    f.capture_one_frame();
 }
 
 // ============================================================
@@ -424,9 +426,8 @@ void test_rapid_start_stop()
     f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
-    // Stop immediately
+    // Stop immediately — synchronously closes the clip
     f.video.stop_recording();
-    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // Reset after close
@@ -458,7 +459,6 @@ void test_frames_written_to_sd()
     TEST_ASSERT_GREATER_OR_EQUAL(3, f.sd_hal.write_call_count);
 
     f.video.stop_recording();
-    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
 }
 
@@ -478,9 +478,8 @@ void test_file_path_generated_on_start()
     f.video.start_recording();
     f.capture_one_frame();  // Captures first frame
 
-    // Stop and close
+    // Stop and close — synchronously finalizes the clip
     f.video.stop_recording();
-    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     // Verify the SD HAL received file operations
     TEST_ASSERT_GREATER_THAN(0, f.sd_hal.open_call_count);
@@ -509,9 +508,8 @@ void test_avi_frame_count_matches()
 
     TEST_ASSERT_EQUAL_UINT32(10, f.video.frames_recorded());
 
-    // Close the clip
+    // Close the clip — synchronously finalizes the AVI
     f.video.stop_recording();
-    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     // The SD HAL should have been called for open + writes + close
     TEST_ASSERT_GREATER_THAN(0, f.sd_hal.open_call_count);
@@ -546,7 +544,6 @@ void test_clip_close_with_sd_write_failure()
 
     // Stop recording — close_clip() will attempt SD writes that fail
     f.video.stop_recording();
-    f.capture_one_frame();  // Processes the stop → close_clip() → IDLE
 
     // Should still transition to IDLE without crash
     TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
@@ -592,9 +589,141 @@ void test_frame_capture_failure_during_recording()
     TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
     TEST_ASSERT_TRUE(f.video.is_recording());
 
-    // Clean up
+    // Clean up — synchronously closes the clip
     f.video.stop_recording();
+}
+
+// ============================================================
+// Synchronous stop semantics
+// ============================================================
+
+/**
+ * @brief A stale callback arriving after stop is ignored.
+ *
+ * Once stop_recording() has transitioned to IDLE, any late scheduler
+ * callback (e.g. a task notification queued before the timer stopped)
+ * must be dropped by the state guard.
+ */
+void test_stale_callback_after_stop_ignored()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.video.start_recording();
     f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+
+    f.video.stop_recording();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+
+    // Late callback: must not capture or corrupt state
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
+}
+
+/**
+ * @brief Recording can be restarted after a synchronous stop.
+ *
+ * Also exercises clip filename collision handling: both sessions share
+ * the same timestamp, so the second clip must be written to a uniquified
+ * path rather than clobbering the first.
+ */
+void test_restart_after_stop()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+
+    f.video.stop_recording();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+
+    // Second session: the scheduler must accept a fresh start
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+
+    f.video.stop_recording();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+
+    // Collision avoidance: same timestamp → two distinct files on the SD
+    TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+}
+
+/**
+ * @brief start_recording() fails cleanly when the scheduler is busy.
+ *
+ * Simulates a scheduler that refuses to start (e.g. a leftover task
+ * after a timed-out stop). The controller must return to IDLE with no
+ * active clip and must not leave the scheduler running.
+ */
+void test_start_recording_fails_when_scheduler_busy()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.capture_scheduler.start_result = false;
+
+    TEST_ASSERT_FALSE(f.video.start_recording());
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_INT(1, f.capture_scheduler.start_call_count);
+}
+
+/**
+ * @brief A closed clip leaves a complete AVI file in the SD store.
+ *
+ * After stop, the stored file must begin with the patched RIFF header
+ * and end with the idx1 index chunk.
+ */
+void test_clip_file_intact_after_close()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.video.start_recording();
+
+    // Record 3 frames
+    for (uint32_t i = 0; i < 3; i++)
+    {
+        f.capture_one_frame();
+    }
+
+    f.video.stop_recording();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+
+    // Exactly one file should exist in the store
+    TEST_ASSERT_EQUAL_UINT32(1, f.sd_hal.files.size());
+
+    const std::vector<uint8_t>& content = f.sd_hal.files.begin()->second;
+    TEST_ASSERT_GREATER_THAN(224, content.size());
+
+    // Patched header begins with RIFF magic
+    TEST_ASSERT_EQUAL_UINT8('R', content[0]);
+    TEST_ASSERT_EQUAL_UINT8('I', content[1]);
+    TEST_ASSERT_EQUAL_UINT8('F', content[2]);
+    TEST_ASSERT_EQUAL_UINT8('F', content[3]);
+
+    // Index chunk present after header + movi data
+    bool found_idx1 = false;
+    for (size_t i = 0; i + 4 <= content.size(); i++)
+    {
+        if (content[i] == 'i' && content[i + 1] == 'd'
+            && content[i + 2] == 'x' && content[i + 3] == '1')
+        {
+            found_idx1 = true;
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE(found_idx1);
 }
 
 // ============================================================
@@ -726,7 +855,7 @@ int main()
     // Frame pacing
     RUN_TEST(test_first_frame_captured_immediately);
     RUN_TEST(test_frames_captured_at_configured_interval);
-    RUN_TEST(test_no_frame_when_interval_not_elapsed);
+    RUN_TEST(test_no_frame_without_scheduler_trigger);
 
     // Clip rotation
     RUN_TEST(test_clip_closes_at_duration_limit);
@@ -755,6 +884,12 @@ int main()
     // Error handling
     RUN_TEST(test_clip_close_with_sd_write_failure);
     RUN_TEST(test_frame_capture_failure_during_recording);
+
+    // Synchronous stop semantics
+    RUN_TEST(test_stale_callback_after_stop_ignored);
+    RUN_TEST(test_restart_after_stop);
+    RUN_TEST(test_start_recording_fails_when_scheduler_busy);
+    RUN_TEST(test_clip_file_intact_after_close);
 
     // build_camera_config resolution mapping
     RUN_TEST(test_build_camera_config_known_names);

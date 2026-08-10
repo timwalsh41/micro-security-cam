@@ -76,22 +76,6 @@ peripherals::SdSignal SdController::tick()
                     m_read_result = SdReadResult::FILE_OPEN_FAILED;
                 }
             }
-            else if (m_operation == SdOperation::SEEK_WRITE)
-            {
-                // Open, seek to offset, write, close
-                if (!m_sd_hal.open(m_io_path, hal::FileOpenMode::WRITE))
-                {
-                    m_write_result = SdWriteResult::FILE_OPEN_FAILED;
-                }
-                else if (!m_sd_hal.seek(m_write_offset))
-                {
-                    m_write_result = SdWriteResult::FILE_WRITE_ERROR;
-                }
-                else if (!m_sd_hal.write(m_write_data, m_write_len))
-                {
-                    m_write_result = SdWriteResult::FILE_WRITE_ERROR;
-                }
-            }
             else if (m_operation == SdOperation::WRITE)
             {
                 if (!m_sd_hal.write(m_write_data, m_write_len))
@@ -265,10 +249,18 @@ bool SdController::create_dir_sync(const char* path)
     return ok;
 }
 
+bool SdController::exists_sync(const char* path)
+{
+    cs_assert();
+    bool exists = m_sd_hal.exists(path);
+    cs_deassert();
+    return exists;
+}
+
 bool SdController::write_at_sync(const char* path, uint32_t offset, const uint8_t* data, size_t len)
 {
     cs_assert();
-    bool ok = m_sd_hal.open(path, hal::FileOpenMode::WRITE)
+    bool ok = m_sd_hal.open(path, hal::FileOpenMode::READ_WRITE)
               && m_sd_hal.seek(offset)
               && m_sd_hal.write(data, len);
     m_sd_hal.close();

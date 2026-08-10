@@ -5,7 +5,9 @@
 #include "hal/timer_hal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
+#include <atomic>
 #include <functional>
 
 /**
@@ -40,15 +42,20 @@ class CaptureSchedulerEsp32 : public ICaptureScheduler
          *
          * @param interval_ms  Capture interval in milliseconds.
          * @param frame_callback  Function to call on each frame capture.
+         * @return true if started, false if the scheduler is already
+         *         running (no second task is created).
          */
-        void start(uint32_t interval_ms,
+        bool start(uint32_t interval_ms,
                    std::function<void()> frame_callback) override;
 
         /**
-         * @brief Stops the hardware timer and signals the task to exit.
+         * @brief Stops the hardware timer and joins the capture task.
          *
-         * The capture task will wake, observe the stop flag, and
-         * delete itself via vTaskDelete().
+         * The capture task runs one final callback (so the consumer can
+         * process pending clip closure), then deletes itself. This
+         * method blocks until the task has exited or the join timeout
+         * elapses; on timeout the task handle is retained so a later
+         * start() fails instead of leaking a second task.
          */
         void stop() override;
 
@@ -66,16 +73,21 @@ class CaptureSchedulerEsp32 : public ICaptureScheduler
          *
          * Loops forever, blocking on ulTaskNotifyTake(). On each
          * notification, invokes the frame callback. Exits when the
-         * stop flag is set.
+         * stop flag is set, giving the exit semaphore before deleting
+         * itself.
          *
          * @param pvParameters  Pointer to the CaptureSchedulerEsp32 instance.
          */
         static void capture_task_entry(void* pvParameters);
 
+        /** Maximum time stop() waits for the capture task to exit (ms). */
+        static constexpr uint32_t STOP_JOIN_TIMEOUT_MS = 1000;
+
         hal::TimerHal& m_timer;
         std::function<void()> m_callback;
-        TaskHandle_t m_task{nullptr};
-        volatile bool m_stop_requested{false};
+        std::atomic<TaskHandle_t> m_task{nullptr};
+        std::atomic<bool> m_stop_requested{false};
+        SemaphoreHandle_t m_exit_sem{nullptr};
 };
 
 #endif // CAPTURE_SCHEDULER_ESP32_H
