@@ -279,11 +279,7 @@ ConfigData IniParser::parse(const char* content, size_t length)
                 }
                 case Section::CAMERA:
                 {
-                    if (key_match(key_start, key_len, "capture_interval_ms"))
-                    {
-                        config.camera.capture_interval_ms = get_uint_val(val_start, val_len);
-                    }
-                    else if (key_match(key_start, key_len, "resolution"))
+                    if (key_match(key_start, key_len, "resolution"))
                     {
                         get_string_val(val_start, val_len, config.camera.resolution, CONFIG_FIELD_MAX_LENGTH);
                     }
@@ -426,10 +422,6 @@ size_t IniParser::serialize(const ConfigData& data,
 
     // [camera]
     write("[camera]\n");
-    snprintf(num_buf, sizeof(num_buf), "%u", data.camera.capture_interval_ms);
-    write("capture_interval_ms=");
-    write(num_buf);
-    write("\n");
     write("resolution=");
     write(data.camera.resolution);
     write("\n");

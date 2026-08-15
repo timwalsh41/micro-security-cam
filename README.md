@@ -86,7 +86,6 @@ password=WebPass
 max_streams=4
 
 [camera]
-capture_interval_ms=20000
 resolution=VGA
 jpeg_quality=10
 grab_mode=0xFF
@@ -118,7 +117,6 @@ mic_gain=2
 | `[web]` | `port` | integer | `80` | HTTP server port (1–65535) |
 | `[web]` | `password` | string | `""` | Web interface password |
 | `[web]` | `max_streams` | integer | `4` | Max concurrent streams (1–4) |
-| `[camera]` | `capture_interval_ms` | integer | `20000` | Time between captures in ms |
 | `[camera]` | `resolution` | string | `VGA` | Still photo resolution (see table below) |
 | `[camera]` | `jpeg_quality` | integer | `10` | Still photo JPEG quality (0–63, lower = better) |
 | `[camera]` | `grab_mode` | hex | `0xFF` | Camera grab mode (0x00 = when empty, 0x01 = latest, 0xFF = hardware-recommended default) |

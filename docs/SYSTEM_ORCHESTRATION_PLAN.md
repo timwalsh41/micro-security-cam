@@ -840,7 +840,7 @@ struct VideoConfig {
 
 #### `CameraController` — config-driven initialization
 
-> **Gap addressed in Slice 1:** The current `CameraController::init()` uses hardcoded `hal::CameraConfig` defaults. `ConfigData::CameraConfig` only has `capture_interval_ms` — no resolution or quality fields. The resolution string in `ConfigData::VideoConfig` is never connected to the camera hardware. `CameraHalImpl::init()` hardcodes `FRAMESIZE_UXGA` regardless of config. This section describes the full fix.
+> **Gap addressed in Slice 1:** The current `CameraController::init()` uses hardcoded `hal::CameraConfig` defaults. `ConfigData::CameraConfig` only has `resolution` — no quality fields. The resolution string in `ConfigData::VideoConfig` is never connected to the camera hardware. `CameraHalImpl::init()` hardcodes `FRAMESIZE_UXGA` regardless of config. This section describes the full fix.
 
 **Problem:** Two completely disconnected paths exist:
 - `config.ini [video] resolution=VGA` → `VideoController::map_resolution()` → AVI header dimensions (metadata only)
@@ -929,14 +929,13 @@ Expand `ConfigData::CameraConfig` to include user-facing image settings. These a
 ```cpp
 struct CameraConfig
 {
-    uint32_t capture_interval_ms{20000};  // existing: photo capture timing
-    char resolution[64]{"VGA"};           // NEW: resolution string
-    uint8_t jpeg_quality{10};             // NEW: JPEG quality (0-63)
-    uint8_t grab_mode{0xFF};              // NEW: camera grab mode (0xFF=auto)
+    char resolution[64]{"VGA"};           // resolution string
+    uint8_t jpeg_quality{10};             // JPEG quality (0-63)
+    uint8_t grab_mode{0xFF};              // camera grab mode (0xFF=auto)
 };
 ```
 
-In Slice 7, `resolution` and `jpeg_quality` are migrated to `[camera_photo]` / `[camera_video]`. `capture_interval_ms` and `grab_mode` remain in `[camera]` since they are mode-independent.
+In Slice 7, `resolution` and `jpeg_quality` are migrated to `[camera_photo]` / `[camera_video]`. `grab_mode` remains in `[camera]` since it is mode-independent.
 
 ##### Resolution string → framesize_t mapping
 
@@ -2084,7 +2083,6 @@ password=webpass
 max_streams=4
 
 [camera]
-capture_interval_ms=20000
 grab_mode=auto
 
 [video]
@@ -2130,7 +2128,7 @@ entry_0_motion_stop_delay=2
 ```
 
 **Section responsibilities:**
-- `[camera]` — Mode-independent camera settings: `capture_interval_ms` (photo timing), `grab_mode` (HAL frame grab behavior). These do not vary between photo and video modes.
+- `[camera]` — Mode-independent camera settings: `grab_mode` (HAL frame grab behavior). These do not vary between photo and video modes.
 - `[camera_photo]` — Camera image settings for still photo captures (resolution, quality)
 - `[camera_video]` — Camera image settings for video frame captures (resolution, quality, fps)
 - `[video]` — Recording management only (clip duration, file size limits, audio)

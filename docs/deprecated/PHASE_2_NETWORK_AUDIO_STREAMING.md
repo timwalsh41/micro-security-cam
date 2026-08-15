@@ -527,7 +527,7 @@ password=webpass
 max_streams=4
 
 [camera]
-capture_interval_ms=20000
+resolution=VGA
 
 [video]
 fps=10

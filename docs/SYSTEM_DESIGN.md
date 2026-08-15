@@ -301,7 +301,7 @@ port=8080
 password=webpass
 
 [camera]
-capture_interval_ms=15000
+resolution=VGA
 
 [video]
 fps=10
@@ -319,11 +319,11 @@ jpeg_quality=10
 - Whitespace around keys, values, and section headers is trimmed
 - Unknown sections and keys are silently ignored
 - Values are truncated to `CONFIG_FIELD_MAX_LENGTH - 1` (63) characters
-- Integer values (`port`, `capture_interval_ms`, `fps`, `jpeg_quality`) are validated with range checking
+- Integer values (`port`, `fps`, `jpeg_quality`) are validated with range checking
 
 ### API
 
-- `IniParser::defaults()` — returns a `ConfigData` populated with defaults (port 80, capture interval 20000 ms, empty strings).
+- `IniParser::defaults()` — returns a `ConfigData` populated with defaults (port 80, empty strings).
 - `IniParser::parse(const char* content, size_t length)` — parses the given buffer and returns a `ConfigData`. Malformed lines are skipped gracefully. Unknown fields retain their defaults.
 - `IniParser::serialize(const ConfigData& data, char* buffer, size_t buffer_size)` — serializes a `ConfigData` into INI-format text written to `buffer`. Returns the number of bytes written (excluding null terminator). If the buffer is null or too small, returns the number of bytes that would have been needed. The output is round-trip compatible with `parse()` — serializing and re-parsing yields identical values. All fields are always written, including empty strings.
 
@@ -338,8 +338,7 @@ struct ConfigData
     struct ApConfig     { char ssid[64]; char password[64]; };
     struct WebConfig    { uint16_t port; char password[64];
                           uint8_t max_streams{4}; };
-    struct CameraConfig { uint32_t capture_interval_ms;
-                          char resolution[64]{"VGA"};
+    struct CameraConfig { char resolution[64]{"VGA"};
                           uint8_t jpeg_quality{10};
                           uint8_t grab_mode{0xFF}; };
     struct VideoConfig  { uint16_t fps; char resolution[64];
@@ -398,10 +397,9 @@ In `main.cpp`, after SD card initialization:
 4. `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution + JPEG quality from config) into `ResolvedCameraParams`. The camera controller clamps these against HAL capabilities at init time.
 5. `CameraController::init(ResolvedCameraParams)` initializes the camera with the validated config.
 6. `VideoController::init(config, width, height)` stores the validated dimensions.
-7. `camera_capture_interval_ms` is updated from the parsed config.
-8. `WifiService::init()` connects to STA or falls back to AP.
-9. `WebServerService::init()` starts the HTTP server.
-10. `SystemOrchestrator::init()` registers command handlers.
+7. `WifiService::init()` connects to STA or falls back to AP.
+8. `WebServerService::init()` starts the HTTP server.
+9. `SystemOrchestrator::init()` registers command handlers.
 
 ### Write Pattern
 

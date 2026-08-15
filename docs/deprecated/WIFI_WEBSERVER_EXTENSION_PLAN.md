@@ -73,7 +73,7 @@ port=80
 password=WebPass
 
 [camera]
-capture_interval_ms=20000
+resolution=VGA
 ```
 
 ### 3. Add a WiFi HAL and WiFi service

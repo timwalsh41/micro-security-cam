@@ -89,15 +89,6 @@ void test_defaults_has_empty_web_password()
 }
 
 /**
- * @brief defaults() returns a camera capture interval of 20000ms.
- */
-void test_defaults_has_camera_interval_20000()
-{
-    ConfigData d = IniParser::defaults();
-    TEST_ASSERT_EQUAL_UINT32(20000, d.camera.capture_interval_ms);
-}
-
-/**
  * @brief defaults() returns a video fps of 10.
  */
 void test_defaults_has_video_fps_10()
@@ -154,7 +145,7 @@ void test_empty_input_returns_defaults()
     ConfigData d = IniParser::parse("", 0);
     TEST_ASSERT_EQUAL_STRING("", d.wifi.ssid);
     TEST_ASSERT_EQUAL_UINT16(80, d.web.port);
-    TEST_ASSERT_EQUAL_UINT32(20000, d.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("VGA", d.camera.resolution);
     TEST_ASSERT_EQUAL_UINT16(10, d.video.fps);
     TEST_ASSERT_EQUAL_STRING("VGA", d.video.resolution);
 }
@@ -232,7 +223,7 @@ void test_multiple_sections()
         "port=8080\n"
         "password=WebPass\n"
         "[camera]\n"
-        "capture_interval_ms=5000\n"
+        "resolution=HD\n"
         "[video]\n"
         "fps=15\n"
         "resolution=HD\n"
@@ -250,7 +241,7 @@ void test_multiple_sections()
     TEST_ASSERT_EQUAL_STRING("Fallback", d.ap.password);
     TEST_ASSERT_EQUAL_UINT16(8080, d.web.port);
     TEST_ASSERT_EQUAL_STRING("WebPass", d.web.password);
-    TEST_ASSERT_EQUAL_UINT32(5000, d.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("HD", d.camera.resolution);
     TEST_ASSERT_EQUAL_UINT16(15, d.video.fps);
     TEST_ASSERT_EQUAL_STRING("HD", d.video.resolution);
     TEST_ASSERT_EQUAL_UINT16(120, d.video.clip_duration_s);
@@ -371,7 +362,7 @@ void test_missing_keys_retain_defaults()
     TEST_ASSERT_EQUAL_STRING("", d.wifi.password);
     TEST_ASSERT_EQUAL_STRING("", d.ap.ssid);
     TEST_ASSERT_EQUAL_UINT16(9090, d.web.port);
-    TEST_ASSERT_EQUAL_UINT32(20000, d.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("VGA", d.camera.resolution);
 }
 
 // ============================================================
@@ -479,16 +470,6 @@ void test_port_zero_ignored()
     const char* ini = "[web]\nport=0\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
     TEST_ASSERT_EQUAL_UINT16(80, d.web.port);
-}
-
-/**
- * @brief parse() accepts a zero camera capture interval.
- */
-void test_camera_interval_zero()
-{
-    const char* ini = "[camera]\ncapture_interval_ms=0\n";
-    ConfigData d = IniParser::parse(ini, strlen(ini));
-    TEST_ASSERT_EQUAL_UINT32(0, d.camera.capture_interval_ms);
 }
 
 // ============================================================
@@ -606,7 +587,6 @@ void test_serialize_defaults()
 
     // Verify default integer values appear
     TEST_ASSERT_NOT_NULL(strstr(buf, "port=80"));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=20000"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "fps=10"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "resolution=VGA"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=60"));
@@ -634,7 +614,6 @@ void test_serialize_non_default_values()
     strcpy(d.ap.password, "Fallback");
     d.web.port = 8080;
     strcpy(d.web.password, "WebPass");
-    d.camera.capture_interval_ms = 5000;
     d.video.fps = 15;
     strcpy(d.video.resolution, "HD");
     d.video.clip_duration_s = 120;
@@ -654,7 +633,6 @@ void test_serialize_non_default_values()
     TEST_ASSERT_NOT_NULL(strstr(buf, "gateway=10.0.0.1"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask=255.255.255.0"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "port=8080"));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=5000"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "fps=15"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "resolution=HD"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=120"));
@@ -682,8 +660,6 @@ void test_roundtrip_defaults()
     TEST_ASSERT_EQUAL_STRING(original.ap.password, parsed.ap.password);
     TEST_ASSERT_EQUAL_UINT16(original.web.port, parsed.web.port);
     TEST_ASSERT_EQUAL_STRING(original.web.password, parsed.web.password);
-    TEST_ASSERT_EQUAL_UINT32(original.camera.capture_interval_ms,
-                             parsed.camera.capture_interval_ms);
     TEST_ASSERT_EQUAL_UINT16(original.video.fps, parsed.video.fps);
     TEST_ASSERT_EQUAL_STRING(original.video.resolution, parsed.video.resolution);
     TEST_ASSERT_EQUAL_UINT16(original.video.clip_duration_s,
@@ -709,7 +685,6 @@ void test_roundtrip_custom_values()
     strcpy(original.ap.password, "ApPass");
     original.web.port = 9090;
     strcpy(original.web.password, "WebSecret");
-    original.camera.capture_interval_ms = 30000;
     original.video.fps = 15;
     strcpy(original.video.resolution, "HD");
     original.video.clip_duration_s = 120;
@@ -730,8 +705,6 @@ void test_roundtrip_custom_values()
     TEST_ASSERT_EQUAL_STRING(original.ap.password, parsed.ap.password);
     TEST_ASSERT_EQUAL_UINT16(original.web.port, parsed.web.port);
     TEST_ASSERT_EQUAL_STRING(original.web.password, parsed.web.password);
-    TEST_ASSERT_EQUAL_UINT32(original.camera.capture_interval_ms,
-                             parsed.camera.capture_interval_ms);
     TEST_ASSERT_EQUAL_UINT16(original.video.fps, parsed.video.fps);
     TEST_ASSERT_EQUAL_STRING(original.video.resolution, parsed.video.resolution);
     TEST_ASSERT_EQUAL_UINT16(original.video.clip_duration_s,
@@ -784,7 +757,6 @@ void test_serialize_all_fields_present()
     strcpy(d.ap.password, "A_PASS");
     d.web.port = 1234;
     strcpy(d.web.password, "W_PASS2");
-    d.camera.capture_interval_ms = 7777;
     d.video.fps = 20;
     strcpy(d.video.resolution, "QVGA");
     d.video.clip_duration_s = 30;
@@ -808,7 +780,6 @@ void test_serialize_all_fields_present()
     TEST_ASSERT_NOT_NULL(strstr(buf, "port=1234"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "password=W_PASS2"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "[camera]"));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "capture_interval_ms=7777"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "[video]"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "fps=20"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "resolution=QVGA"));
@@ -842,7 +813,6 @@ int main(int argc, char** argv)
     RUN_TEST(test_defaults_has_empty_ap_password);
     RUN_TEST(test_defaults_has_web_port_80);
     RUN_TEST(test_defaults_has_empty_web_password);
-    RUN_TEST(test_defaults_has_camera_interval_20000);
     RUN_TEST(test_defaults_has_video_fps_10);
     RUN_TEST(test_defaults_has_video_resolution_vga);
     RUN_TEST(test_defaults_has_video_clip_duration_60);
@@ -880,7 +850,6 @@ int main(int argc, char** argv)
     RUN_TEST(test_case_insensitive_key_names);
     RUN_TEST(test_port_out_of_range_ignored);
     RUN_TEST(test_port_zero_ignored);
-    RUN_TEST(test_camera_interval_zero);
 
     // Video section parsing
     RUN_TEST(test_video_all_keys);

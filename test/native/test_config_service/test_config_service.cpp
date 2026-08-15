@@ -54,7 +54,7 @@ void test_config_has_defaults_before_load()
     TEST_ASSERT_EQUAL_STRING("", cfg.ap.password);
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
     TEST_ASSERT_EQUAL_STRING("", cfg.web.password);
-    TEST_ASSERT_EQUAL_UINT32(20000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("VGA", cfg.camera.resolution);
 }
 
 // ============================================================
@@ -108,7 +108,7 @@ void test_load_valid_config()
         "port=8080\n"
         "password=WebKey\n"
         "[camera]\n"
-        "capture_interval_ms=10000\n"
+        "resolution=HD\n"
         "[video]\n"
         "fps=15\n"
         "resolution=HD\n"
@@ -123,7 +123,7 @@ void test_load_valid_config()
     TEST_ASSERT_EQUAL_STRING("Secret", cfg.wifi.password);
     TEST_ASSERT_EQUAL_STRING("ESP32", cfg.ap.ssid);
     TEST_ASSERT_EQUAL_UINT16(8080, cfg.web.port);
-    TEST_ASSERT_EQUAL_UINT32(10000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("HD", cfg.camera.resolution);
     TEST_ASSERT_EQUAL_UINT16(15, cfg.video.fps);
     TEST_ASSERT_EQUAL_STRING("HD", cfg.video.resolution);
     TEST_ASSERT_EQUAL_UINT16(120, cfg.video.clip_duration_s);
@@ -201,7 +201,7 @@ void test_load_empty_buffer_uses_defaults()
 
     const ConfigData& cfg = svc.config();
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
-    TEST_ASSERT_EQUAL_UINT32(20000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("VGA", cfg.camera.resolution);
     TEST_ASSERT_EQUAL_UINT16(10, cfg.video.fps);
     TEST_ASSERT_EQUAL_STRING("VGA", cfg.video.resolution);
 }
@@ -238,7 +238,7 @@ void test_load_partial_config_preserves_defaults()
     const ConfigData& cfg = svc.config();
     TEST_ASSERT_EQUAL_STRING("Partial", cfg.wifi.ssid);
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
-    TEST_ASSERT_EQUAL_UINT32(20000, cfg.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING("VGA", cfg.camera.resolution);
     TEST_ASSERT_EQUAL_UINT16(10, cfg.video.fps);
     TEST_ASSERT_EQUAL_STRING("VGA", cfg.video.resolution);
 }
@@ -281,8 +281,7 @@ void test_mutable_config_same_as_config_before_modify()
 
     TEST_ASSERT_EQUAL_STRING(ro.wifi.ssid, rw.wifi.ssid);
     TEST_ASSERT_EQUAL_UINT16(ro.web.port, rw.web.port);
-    TEST_ASSERT_EQUAL_UINT32(ro.camera.capture_interval_ms,
-                             rw.camera.capture_interval_ms);
+    TEST_ASSERT_EQUAL_STRING(ro.camera.resolution, rw.camera.resolution);
 }
 
 /**
@@ -294,13 +293,11 @@ void test_mutable_config_modify_visible_through_config()
     ConfigService svc(log);
 
     svc.mutable_config().web.port = 9090;
-    svc.mutable_config().camera.capture_interval_ms = 5000;
     svc.mutable_config().video.fps = 20;
     strcpy(svc.mutable_config().wifi.ssid, "Modified");
 
     const ConfigData& cfg = svc.config();
     TEST_ASSERT_EQUAL_UINT16(9090, cfg.web.port);
-    TEST_ASSERT_EQUAL_UINT32(5000, cfg.camera.capture_interval_ms);
     TEST_ASSERT_EQUAL_UINT16(20, cfg.video.fps);
     TEST_ASSERT_EQUAL_STRING("Modified", cfg.wifi.ssid);
 }

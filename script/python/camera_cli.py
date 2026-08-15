@@ -57,7 +57,12 @@ def _send(url_path: str) -> int:
             else:
                 print(f"Error (code {data.get('code', '?')})")
 
-            return 0 if data.get("result") == "ok" else 1
+            # A 200 response with a valid JSON body is a success. The
+            # "result" field is only emitted by the firmware's fallback
+            # path (e.g. start/stop/photo); /status returns telemetry
+            # without a "result" key, so it must not be treated as a
+            # failure just because that key is absent.
+            return 1 if data.get("result") == "error" else 0
 
     except urllib.error.HTTPError as e:
         err_body = e.read().decode()

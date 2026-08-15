@@ -113,8 +113,6 @@ bool ConfigService::load(const uint8_t* data, size_t length)
     m_logger.info(SUBSYSTEM, "AP SSID: %s",
                   m_config.ap.ssid[0] != '\0' ? m_config.ap.ssid : "(not set)");
     m_logger.info(SUBSYSTEM, "Web port: %u", m_config.web.port);
-    m_logger.info(SUBSYSTEM, "Capture interval: %u ms",
-                  m_config.camera.capture_interval_ms);
     m_logger.info(SUBSYSTEM, "Video: %ufps %s, clip %us, quality %u",
                   m_config.video.fps, m_config.video.resolution,
                   m_config.video.clip_duration_s, m_config.video.jpeg_quality);

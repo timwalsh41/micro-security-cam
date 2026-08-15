@@ -19,7 +19,7 @@
  *   password=MyPassword
  *
  *   [camera]
- *   capture_interval_ms=20000
+ *   resolution=VGA
  * @endcode
  *
  * Unknown keys and sections are silently ignored. Missing keys retain
@@ -79,7 +79,6 @@ struct ConfigData
      */
     struct CameraConfig
     {
-        uint32_t capture_interval_ms{20000};
         char resolution[CONFIG_FIELD_MAX_LENGTH]{"VGA"};
         uint8_t jpeg_quality{10};
         uint8_t grab_mode{0xFF};
