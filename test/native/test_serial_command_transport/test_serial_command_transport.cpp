@@ -27,8 +27,10 @@ struct TestFixture
     TestFixture()
         : logger(log_backend, time)
         , handler(logger)
-        , transport(serial)
+        , transport(serial, time)
     {
+        set_mock_millis(0);
+
         // Register handler for STATUS/GET_STATUS
         handler.register_handler(
             CommandCode::GET_STATUS,
@@ -392,7 +394,7 @@ void test_tick_full_cycle()
     f.handler.tick();
 
     const char* output = f.serial.output_as_string();
-    TEST_ASSERT_EQUAL_STRING("OK OK\n", output);
+    TEST_ASSERT_EQUAL_STRING("[00000000] [ECHO] [INFO ] STATUS\r\nOK OK\n", output);
 }
 
 /**
@@ -411,8 +413,12 @@ void test_multiple_commands_sequence()
     f.handler.tick();
 
     const char* output = f.serial.output_as_string();
-    // PHOTO returns "OK\n", STATUS returns "OK OK\n" (data "OK")
-    TEST_ASSERT_EQUAL_STRING("OK\nOK OK\n", output);
+    // PHOTO returns "OK\n", STATUS returns "OK OK\n" (data "OK");
+    // each command line is echoed before its response.
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] PHOTO\r\nOK\n"
+        "[00000000] [ECHO] [INFO ] STATUS\r\nOK OK\n",
+        output);
 }
 
 /**
@@ -446,14 +452,116 @@ void test_set_then_get_config_value()
 
     f.serial.inject_input("SET wifi.ssid=test\n");
     f.handler.tick();
-    TEST_ASSERT_EQUAL_STRING("OK\n", f.serial.output_as_string());
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] SET wifi.ssid=test\r\nOK\n",
+        f.serial.output_as_string());
 
     f.serial.clear_buffers();
 
     f.serial.inject_input("GET wifi.ssid\n");
     f.handler.tick();
 
-    TEST_ASSERT_EQUAL_STRING("OK test\n", f.serial.output_as_string());
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] GET wifi.ssid\r\nOK test\n",
+        f.serial.output_as_string());
+}
+
+/**
+ * @brief Echo is not emitted until the line terminator is received.
+ */
+void test_echo_deferred_until_newline()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.inject_line("STATUS");
+    TEST_ASSERT_FALSE(f.transport.has_request());
+    TEST_ASSERT_EQUAL_UINT8(0, f.serial.output_buffer.size());
+
+    f.inject_line("\n");
+    TEST_ASSERT_TRUE(f.transport.has_request());
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] STATUS\r\n",
+        f.serial.output_as_string());
+}
+
+/**
+ * @brief The complete line is echoed as one continuous batch including
+ *        timestamp, subsystem, severity, and CRLF terminator.
+ */
+void test_echo_full_log_line_format()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.inject_line("STATUS\n");
+    f.transport.has_request();
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] STATUS\r\n",
+        f.serial.output_as_string());
+}
+
+/**
+ * @brief Echo uses the current mock time as its timestamp.
+ */
+void test_echo_timestamp_from_time_service()
+{
+    TestFixture f;
+    set_mock_millis(1234);
+    f.serial.clear_buffers();
+
+    f.inject_line("PHOTO\n");
+    f.transport.has_request();
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[00001234] [ECHO] [INFO ] PHOTO\r\n",
+        f.serial.output_as_string());
+}
+
+/**
+ * @brief Echo does not re-emit the line terminator itself.
+ */
+void test_echo_crlf_input_single_echo()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.inject_line("STATUS\r\n");
+    f.transport.has_request();
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] STATUS\r\n",
+        f.serial.output_as_string());
+}
+
+/**
+ * @brief Disabling echo suppresses the input line entirely while still
+ *        producing the command response.
+ */
+void test_echo_disabled()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+    f.transport.set_echo_enabled(false);
+
+    f.inject_line("STATUS\n");
+    f.handler.tick();
+
+    TEST_ASSERT_EQUAL_STRING("OK OK\n", f.serial.output_as_string());
+}
+
+/**
+ * @brief Blank lines are not echoed (and produce no request).
+ */
+void test_echo_blank_line_silent()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.inject_line("\n");
+    TEST_ASSERT_FALSE(f.transport.has_request());
+    TEST_ASSERT_EQUAL_UINT8(0, f.serial.output_buffer.size());
 }
 
 // ============================================================
@@ -486,6 +594,12 @@ int main(int argc, char** argv)
     RUN_TEST(test_multiple_commands_sequence);
     RUN_TEST(test_leading_spaces);
     RUN_TEST(test_set_then_get_config_value);
+    RUN_TEST(test_echo_deferred_until_newline);
+    RUN_TEST(test_echo_full_log_line_format);
+    RUN_TEST(test_echo_timestamp_from_time_service);
+    RUN_TEST(test_echo_crlf_input_single_echo);
+    RUN_TEST(test_echo_disabled);
+    RUN_TEST(test_echo_blank_line_silent);
 
     return UNITY_END();
 }

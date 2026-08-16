@@ -3,6 +3,7 @@
 
 #include "command_transport.h"
 #include "hal/serial_hal.h"
+#include "time_service.h"
 
 /**
  * @file serial_command_transport.h
@@ -13,8 +14,14 @@
  * accumulation happens inside has_request(), so no external tick() is
  * needed.
  *
+ * Received command lines are echoed back to the serial port in the
+ * standard log-line format so that a parser can identify and filter them
+ * (e.g. by the `[ECHO]` subsystem tag). Echoing is enabled by default and
+ * can be toggled with set_echo_enabled().
+ *
  * Protocol:
  *   TX: COMMAND [args]\n
+ *   RX: [timestamp] [ECHO] [INFO ] COMMAND [args]\r\n  (echoed input)
  *   RX: OK [data]\n
  *   RX: ERR <code> [message]\n
  *
@@ -40,8 +47,20 @@ class SerialCommandTransport : public CommandTransport
          * @brief Constructs the serial transport.
          *
          * @param serial  Reference to a SerialHal for I/O.
+         * @param time    Time source used to timestamp echoed input lines.
          */
-        explicit SerialCommandTransport(hal::SerialHal& serial);
+        explicit SerialCommandTransport(hal::SerialHal& serial, TimeService& time);
+
+        /**
+         * @brief Enables or disables echoing of received command lines.
+         *
+         * Echo is enabled by default. When enabled, each complete input
+         * line is written back to the serial port in log-line format
+         * before its response is produced.
+         *
+         * @param enabled true to echo input lines, false to suppress.
+         */
+        void set_echo_enabled(bool enabled);
 
         // ---- CommandTransport overrides ----
 
@@ -55,10 +74,22 @@ class SerialCommandTransport : public CommandTransport
 
     private:
         hal::SerialHal& m_serial;
+        TimeService& m_time;
 
         char m_line_buffer[LINE_BUFFER_SIZE];
         size_t m_line_pos{0};
         bool m_request_ready{false};
+        bool m_echo_enabled{true};
+
+        /**
+         * @brief Echoes the accumulated input line in log-line format.
+         *
+         * Writes the buffered line (m_line_buffer, m_line_pos bytes) plus
+         * a CRLF terminator as a single atomic serial write, preceded by a
+         * timestamp, subsystem, and severity in the standard log format:
+         * `[timestamp] [ECHO] [INFO ] <line>\r\n`.
+         */
+        void echo_line();
 
         /**
          * @brief Maps a text command to a CommandCode.

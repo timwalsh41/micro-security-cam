@@ -83,7 +83,7 @@ hal::WebServerHalImpl web_server_hal_impl;
 WifiService wifi_service{wifi_hal_impl, real_time, logger};
 CommandHandler command_handler{logger};
 WebCommandTransport web_transport{web_server_hal_impl, command_handler};
-SerialCommandTransport serial_transport{serial_hal};
+SerialCommandTransport serial_transport{serial_hal, real_time};
 WebServerService web_server_service{web_server_hal_impl, logger};
 ConfigService config_service{logger};
 SystemOrchestrator system_orchestrator{

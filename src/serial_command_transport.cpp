@@ -3,11 +3,44 @@
 #include <cstdio>
 #include <cstdlib>
 
-SerialCommandTransport::SerialCommandTransport(hal::SerialHal& serial)
+SerialCommandTransport::SerialCommandTransport(hal::SerialHal& serial,
+                                               TimeService& time)
 : m_serial(serial)
+, m_time(time)
 , m_line_pos(0)
 , m_request_ready(false)
 {
+}
+
+void SerialCommandTransport::set_echo_enabled(bool enabled)
+{
+    m_echo_enabled = enabled;
+}
+
+void SerialCommandTransport::echo_line()
+{
+    // Mirror the standard log-line format produced by LoggingService so a
+    // parser can identify and filter echo output via the [ECHO] tag:
+    //   [timestamp] [ECHO] [INFO ] <line>\r\n
+    // The buffer holds the 8-digit timestamp, two 3-char brackets, the
+    // 5-char severity token, plus the input line and CRLF terminator.
+    char buf[LINE_BUFFER_SIZE + 64];
+    int n = snprintf(buf, sizeof(buf), "[%08u] [ECHO] [INFO ] %s",
+                     static_cast<unsigned int>(m_time.now()),
+                     m_line_buffer);
+    if (n < 0)
+    {
+        return;
+    }
+    size_t len = static_cast<size_t>(n);
+    if (len > sizeof(buf) - 2)
+    {
+        len = sizeof(buf) - 2;
+    }
+    buf[len]     = '\r';
+    buf[len + 1] = '\n';
+
+    m_serial.write(reinterpret_cast<const uint8_t*>(buf), len + 2);
 }
 
 bool SerialCommandTransport::has_request()
@@ -27,6 +60,12 @@ bool SerialCommandTransport::has_request()
             if (m_line_pos > 0)
             {
                 m_line_buffer[m_line_pos] = '\0';
+                if (m_echo_enabled)
+                {
+                    // Echo the whole accumulated line as one atomic batch
+                    // so it cannot interleave with outgoing log lines.
+                    echo_line();
+                }
                 m_request_ready = true;
                 m_line_pos = 0;
                 return true;

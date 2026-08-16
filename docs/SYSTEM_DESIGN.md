@@ -577,16 +577,21 @@ See the **Web transport** table in the **[Command Reference](#command-reference)
 
 #### Responsibility
 
-Implements a text-based command protocol over UART using the `SerialHal` abstraction. Each line is parsed as a single command and dispatched through `CommandHandler::dispatch()`. Responses are returned as `OK` or `ERR` text lines.
+Implements a text-based command protocol over UART using the `SerialHal` abstraction. Each line is parsed as a single command and dispatched through `CommandHandler::dispatch()`. Responses are returned as `OK` or `ERR` text lines. Received command lines are echoed back in the standard log-line format so they can be identified and filtered (via the `[ECHO]` tag).
 
 #### Text Protocol
 
 ```
 Request:  COMMAND [args]\n
+Echo:     [timestamp] [ECHO] [INFO ] COMMAND [args]\r\n
 Response: OK [data]\n   or   ERR <code>\n
 ```
 
 Command parsing is case-sensitive. Arguments are separated from the command by a space. Lines are accumulated in an internal buffer until a newline character (`\n`) is received. Both `\n` and `\r` are treated as line terminators; carriage returns are consumed silently, and blank lines are ignored. Lines exceeding the internal buffer (128 bytes) are discarded.
+
+#### Echoing
+
+When a complete line is received, the transport echoes the entire accumulated line back to the serial port as a single atomic write, formatted like a log line: `[timestamp] [ECHO] [INFO ] <line>\r\n`. This allows a parser to filter echoed input from genuine log output via the `[ECHO]` subsystem tag. Echoing is enabled by default and can be toggled at runtime with `set_echo_enabled()`. The echo is emitted before the command response, and because it is a single write through the shared `SerialHal` (which serialises writes with a mutex), it cannot interleave with concurrent log output.
 
 #### Command Mapping
 
@@ -702,7 +707,7 @@ Response format:
 - **Success**: `OK [data]\n` (data is optional)
 - **Error**: `ERR <code>\n` (code is the two-digit hex `CommandResult` value)
 
-Line accumulation happens inside the transport's `has_request()` method. The transport uses the shared `SerialHal` instance.
+Line accumulation happens inside the transport's `has_request()` method. The transport uses the shared `SerialHal` instance. Each received command line is echoed back in log-line format (`[timestamp] [ECHO] [INFO ] <line>\r\n`) before its response; see [SerialCommandTransport](#serialcommandtransport).
 
 ---
 
