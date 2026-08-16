@@ -242,39 +242,93 @@ New `TestFixture` with `SdController` + `MockTimerHal`:
 
 Goal: Live camera view in browser. Recording + streaming simultaneously. Up to `max_streams` concurrent viewers.
 
+### Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| `StreamWriter` namespace | `hal::StreamWriter` in `include/hal/stream_writer.h` | Consistent with other HAL abstractions; `web_server_hal.h` already forward-declares it as `hal::StreamWriter` |
+| `StreamService` design | Synchronous, platform-agnostic — no FreeRTOS, no per-slot tasks/buffers | `deliver_frame()` writes straight to each `AsyncClient` (non-blocking memcpy into the AsyncTCP send queue). Fully natively testable with a `MockStreamWriter`, mirroring the `ICaptureScheduler` abstraction pattern |
+| Capture/stream coupling | Single capture loop owned by `VideoController`; 3-state model (`IDLE`/`STREAMING`/`RECORDING`) | Frames are produced only while the scheduler runs; streaming and recording must share it rather than each spin their own task |
+| Stream start | Explicit `START_STREAM` required before `/stream` accepts a viewer | Matches the user's model (start capture, then clients connect); keeps the stream command codes meaningful |
+| `/stream` registration | Registered in `SystemOrchestrator::init()` via `WebServerHal::on()`; orchestrator gains `StreamService&` + `WebServerHal&` deps | Streaming commands already live in the orchestrator; keeps the feature cohesive |
+| MJPEG framing | Built by `StreamService` (HTTP preamble + multipart boundaries); `AsyncWebStreamWriter` is a thin `AsyncClient*` adapter | `StreamService` stays HTTP-library-agnostic and natively testable; `request->send()` is NOT used (it closes the response) |
+| `/stream` auth | Basic auth required (consistent with `/status`, `/control`) | Direct navigation prompts for creds and works; embedded `<img>`/`<video>` cannot send Basic creds — documented limitation |
+| Per-slot buffers | None (`init(max_streams)` only — no `slot_buffer_size`) | No PSRAM budget/sizing problem; AsyncTCP's own send queue provides backpressure |
+
+### Practical Limits (estimation)
+
+Streaming reuses the `[video]` resolution/FPS, so the binding constraint is **per-frame JPEG size × fps × viewers vs. WiFi throughput** (ESP32-S3 ~20–30 Mbps real-world TCP), plus OV2640 encode time and PSRAM frame-buffer size:
+
+- **VGA (640×480) @ 10–15 fps** (~30–60 KB/frame) → ~3–6 Mbps per viewer — comfortable for 2–4 viewers. Recommended default.
+- **SVGA/XGA @ lower fps** (~80–120 KB/frame) → ~1.2 MB/s per viewer — feasible for 1–2 viewers.
+- **HD/UXGA** → `fb_count=2` frame buffers (2 × 1600×1200×2 ≈ 7.7 MB) approach the 8 MB PSRAM ceiling, and OV2640 encode time collapses the achievable frame rate — effectively unavailable for simultaneous record + stream.
+
+### State Model
+
+```
+                START_STREAM                 START_RECORDING
+      IDLE ───────────────────► STREAMING ◄───────────────────────
+        ▲                         │                               │
+        │ STOP_STREAM             │ START_RECORDING               │
+        └─────────────────────────┘                               │
+                                            STOP_RECORDING        │
+      RECORDING (SD + streams) ◄──────────────────────────────────┘
+```
+
+- **`IDLE`** — capture loop off; no frames produced.
+- **`STREAMING`** — capture loop on at `[video]` FPS; frames delivered to streams only.
+- **`RECORDING`** — capture loop on; frames written to SD **and** delivered to streams.
+
+Command contract:
+- `START_STREAM` — `IDLE → STREAMING`. No-op (`SUCCESS`) if already `STREAMING` or `RECORDING`.
+- `STOP_STREAM` — `STREAMING → IDLE`. No-op if `RECORDING`.
+- `LIST_STREAMS` — query: returns a JSON list of connected stream clients (count + per-slot state). No side effect.
+- `/stream` endpoint — registers a viewer; requires `STREAMING` or `RECORDING` (i.e. an explicit `START_STREAM` first), else returns an error.
+
 ### What changes
 
 #### New files
-1. `include/hal/stream_writer.h` — `StreamWriter` abstract interface
-2. `include/async_web_stream_writer.h` — `AsyncWebStreamWriter` adapter
-3. `src/async_web_stream_writer.cpp` — implementation
+1. `include/hal/stream_writer.h` — `hal::StreamWriter` abstract interface
+2. `include/async_web_stream_writer.h` — `AsyncWebStreamWriter` adapter (hardware-only)
+3. `src/async_web_stream_writer.cpp` — implementation (hardware-only)
 4. `test/mocks/native_mocks/mock_stream_writer.h` — mock for native tests
-5. `include/stream_service.h` — `StreamService` class
+5. `include/stream_service.h` — `IStreamService` interface + `StreamService` class
 6. `src/stream_service.cpp` — implementation
 7. `test/native/test_stream_service/` — test suite
 
-##### `include/stream_service.h`
-`struct StreamSlot` with buffer, semaphore, `task_handle`, `StreamWriter* writer`
-`class StreamService` with:
-- `init(max_streams, slot_buffer_size)`
-- `start_stream(StreamWriter* writer)` — creates `sustain_task`
-- `stop_stream(slot_num)`
-- `deliver_frame(data, len)` — called by `capture_task`
-- `active_slot_count()`
-
-`StreamWriter` (`include/hal/stream_writer.h`) is a minimal abstract interface:
+##### `include/hal/stream_writer.h`
+`hal::StreamWriter` is a minimal abstract write sink:
 ```cpp
+namespace hal {
 class StreamWriter {
     public:
         virtual ~StreamWriter() = default;
         virtual size_t write(const uint8_t* data, size_t len) = 0;
         virtual void close() = 0;
 };
+}
 ```
+
+##### `include/stream_service.h`
+`IStreamService` — the minimal interface `VideoController` depends on (mirrors `ICaptureScheduler`):
+```cpp
+class IStreamService {
+    public:
+        virtual ~IStreamService() = default;
+        virtual void deliver_frame(const uint8_t* data, size_t len) = 0;
+};
+```
+
+`StreamService` implements `IStreamService` (synchronous, platform-agnostic):
+- `init(uint8_t max_streams)` — allocates a fixed slot array
+- `start_stream(hal::StreamWriter* writer)` — registers a viewer; returns slot index or `-1` when full; writes the HTTP/multipart preamble
+- `stop_stream(uint8_t slot)` — closes and frees the slot (`writer->close()`)
+- `deliver_frame(data, len)` — writes a multipart JPEG part to every active slot
+- `active_slot_count()` — number of active viewers
 
 `AsyncWebStreamWriter` (`include/async_web_stream_writer.h`) adapts `AsyncClient*`:
 ```cpp
-class AsyncWebStreamWriter : public StreamWriter {
+class AsyncWebStreamWriter : public hal::StreamWriter {
     public:
         AsyncWebStreamWriter(AsyncClient* client);
         size_t write(const uint8_t* data, size_t len) override;
@@ -284,112 +338,110 @@ class AsyncWebStreamWriter : public StreamWriter {
 };
 ```
 
-Created in the `/stream` route handler via `request.create_stream_writer()` and injected at `start_stream()`.
+Created in the `/stream` route handler via `request.create_stream_writer()` and injected at `start_stream()`. `write()` forwards to `m_client->write()`; `close()` calls `m_client->close()`. Disconnect detection uses `AsyncClient`'s `onDisconnect` callback to notify `StreamService` to clean up the slot.
 
-Flow: `request->send()` for chunked response → `writer->write(multipart_header)` → wait on semaphore → `writer->write(frame)` → `writer->write(boundary)`
+Flow: `create_stream_writer()` → `start_stream(writer)` writes the `HTTP/1.1 200 OK` + multipart preamble → on each frame `deliver_frame()` writes `--boundary\r\nContent-Type: image/jpeg\r\nContent-Length: N\r\n\r\n<JPEG>\r\n`.
 
-#### `include/video_controller.h` — Add `set_stream_service`
-- `void set_stream_service(StreamService* svc)`
-- `on_frame_capture()` delivers frame to all active stream slots
+#### `include/video_controller.h` — `STREAMING` state + typed `set_stream_service`
+- Add a `STREAMING` state (or preview flag) so the capture loop runs without SD writes.
+- `void set_stream_service(IStreamService* svc)` (typed; replaces the `void*` stub).
+- `capture_and_write_frame()` delivers the frame via `m_stream_service->deliver_frame()` (and skips AVI/SD writes when in `STREAMING`).
+- New public methods: `start_streaming()`, `stop_streaming()`.
 
 #### Command codes
-- Add `START_STREAM = 0x13`, `STOP_STREAM = 0x14`, `LIST_STREAMS = 0x15`
+- Add `START_STREAM = 0x13`, `STOP_STREAM = 0x14`, `LIST_STREAMS = 0x15` to the `CommandCode` enum (in `command_transport.h`).
 
-#### SystemOrchestrator — stream command handlers
-- `handle_start_stream()`, `handle_stop_stream()`, `handle_list_streams()`
+#### SystemOrchestrator — stream command handlers + `/stream` route
+- Constructor gains `StreamService&` and `hal::WebServerHal&` dependencies.
+- `handle_start_stream()`, `handle_stop_stream()`, `handle_list_streams()`.
+- `init()` registers the `/stream` route: handler checks auth, then `request.create_stream_writer()` → `stream_service.start_stream(writer)` (requires `STREAMING` or `RECORDING`).
 
 #### `src/main.cpp` — Wire StreamService
-- Create `StreamService`, init with `max_streams` from config
-- `video_controller.set_stream_service(&stream_service)`
-- `/stream` route registered in `SystemOrchestrator::init()` via `WebServerHal::on()` — handler calls `request.create_stream_writer()` and passes the writer to `StreamService::start_stream()`
+- Create `StreamService`, init with `config.web.max_streams`.
+- `video_controller.set_stream_service(&stream_service)`.
+- Pass `stream_service` + `web_server_hal_impl` into `SystemOrchestrator`.
 
 ### Documentation updates
 
 #### `docs/SYSTEM_DESIGN.md`
-- Add `StreamService` class documentation — `StreamSlot` struct, `deliver_frame()`, `sustain_task` design, PSRAM slot buffers.
-- Update `VideoController` section — document `set_stream_service()` and frame delivery to active stream slots.
-- Add new `CommandCode` entries to the command dispatch section (`START_STREAM`, `STOP_STREAM`, `LIST_STREAMS`).
-- Add `handle_start_stream()`, `handle_stop_stream()`, `handle_list_streams()` to `SystemOrchestrator` section.
-- Update architecture diagram — add `StreamService` layer with arrow from `capture_task`.
-- Add `max_streams` config key to config section.
+- Add `hal::StreamWriter` to the HAL interfaces table and `IStreamService`/`StreamService` to the service layer.
+- Document the `IDLE`/`STREAMING`/`RECORDING` state model and `set_stream_service()`.
+- Add `START_STREAM`/`STOP_STREAM`/`LIST_STREAMS` to the Command Reference (details + web/serial transport mappings).
+- Update `SystemOrchestrator` section with the new dependencies and stream handlers.
+- Add `/stream` to the HTTP Routes table.
+- Document the auth limitation: Basic auth works for direct navigation to `/stream` but not for embedded `<img>`/`<video>` subresources.
+- Update the architecture diagram to add `StreamService`.
+- Add a sequence diagram of the streaming orchestration and frame update process, similar to the recording sequence diagram
 
 #### `README.md`
 - Add `/stream` GET endpoint to the Web Interface endpoints table.
-- Add `max_streams` to the configuration table under the `[web]` section.
-- Add a brief "Live Streaming" paragraph describing the MJPEG stream endpoint.
+- Add a brief "Live Streaming" paragraph (explicit `START_STREAM` required; VGA recommended; include practical limits).
 
-### Files modified (10+)
-1. `include/stream_service.h` — NEW
-2. `src/stream_service.cpp` — NEW
-3. `test/native/test_stream_service/test_stream_service.cpp` — NEW
-4. `include/video_controller.h` — add `set_stream_service`
-5. `src/video_controller.cpp` — `on_frame_capture()` delivers to stream
-6. `include/command_handler.h` — add stream `CommandCode` entries
-7. `include/system_orchestrator.h` — add stream handlers
-8. `src/system_orchestrator.cpp` — implement stream handlers
-9. `src/main.cpp` — wire `StreamService`, register `/stream` route
-10. `docs/SYSTEM_DESIGN.md` — update architecture
-11. `README.md` — add `/stream` endpoint and `max_streams` config
+### Files modified
+1. `include/hal/stream_writer.h` — NEW
+2. `include/async_web_stream_writer.h` — NEW
+3. `src/async_web_stream_writer.cpp` — NEW
+4. `test/mocks/native_mocks/mock_stream_writer.h` — NEW
+5. `include/stream_service.h` — NEW
+6. `src/stream_service.cpp` — NEW
+7. `test/native/test_stream_service/test_stream_service.cpp` — NEW
+8. `include/video_controller.h` — `STREAMING` state + typed `set_stream_service`
+9. `src/video_controller.cpp` — preview capture + frame delivery
+10. `include/command_transport.h` — add stream `CommandCode` entries
+11. `include/system_orchestrator.h` — stream handlers + new deps
+12. `src/system_orchestrator.cpp` — implement handlers + `/stream` route
+13. `src/main.cpp` — wire `StreamService`
+14. `test/mocks/native_mocks/mock_web_server_hal.h` — `create_stream_writer()` returns `MockStreamWriter`
+15. `test/native/test_video_controller/` — preview/stream delivery tests
+16. `test/native/test_system_orchestrator/` — stream command tests
+17. `docs/SYSTEM_DESIGN.md` — update architecture
+18. `README.md` — `/stream` endpoint + Live Streaming paragraph
 
 ### Tests — StreamService (native)
-- `MockStreamWriter` captures written data for verification
-- `init(4)` → 4 slots allocated
-- `deliver_frame()` with no active slots → no crash
-- Single stream: `start_stream(writer)` → deliver → `writer->write()` called with frame data
-- Multiple streams: deliver to 2+ active slots, each `MockStreamWriter` receives data
-- `stop_stream()` → slot inactive, `writer->close()` called
-- Buffer overflow: frame > `slot_buffer_size` → dropped (logged)
-- Timeout: `sustain_task` waits 1.2s and cleans up
-- Max streams: try 5th when `max=4` → returns false
-- PSRAM: slot buffers allocated on PSRAM if available
-- `AsyncWebStreamWriter` tested on hardware only (requires `AsyncClient`)
+- `MockStreamWriter` captures written data for verification.
+- `init(4)` → 4 slots allocated; `active_slot_count() == 0`.
+- `deliver_frame()` with no active slots → no crash, no writes.
+- Single stream: `start_stream(writer)` → preamble written; `deliver_frame()` → multipart JPEG part written.
+- Multiple streams: deliver to 2+ active slots; each `MockStreamWriter` receives the frame bytes.
+- `stop_stream()` → slot freed, `writer->close()` called; `active_slot_count()` decremented.
+- Max streams: 5th `start_stream()` when `max=4` → returns `-1`/`false`.
+- `IStreamService` decoupling: `VideoController` accepts a mock `IStreamService` and calls `deliver_frame()` after capture.
+- `AsyncWebStreamWriter` tested on hardware only (requires `AsyncClient`).
 
 ### Verification (hardware)
-- Browser to `/stream` → live MJPEG feed
-- Recording + streaming simultaneously
-- 2+ concurrent streams
-- Stream reconnection: reload → new stream, old cleans up
-- `max_streams=0` → stream endpoint returns error
-- Timeout: unplug client → stream terminates within 2s
+- `START_STREAM` then browser to `/stream` → live MJPEG feed.
+- Recording + streaming simultaneously (frames go to SD and streams).
+- 2+ concurrent streams stable at VGA.
+- Stream reconnection: reload → new stream, old cleans up.
+- `max_streams=0` (or no `START_STREAM`) → `/stream` returns error.
+- `STOP_STREAM` stops preview; `LIST_STREAMS` reports connected clients.
+- Disconnect: unplug client → slot cleaned up via `onDisconnect`.
 
 ---
 
 ## Summary of all files
 
 ### New files (7)
-1. `include/hal/timer_hal.h`
-2. `src/hal/timer_hal_impl.h`
-3. `src/hal/timer_hal_impl.cpp`
-4. `test/mocks/native_mocks/mock_timer_hal.h`
+1. `include/hal/stream_writer.h`
+2. `include/async_web_stream_writer.h`
+3. `src/async_web_stream_writer.cpp`
+4. `test/mocks/native_mocks/mock_stream_writer.h`
 5. `include/stream_service.h`
 6. `src/stream_service.cpp`
 7. `test/native/test_stream_service/test_stream_service.cpp`
 
-### Modified files (18-22 depending on test granularity)
-1. `platformio.ini`
-2. `include/hal/web_server_hal.h`
-3. `include/hal/web_server_hal_impl.h`
-4. `src/hal/web_server_hal_impl.cpp`
-5. `include/web_server_service.h`
-6. `src/web_server_service.cpp`
-7. `include/web_command_transport.h`
-8. `src/web_command_transport.cpp`
-9. `include/sd_controller.h`
-10. `src/sd_controller.cpp`
-11. `include/video_controller.h`
-12. `src/video_controller.cpp`
-13. `include/peripheral_manager.h`
-14. `src/peripheral_manager.cpp`
-15. `include/system_orchestrator.h`
-16. `src/system_orchestrator.cpp`
-17. `include/command_handler.h`
-18. `src/main.cpp`
-19. `test/mocks/native_mocks/mock_web_server_hal.h`
-20. `test/native/test_video_controller/`
-21. `test/native/test_system_orchestrator/`
-22. `test/native/test_web_server_service/`
-23. `test/native/test_web_command_transport/`
-24. `docs/SYSTEM_DESIGN.md`
+### Modified files (11)
+1. `include/video_controller.h` — `STREAMING` state + typed `set_stream_service`
+2. `src/video_controller.cpp` — preview capture + frame delivery
+3. `include/command_transport.h` — add stream `CommandCode` entries
+4. `include/system_orchestrator.h` — stream handlers + new deps
+5. `src/system_orchestrator.cpp` — implement handlers + `/stream` route
+6. `src/main.cpp` — wire `StreamService`
+7. `test/mocks/native_mocks/mock_web_server_hal.h` — `create_stream_writer()` returns `MockStreamWriter`
+8. `test/native/test_video_controller/` — preview/stream delivery tests
+9. `test/native/test_system_orchestrator/` — stream command tests
+10. `docs/SYSTEM_DESIGN.md` — update architecture
+11. `README.md` — `/stream` endpoint + Live Streaming paragraph
 
 ---
 
@@ -403,10 +455,12 @@ After all 3 phases:
 - [ ] AVI files playable in VLC
 - [ ] Clip rotation takes ~50ms (not seconds)
 - [ ] `TAKE_PHOTO` saves `.jpg` during idle, errors during recording
-- [ ] `/stream` shows live MJPEG in browser
+- [ ] `START_STREAM` then `/stream` shows live MJPEG in browser
 - [ ] Recording + streaming simultaneously
-- [ ] 2+ concurrent streams stable
+- [ ] 2+ concurrent streams stable (VGA)
 - [ ] 10+ sequential clips, no memory leak
 - [ ] LED behavior correct (blinks during recording, off when idle)
+- [ ] `STOP_STREAM` stops preview; `LIST_STREAMS` reports connected clients
+- [ ] `/stream` requires explicit `START_STREAM` (returns error otherwise)
 - [ ] All native tests pass
 - [ ] All hardware tests pass
