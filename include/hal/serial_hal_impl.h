@@ -15,10 +15,11 @@ namespace hal
  * Wraps the Arduino HardwareSerial (Serial) object, providing
  * UART communication for logging and serial command transport.
  *
- * Serial writes are serialised with a mutex and retried on partial
- * writes so that multi-byte log lines (including their trailing
- * newline) are not interleaved or truncated when multiple FreeRTOS
- * tasks log concurrently.
+ * Serial writes are serialised with a mutex so that multi-byte log
+ * lines (including their trailing newline) are not interleaved when
+ * multiple FreeRTOS tasks log concurrently. The mutex is created
+ * lazily on the first write because the FreeRTOS heap is not ready
+ * when global constructors run.
  */
 class SerialHalImpl : public SerialHal
 {
@@ -80,15 +81,34 @@ class SerialHalImpl : public SerialHal
 
     private:
         /**
-         * @brief Maximum number of retries for a partial serial write.
+         * @brief Critical section spinlock guarding lazy creation of the
+         *        write mutex. Statically initialised, so it is safe to use
+         *        from any task or core without prior initialisation.
          */
-        static constexpr size_t MAX_WRITE_RETRIES = 4;
+        portMUX_TYPE m_init_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
         /**
          * @brief Serialises write() so a log line is emitted atomically
-         *        when multiple tasks log concurrently.
+         *        when multiple tasks log concurrently. Created lazily on
+         *        the first write; see ensure_mutex().
          */
         SemaphoreHandle_t m_write_mutex{nullptr};
+
+        /**
+         * @brief Guards the mutex-creation failure log so it is emitted
+         *        only once rather than on every unprotected write.
+         */
+        bool m_mutex_failure_logged{false};
+
+        /**
+         * @brief Creates the write mutex if it does not already exist.
+         *
+         * Called under m_init_spinlock so a single mutex is created even
+         * when the first write() happens concurrently on both cores.
+         *
+         * @return The write mutex, or nullptr if creation failed.
+         */
+        SemaphoreHandle_t ensure_mutex();
 };
 
 } // namespace hal
