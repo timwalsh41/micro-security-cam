@@ -42,6 +42,12 @@
         "output": ""
     },
     {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_path_utils/test_path_utils.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
+        "file": "test/native/test_path_utils/test_path_utils.cpp",
+        "output": ""
+    },
+    {
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_sd_controller/test_sd_controller.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
         "file": "test/native/test_sd_controller/test_sd_controller.cpp",
@@ -57,6 +63,12 @@
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_system_orchestrator/test_system_orchestrator.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
         "file": "test/native/test_system_orchestrator/test_system_orchestrator.cpp",
+        "output": ""
+    },
+    {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_time_formatter/test_time_formatter.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
+        "file": "test/native/test_time_formatter/test_time_formatter.cpp",
         "output": ""
     },
     {

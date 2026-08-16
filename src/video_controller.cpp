@@ -105,6 +105,14 @@ bool VideoController::capture_photo(const char* path)
 
     hal::CameraFrame frame = m_camera.get_frame();
 
+    // Ensure the parent directory exists before writing (mirrors open_clip()).
+    // The first photo of a new day would otherwise fail to open the file.
+    char dir_path[64];
+    if (PathUtils::extract_parent_dir(path, dir_path, sizeof(dir_path)))
+    {
+        create_directory(dir_path);
+    }
+
     // Write JPEG data directly (no AVI framing)
     bool ok = m_sd.write_sync(path, frame.data, frame.len,
                               hal::FileOpenMode::WRITE);

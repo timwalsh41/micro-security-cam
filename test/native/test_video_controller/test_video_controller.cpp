@@ -408,6 +408,54 @@ void test_create_dir_called_on_open_clip()
 }
 
 // ============================================================
+// Photo capture — parent directory creation
+// ============================================================
+
+/**
+ * @brief capture_photo() creates the parent directory before writing.
+ *
+ * The first photo of a new day must not fail because its /YYYYMMDD
+ * directory does not yet exist on the SD card.
+ */
+void test_capture_photo_creates_parent_dir()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1234567890u);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+
+    // create_dir must have been called for the parent directory
+    TEST_ASSERT_GREATER_THAN(0, f.sd_hal.create_dir_call_count);
+    TEST_ASSERT_EQUAL_STRING("/20260213", f.sd_hal.last_create_dir_path);
+
+    // The photo file must exist in the SD store
+    TEST_ASSERT_TRUE(f.sd_hal.files.find(photo_path) != f.sd_hal.files.end());
+}
+
+/**
+ * @brief capture_photo() writes the JPEG data to the photo path.
+ */
+void test_capture_photo_writes_jpeg_data()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1234567890u);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+
+    const std::vector<uint8_t>& content = f.sd_hal.files[photo_path];
+    TEST_ASSERT_EQUAL_UINT32(FAKE_JPEG_SIZE, content.size());
+    TEST_ASSERT_EQUAL_UINT8(0xAB, content[0]);
+}
+
+// ============================================================
 // Rapid start/stop
 // ============================================================
 
@@ -865,6 +913,10 @@ int main()
 
     // Directory creation
     RUN_TEST(test_create_dir_called_on_open_clip);
+
+    // Photo capture — parent directory creation
+    RUN_TEST(test_capture_photo_creates_parent_dir);
+    RUN_TEST(test_capture_photo_writes_jpeg_data);
 
     // Rapid start/stop
     RUN_TEST(test_rapid_start_stop);

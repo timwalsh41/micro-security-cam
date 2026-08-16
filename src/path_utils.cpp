@@ -54,3 +54,29 @@ bool PathUtils::make_unique_path(const char* base_path, ExistsFn exists,
 
     return false;
 }
+
+bool PathUtils::extract_parent_dir(const char* path, char* out, size_t out_size)
+{
+    if (path == nullptr || out == nullptr || out_size == 0)
+    {
+        return false;
+    }
+
+    // Find the last '/' in the path.
+    const char* last_slash = strrchr(path, '/');
+    if (last_slash == nullptr || last_slash == path)
+    {
+        // No slash (bare filename) or root-level path ("/file") — no parent dir.
+        return false;
+    }
+
+    size_t dir_len = static_cast<size_t>(last_slash - path);
+    if (dir_len >= out_size)
+    {
+        return false;
+    }
+
+    memcpy(out, path, dir_len);
+    out[dir_len] = '\0';
+    return true;
+}

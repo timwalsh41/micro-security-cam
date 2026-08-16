@@ -51,6 +51,20 @@ class PathUtils
          */
         static bool make_unique_path(const char* base_path, ExistsFn exists,
                                      char* out, size_t out_size);
+
+        /**
+         * @brief Extracts the parent directory portion of a file path.
+         *
+         * Copies everything up to (but not including) the last '/' into
+         * @p out. Used to create a file's parent directory before writing.
+         *
+         * @param path     Full file path (e.g. `/20260815/20260815_120000.jpg`).
+         * @param out      Buffer receiving the directory path.
+         * @param out_size Size of the output buffer.
+         * @return true if a parent directory was extracted, false on invalid
+         *         arguments, a root-level/bare path, or buffer overflow.
+         */
+        static bool extract_parent_dir(const char* path, char* out, size_t out_size);
 };
 
 #endif // PATH_UTILS_H

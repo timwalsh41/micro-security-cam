@@ -161,6 +161,76 @@ void test_out_too_small_rejected()
 }
 
 // ============================================================
+// extract_parent_dir
+// ============================================================
+
+/**
+ * @brief Returns the directory portion of a nested path.
+ */
+void test_extract_parent_dir_nested()
+{
+    char out[64];
+    TEST_ASSERT_TRUE(PathUtils::extract_parent_dir(
+        "/20260213/20260213_123456.jpg", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("/20260213", out);
+}
+
+/**
+ * @brief Returns the directory portion of a doubly-nested path.
+ */
+void test_extract_parent_dir_deep_nested()
+{
+    char out[64];
+    TEST_ASSERT_TRUE(PathUtils::extract_parent_dir(
+        "/2026/02/13/photo.jpg", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("/2026/02/13", out);
+}
+
+/**
+ * @brief Returns false for a path directly under the root.
+ *
+ * "/photo.jpg" has no intermediate parent directory to create, so
+ * no directory path is returned.
+ */
+void test_extract_parent_dir_root_level()
+{
+    char out[64];
+    TEST_ASSERT_FALSE(PathUtils::extract_parent_dir(
+        "/photo.jpg", out, sizeof(out)));
+}
+
+/**
+ * @brief Returns false for a bare filename with no slash.
+ */
+void test_extract_parent_dir_bare_filename()
+{
+    char out[64];
+    TEST_ASSERT_FALSE(PathUtils::extract_parent_dir(
+        "photo.jpg", out, sizeof(out)));
+}
+
+/**
+ * @brief Returns false on a too-small output buffer.
+ */
+void test_extract_parent_dir_buffer_too_small()
+{
+    char out[4];
+    TEST_ASSERT_FALSE(PathUtils::extract_parent_dir(
+        "/20260213/20260213_123456.jpg", out, sizeof(out)));
+}
+
+/**
+ * @brief Returns false on null arguments.
+ */
+void test_extract_parent_dir_null_args()
+{
+    char out[64];
+    TEST_ASSERT_FALSE(PathUtils::extract_parent_dir(nullptr, out, sizeof(out)));
+    TEST_ASSERT_FALSE(PathUtils::extract_parent_dir("/a/b.jpg", nullptr, sizeof(out)));
+    TEST_ASSERT_FALSE(PathUtils::extract_parent_dir("/a/b.jpg", out, 0));
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -177,6 +247,14 @@ int main()
     RUN_TEST(test_cap_exceeded_returns_false);
     RUN_TEST(test_null_args_rejected);
     RUN_TEST(test_out_too_small_rejected);
+
+    // extract_parent_dir
+    RUN_TEST(test_extract_parent_dir_nested);
+    RUN_TEST(test_extract_parent_dir_deep_nested);
+    RUN_TEST(test_extract_parent_dir_root_level);
+    RUN_TEST(test_extract_parent_dir_bare_filename);
+    RUN_TEST(test_extract_parent_dir_buffer_too_small);
+    RUN_TEST(test_extract_parent_dir_null_args);
 
     return UNITY_END();
 }

@@ -52,6 +52,20 @@ The design follows a layered architecture that separates hardware access from ap
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### FreeRTOS Tasks
+
+The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The firmware runs several FreeRTOS tasks, each pinned to a specific core. Arduino's `setup()`/`loop()` run on core 1; the capture task is pinned to core 0 to keep core 1 free for WiFi, the web server, and LED management.
+
+| Task | Created By | Layer | Core | Stack (bytes) | Priority | Scope / Responsibility |
+|------|-----------|-------|------|---------------|----------|------------------------|
+| `loopTask` | Arduino framework | Arduino framework | 1 | framework-managed | framework-managed | Runs `setup()` then `loop()`. `loop()` ticks the `CommandHandler` (polls serial/web transports), the `SystemOrchestrator`, and the `LedStateMachine`, and emits the periodic heartbeat log. |
+| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_write_frame()` to capture a frame and write it to SD. Exits (and signals an exit semaphore) when `stop()` is requested. |
+| `async_tcp` | `AsyncTCP` library | Arduino framework | 1 | library-managed | library-managed | AsyncTCP event loop task that services TCP connections for the `ESPAsyncWebServer`. |
+| `wifi` | ESP-IDF | ESP-IDF framework | 0 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF WiFi driver task handling the WiFi MAC/PHY event loop. |
+| `ipc0` / `ipc1` | ESP-IDF | ESP-IDF framework | 0 / 1 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF inter-processor call tasks used for cross-core function calls (e.g. cache flush, flash operations). |
+| `Tmr Svc` | FreeRTOS | ESP-IDF framework | 1 | ESP-IDF-managed | ESP-IDF-managed | FreeRTOS software timer service task. |
+| `esp_timer` | ESP-IDF | ESP-IDF framework | 0 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF high-resolution timer task that dispatches software timer callbacks. |
+
 ### Key Design Principles
 
 - **Dependency Injection**: All service-layer classes accept HAL interfaces through constructor parameters, making them decoupled from any specific hardware implementation.
@@ -260,8 +274,9 @@ Generates non-colliding file paths by appending serial suffixes (`_1`, `_2`, ...
 | Method | Purpose |
 |--------|---------|
 | `make_unique_path(base_path, exists, out, out_size)` | Finds a non-existent path by appending serial suffixes; capped at `MAX_SUFFIX_ATTEMPTS` (100) |
+| `extract_parent_dir(path, out, out_size)` | Copies everything up to (but not including) the last `/` into `out`; returns `false` for root-level or bare paths |
 
-`VideoController::make_unique_path()` wraps this with an `exists_sync()` callback so photo paths never overwrite an existing file.
+`VideoController::make_unique_path()` wraps this with an `exists_sync()` callback so photo paths never overwrite an existing file. `VideoController::capture_photo()` uses `extract_parent_dir()` to create the photo's parent directory before writing.
 
 ### LoggingService
 
@@ -952,6 +967,8 @@ When a clip reaches `clip_duration_s` or `max_file_size_mb`, the clip is closed 
 /YYYYMMDD/YYYYMMDD_HHMMSS_photo.jpg
 ```
 Returns the file path on success. Returns `INVALID_STATE` if currently recording. The caller (e.g. `SystemOrchestrator::handle_take_photo()`) builds the base path from the Unix timestamp via `TimeFormatter` and resolves collisions via `VideoController::make_unique_path()` before calling `capture_photo()`.
+
+Before writing, `capture_photo()` extracts the parent directory from the path via `PathUtils::extract_parent_dir()` and creates it on the SD card (mirroring `open_clip()`). This ensures the first photo of a new day succeeds even when its `/YYYYMMDD` directory does not yet exist.
 
 ### Init Signature
 
