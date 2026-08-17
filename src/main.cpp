@@ -22,6 +22,7 @@
 #include "web_command_transport.h"
 #include "serial_command_transport.h"
 #include "system_orchestrator.h"
+#include "stream_service.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -86,9 +87,11 @@ WebCommandTransport web_transport{web_server_hal_impl, command_handler};
 SerialCommandTransport serial_transport{serial_hal, real_time};
 WebServerService web_server_service{web_server_hal_impl, logger};
 ConfigService config_service{logger};
+StreamService stream_service{logger};
 SystemOrchestrator system_orchestrator{
     video_controller, camera_ctrl, command_handler,
-    real_time, config_service, logger};
+    real_time, config_service, logger,
+    stream_service, web_server_hal_impl};
 
 millis_t last_led_tick_time_ms = 0;
 
@@ -182,6 +185,10 @@ void setup()
                           camera_ctrl.get_params().width,
                           camera_ctrl.get_params().height);
 
+    // --- Initialize stream service and wire it into the video controller ---
+    stream_service.init(config_service.config().web.max_streams);
+    video_controller.set_stream_service(&stream_service);
+
     // --- Initialize WiFi ---
     wifi_service.init(config_service.config().wifi,
                       config_service.config().ap,
@@ -215,9 +222,9 @@ void loop()
 
     // Periodic heartbeat log
     hal::millis_t now = real_time.now();
-    if (now % 30000 < constants::LED_TICK_TIME_MS)
+    if (now % 10000 < constants::LED_TICK_TIME_MS)
     {
-        logger.info("MAIN", "Looping...");
+        logger.info("MAIN", "Core temperature %.2f", temperatureRead());
         real_time.delay_ms(2);
     }
 }

@@ -1,4 +1,5 @@
 #include "hal/web_server_hal_impl.h"
+#include "async_web_stream_writer.h"
 #include <cstring>
 
 #include <ESPAsyncWebServer.h>
@@ -97,7 +98,14 @@ void AsyncRequestRef::send(int code, const char* content_type,
 
 StreamWriter* AsyncRequestRef::create_stream_writer()
 {
-    return nullptr; // Phase 3C — AsyncWebStreamWriter
+    if (m_request == nullptr || m_request->client() == nullptr)
+    {
+        return nullptr;
+    }
+
+    // Ownership passes to the caller (StreamService); the AsyncClient is
+    // owned by the request and freed on disconnect.
+    return new AsyncWebStreamWriter(m_request->client());
 }
 
 // ============================================================

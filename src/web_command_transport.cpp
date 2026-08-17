@@ -56,6 +56,18 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     {
         return CommandCode::TAKE_PHOTO;
     }
+    if (std::strcmp(cmd, "stream_start") == 0)
+    {
+        return CommandCode::START_STREAM;
+    }
+    if (std::strcmp(cmd, "stream_stop") == 0)
+    {
+        return CommandCode::STOP_STREAM;
+    }
+    if (std::strcmp(cmd, "stream_list") == 0)
+    {
+        return CommandCode::LIST_STREAMS;
+    }
     if (std::strcmp(cmd, "config") == 0)
     {
         return CommandCode::GET_CONFIG;

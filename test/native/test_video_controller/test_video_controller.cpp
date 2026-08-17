@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "video_controller.h"
+#include "stream_service.h"
 #include "camera_controller.h"
 #include "sd_controller.h"
 #include "mock_camera_hal.h"
@@ -881,6 +882,72 @@ void test_build_camera_config_returns_requested_dims()
 }
 
 // ============================================================
+// Streaming (preview)
+// ============================================================
+
+/**
+ * @brief start_streaming() transitions IDLE → STREAMING.
+ */
+void test_start_streaming_transitions_to_streaming()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+}
+
+/**
+ * @brief stop_streaming() transitions STREAMING → IDLE.
+ */
+void test_stop_streaming_transitions_to_idle()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.video.start_streaming();
+    f.video.stop_streaming();
+
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+}
+
+/**
+ * @brief A preview frame is delivered to the stream sink but not written to SD.
+ */
+void test_streaming_delivers_frame_without_sd_write()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    // Wire a minimal sink that records deliveries.
+    struct Sink : public IStreamService
+    {
+        int deliveries{0};
+        void deliver_frame(const uint8_t* /*data*/, size_t /*len*/) override
+        {
+            deliveries++;
+        }
+    } sink;
+
+    f.video.set_stream_service(&sink);
+    f.video.start_streaming();
+
+    size_t files_before = f.sd_hal.files.size();
+    f.capture_one_frame();
+
+    TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+    // No SD writes occurred during preview.
+    TEST_ASSERT_EQUAL_UINT32(static_cast<unsigned int>(files_before),
+                             static_cast<unsigned int>(f.sd_hal.files.size()));
+
+    f.video.stop_streaming();
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -947,6 +1014,11 @@ int main()
     RUN_TEST(test_build_camera_config_known_names);
     RUN_TEST(test_build_camera_config_unknown_defaults_to_vga);
     RUN_TEST(test_build_camera_config_returns_requested_dims);
+
+    // Streaming (preview)
+    RUN_TEST(test_start_streaming_transitions_to_streaming);
+    RUN_TEST(test_stop_streaming_transitions_to_idle);
+    RUN_TEST(test_streaming_delivers_frame_without_sd_write);
 
     return UNITY_END();
 }

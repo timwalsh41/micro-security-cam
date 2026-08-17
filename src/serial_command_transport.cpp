@@ -233,6 +233,27 @@ bool SerialCommandTransport::parse_command(
         payload_len = 0;
         return true;
     }
+    else if (strcmp(cmd, "STREAM_START") == 0)
+    {
+        code = CommandCode::START_STREAM;
+        payload = nullptr;
+        payload_len = 0;
+        return true;
+    }
+    else if (strcmp(cmd, "STREAM_STOP") == 0)
+    {
+        code = CommandCode::STOP_STREAM;
+        payload = nullptr;
+        payload_len = 0;
+        return true;
+    }
+    else if (strcmp(cmd, "STREAM_LIST") == 0)
+    {
+        code = CommandCode::LIST_STREAMS;
+        payload = nullptr;
+        payload_len = 0;
+        return true;
+    }
     else if (strcmp(cmd, "TIME") == 0)
     {
         if (args == nullptr)

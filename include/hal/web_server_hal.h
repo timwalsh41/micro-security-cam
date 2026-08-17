@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <functional>
 
+#include "hal/stream_writer.h"
+
 /**
  * @file web_server_hal.h
  * @brief Abstract interface for HTTP server hardware operations.
@@ -21,9 +23,6 @@
 
 namespace hal
 {
-
-/** Forward declaration for stream writers */
-class StreamWriter;
 
 /** HTTP method identifiers */
 enum class HttpMethod : uint8_t

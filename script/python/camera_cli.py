@@ -119,11 +119,13 @@ def main() -> int:
     subparsers.add_parser("status", help="Get camera status")
 
     ctrl = subparsers.add_parser(
-        "control", help="Send a control command (start, stop, photo)",
+        "control", help="Send a control command (start, stop, photo, "
+                        "stream_start, stream_stop, stream_list)",
     )
     ctrl.add_argument(
         "cmd",
-        choices=["start", "stop", "photo"],
+        choices=["start", "stop", "photo",
+                 "stream_start", "stream_stop", "stream_list"],
         help="Command to execute",
     )
 

@@ -1,4 +1,6 @@
 #include "system_orchestrator.h"
+#include "stream_service.h"
+#include "web_auth_util.h"
 #include "time_formatter.h"
 #include <cstdio>
 #include <cstring>
@@ -9,19 +11,24 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CommandHandler& cmd_handler,
                                        TimeService& time,
                                        ConfigService& config,
-                                       LoggingService& log)
+                                       LoggingService& log,
+                                       StreamService& streams,
+                                       hal::WebServerHal& web)
     : m_video(video)
     , m_camera(camera)
     , m_cmd_handler(cmd_handler)
     , m_time(time)
     , m_config(config)
     , m_log(log)
+    , m_streams(streams)
+    , m_web(web)
 {
 }
 
 void SystemOrchestrator::init()
 {
     register_commands();
+    register_stream_route();
     m_log.info(SUBSYSTEM, "SystemOrchestrator initialized");
 }
 
@@ -96,6 +103,30 @@ void SystemOrchestrator::register_commands()
                uint8_t* response, size_t& responseLen) -> CommandResult
         {
             return this->handle_set_config_value(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
+        CommandCode::START_STREAM,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_start_stream(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
+        CommandCode::STOP_STREAM,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_stop_stream(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
+        CommandCode::LIST_STREAMS,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_list_streams(payload, len, response, responseLen);
         });
 }
 
@@ -313,4 +344,107 @@ CommandResult SystemOrchestrator::handle_set_config_value(
 
     m_log.info(SUBSYSTEM, "Config '%s' set to '%s'", key_buf, val);
     return CommandResult::SUCCESS;
+}
+
+// ============================================================
+// Stream commands
+// ============================================================
+
+CommandResult SystemOrchestrator::handle_start_stream(
+    const uint8_t* /* payload */, size_t /* len */,
+    uint8_t* /* response */, size_t& /* responseLen */)
+{
+    if (m_video.start_streaming())
+    {
+        m_log.info(SUBSYSTEM, "Streaming started");
+        return CommandResult::SUCCESS;
+    }
+
+    m_log.error(SUBSYSTEM, "Failed to start streaming");
+    return CommandResult::INTERNAL_ERROR;
+}
+
+CommandResult SystemOrchestrator::handle_stop_stream(
+    const uint8_t* /* payload */, size_t /* len */,
+    uint8_t* /* response */, size_t& /* responseLen */)
+{
+    m_video.stop_streaming();
+    m_log.info(SUBSYSTEM, "Streaming stop requested");
+    return CommandResult::SUCCESS;
+}
+
+CommandResult SystemOrchestrator::handle_list_streams(
+    const uint8_t* /* payload */, size_t /* len */,
+    uint8_t* response, size_t& responseLen)
+{
+    int written = snprintf(
+        reinterpret_cast<char*>(response),
+        CommandHandler::MAX_RESPONSE_SIZE,
+        "{\"active_streams\":%u}",
+        static_cast<unsigned int>(m_streams.active_slot_count()));
+
+    if (written < 0 ||
+        static_cast<size_t>(written) >= CommandHandler::MAX_RESPONSE_SIZE)
+    {
+        return CommandResult::INTERNAL_ERROR;
+    }
+
+    responseLen = static_cast<size_t>(written);
+    return CommandResult::SUCCESS;
+}
+
+// ============================================================
+// /stream route
+// ============================================================
+
+void SystemOrchestrator::register_stream_route()
+{
+    m_web.on("/stream", hal::HttpMethod::GET,
+             [this](hal::RequestRef& request)
+             {
+                 this->handle_stream_request(request);
+             });
+}
+
+void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
+{
+    // Basic auth using the configured web password.
+    const char* auth = request.auth_header();
+    const char* password = m_config.config().web.password;
+    if (!check_basic_auth(auth, password))
+    {
+        request.send(401, "application/json",
+                     "{\"error\":\"authentication required\"}");
+        return;
+    }
+
+    // Streaming must be explicitly started (or recording in progress)
+    // before a viewer can connect.
+    if (m_video.state() != RecordingState::STREAMING &&
+        m_video.state() != RecordingState::RECORDING)
+    {
+        request.send(409, "application/json",
+                     "{\"error\":\"streaming not started\"}");
+        return;
+    }
+
+    hal::StreamWriter* writer = request.create_stream_writer();
+    if (writer == nullptr)
+    {
+        request.send(500, "application/json",
+                     "{\"error\":\"streaming unavailable\"}");
+        return;
+    }
+
+    int slot = m_streams.start_stream(writer);
+    if (slot < 0)
+    {
+        // No free slot: close the writer we just created.
+        writer->close();
+        request.send(503, "application/json",
+                     "{\"error\":\"no free stream slots\"}");
+        return;
+    }
+
+    m_log.info(SUBSYSTEM, "Stream viewer connected (slot %d)", slot);
 }

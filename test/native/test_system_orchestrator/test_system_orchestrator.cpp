@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "system_orchestrator.h"
+#include "stream_service.h"
 #include "command_handler.h"
 #include "video_controller.h"
 #include "camera_controller.h"
@@ -11,6 +12,7 @@
 #include "mock_sd_card_hal.h"
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
+#include "mock_web_server_hal.h"
 #include <cstring>
 #include <string>
 
@@ -31,6 +33,8 @@ struct TestFixture
     VideoController video;
     ConfigService config;
     CommandHandler cmd_handler;
+    StreamService stream_service;
+    MockWebServerHal web_hal;
     SystemOrchestrator orchestrator;
 
     TestFixture()
@@ -40,7 +44,9 @@ struct TestFixture
         , video(camera_ctrl, sd_controller, time, logger, capture_scheduler)
         , config(logger)
         , cmd_handler(logger)
-        , orchestrator(video, camera_ctrl, cmd_handler, time, config, logger)
+        , stream_service(logger)
+        , orchestrator(video, camera_ctrl, cmd_handler, time, config, logger,
+                       stream_service, web_hal)
     {
         camera_hal.init_result = hal::CameraInitResult::SUCCESS;
         camera_ctrl.init();
@@ -52,6 +58,8 @@ struct TestFixture
         vconfig.max_file_size_mb = 0;
         vconfig.jpeg_quality = 10;
         video.init(vconfig, 640, 480);
+
+        stream_service.init(4);
 
         orchestrator.init();
     }
@@ -400,6 +408,86 @@ void test_tick_does_not_crash()
 }
 
 // ============================================================
+// Stream commands
+// ============================================================
+
+/**
+ * @brief START_STREAM transitions VideoController to STREAMING.
+ */
+void test_start_stream_delegates()
+{
+    TestFixture f;
+
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::START_STREAM);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+}
+
+/**
+ * @brief STOP_STREAM returns VideoController to IDLE.
+ */
+void test_stop_stream_delegates()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::STOP_STREAM);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+}
+
+/**
+ * @brief LIST_STREAMS returns a JSON active_streams count.
+ */
+void test_list_streams_returns_count()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::LIST_STREAMS, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_NOT_NULL(strstr(reinterpret_cast<char*>(response),
+                                "\"active_streams\""));
+}
+
+/**
+ * @brief The /stream route is registered at init().
+ */
+void test_stream_route_registered()
+{
+    TestFixture f;
+
+    bool found = false;
+    for (auto& route : f.web_hal.registered_routes)
+    {
+        if (route.uri == "/stream" && route.method == hal::HttpMethod::GET)
+        {
+            found = true;
+        }
+    }
+    TEST_ASSERT_TRUE(found);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -420,6 +508,10 @@ int main()
     RUN_TEST(test_set_time_invalid_payload);
     RUN_TEST(test_set_config_returns_invalid_state);
     RUN_TEST(test_tick_does_not_crash);
+    RUN_TEST(test_start_stream_delegates);
+    RUN_TEST(test_stop_stream_delegates);
+    RUN_TEST(test_list_streams_returns_count);
+    RUN_TEST(test_stream_route_registered);
 
     return UNITY_END();
 }

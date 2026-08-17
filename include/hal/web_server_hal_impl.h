@@ -18,9 +18,6 @@ class AsyncWebServerRequest;
 namespace hal
 {
 
-/** Forward declaration for stream writers */
-class StreamWriter;
-
 /**
  * @class AsyncRequestRef
  * @brief RequestRef implementation wrapping AsyncWebServerRequest.

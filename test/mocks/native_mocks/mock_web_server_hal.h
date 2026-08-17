@@ -2,6 +2,7 @@
 #define MOCK_WEB_SERVER_HAL_H
 
 #include "hal/web_server_hal.h"
+#include "mock_stream_writer.h"
 #include <cstring>
 #include <vector>
 #include <string>
@@ -134,14 +135,18 @@ class MockRequestRef : public hal::RequestRef
 
         hal::StreamWriter* create_stream_writer() override
         {
-            return nullptr; // Phase 3C
+            // Allocate a mock writer and track it for test assertions.
+            auto* writer = new MockStreamWriter();
+            stream_writers.push_back(writer);
+            return writer;
         }
+
+        /** Stream writers created via create_stream_writer(). */
+        std::vector<MockStreamWriter*> stream_writers;
 
         // ============================================================
         // Helper methods for test setup
         // ============================================================
-
-        /** Configure a simulated query argument. */
         void set_arg(const char* name, const char* value)
         {
             if (name == nullptr || arg_count >= MAX_ARGS)

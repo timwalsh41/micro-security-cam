@@ -31,7 +31,7 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                Service / Controller Layer                   │
 │  CameraController    VideoController   LedStateMachine      │
-│  SdController        AviWriter                              │
+│  SdController        AviWriter         StreamService        │
 │  TimeService         LoggingService                         │
 │  ConfigService       IniParser                              │
 │  WifiService         WebServerService                       │
@@ -42,7 +42,7 @@ The design follows a layered architecture that separates hardware access from ap
 │                Hardware Abstraction Layer (HAL)             │
 │  CameraHal       SdCardHal      LogBackend                  │
 │  GpioHal         TimeHal        WifiHal    SerialHal        │
-│  WebServerHal                                               │
+│  WebServerHal    StreamWriter                               │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -86,6 +86,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
 | `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
 | `TimerHal` | `include/hal/timer_hal.h` | Hardware timer abstraction for periodic ISR callbacks. Provides `init(interval_us, isr)`, `set_frequency()`, `start()`, `stop()`. |
+| `StreamWriter` | `include/hal/stream_writer.h` | Abstract write sink for streaming bytes to a client connection. Provides `write(data, len)` and `close()`. Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native). |
 
 **`hal::FileOpenMode`** — file open modes supported by `SdCardHal::open()`:
 
@@ -160,6 +161,7 @@ Each request is represented by a per-request `RequestRef` object that provides a
 | `auth_header()` | Get the `Authorization` header |
 | `send(code, type, content)` | Send a complete response (string body) |
 | `send(code, type, data, len)` | Send a complete response (binary body) |
+| `create_stream_writer()` | Create a `hal::StreamWriter*` bound to the request's client connection (used by the `/stream` MJPEG endpoint) |
 
 **ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
 
@@ -192,6 +194,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `file_content` (seed content) |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
+| `MockStreamWriter` | `write_call_count`, `close_call_count`, `captured` (accumulated bytes) | `accept_writes` (to simulate a blocked/closed sink) |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
 
 ---
@@ -277,6 +280,45 @@ Generates non-colliding file paths by appending serial suffixes (`_1`, `_2`, ...
 | `extract_parent_dir(path, out, out_size)` | Copies everything up to (but not including) the last `/` into `out`; returns `false` for root-level or bare paths |
 
 `VideoController::make_unique_path()` wraps this with an `exists_sync()` callback so photo paths never overwrite an existing file. `VideoController::capture_photo()` uses `extract_parent_dir()` to create the photo's parent directory before writing.
+
+### StreamService
+
+**Files**: `include/stream_service.h`, `src/stream_service.cpp`
+
+#### Responsibility
+
+Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-replace` MJPEG stream. Synchronous and platform-agnostic: `deliver_frame()` writes the multipart framing plus frame bytes directly to each active `hal::StreamWriter`. There are no per-slot frame buffers or FreeRTOS tasks — backpressure is handled by the underlying transport's send queue (AsyncTCP).
+
+#### Interfaces
+
+- `IStreamService` — minimal frame-sink interface consumed by `VideoController`. Declares only `deliver_frame(data, len)`, mirroring the `ICaptureScheduler` abstraction pattern so `VideoController` stays decoupled and natively testable.
+- `hal::StreamWriter` — abstract write sink (`write()`, `close()`). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native).
+
+#### API
+
+| Method | Purpose |
+|--------|---------|
+| `init(max_streams)` | Sets the maximum concurrent stream slots (clamped to `MAX_STREAMS = 8`). |
+| `start_stream(writer)` | Registers a viewer, writes the HTTP 200 + multipart preamble, and returns the slot index (`-1` if full). |
+| `stop_stream(slot)` | Writes the closing boundary, closes the writer, and frees the slot. |
+| `deliver_frame(data, len)` | Writes a multipart JPEG part (`Content-Type: image/jpeg`, `Content-Length`, frame bytes) to every active slot. |
+| `active_slot_count()` | Returns the number of active viewers. |
+
+#### Streaming Model
+
+Streaming reuses the single capture loop owned by `VideoController` — there is no separate capture task. `VideoController` exposes a three-state model:
+
+```
+IDLE ──START_STREAM──► STREAMING ──START_RECORDING──► RECORDING
+                          ▲                              │
+                          └───── STOP_STREAM / STOP_RECORDING
+```
+
+- **`IDLE`** — capture loop off; no frames produced.
+- **`STREAMING`** — capture loop on at `[video]` FPS; frames delivered to streams only.
+- **`RECORDING`** — capture loop on; frames written to SD **and** delivered to streams.
+
+The `/stream` endpoint requires streaming to already be active (an explicit `START_STREAM`, or recording in progress) before a viewer can connect.
 
 ### LoggingService
 
@@ -455,8 +497,9 @@ Complete list of HTTP endpoints exposed by the system, showing which class regis
 | GET | `/` | `WebServerService::init()` | `handle_index()` — serves the built-in HTML status page | Conditional¹ |
 | GET | `/status` | `WebCommandTransport::register_routes()` | `handle_status()` → `dispatch_and_respond(GET_STATUS)` → `CommandHandler::dispatch()` | Conditional¹ |
 | GET | `/control` | `WebCommandTransport::register_routes()` | `handle_control()` → `map_cmd_string(cmd)` → `dispatch_and_respond(code[, payload])` → `CommandHandler::dispatch()` | Conditional¹ |
+| GET | `/stream` | `SystemOrchestrator::init()` | `handle_stream_request()` → `check_basic_auth()` → `create_stream_writer()` → `StreamService::start_stream()` | Conditional¹ |
 
-¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response.
+¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers do not send Basic credentials for embedded subresources (`<img>`/`<video>`), so an embedded viewer requires a different (token-based) mechanism — out of scope for this slice.
 
 The `cmd` query parameter on `/control` selects the command to dispatch — see the **Web transport** table in the [Command Reference](#command-reference) for the mapping. `set_time` additionally requires a `ts` timestamp parameter, which the transport packs as a little-endian `uint32_t` payload.
 
@@ -621,6 +664,8 @@ Top-level system coordinator and command router.
 - `TimeService &` — for time operations.
 - `ConfigService &` — for configuration access.
 - `LoggingService &` — for diagnostic output.
+- `StreamService &` — for MJPEG stream control.
+- `WebServerHal &` — for `/stream` route registration.
 
 #### Registered Commands
 
@@ -665,6 +710,9 @@ Every command returns a `CommandResult` enum value:
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Returns `INVALID_STATE` if already recording, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session synchronously: flags the clip for closure, stops the capture scheduler, and waits (bounded) for the capture task to run its final frame callback, which closes the clip and transitions to IDLE. On return the state is `IDLE`. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` if recording, `INTERNAL_ERROR` if capture or write fails. |
+| `0x13` | `START_STREAM` | None | None | Begins live preview: transitions `VideoController` to `STREAMING` (capture loop on, frames to streams only). No-op success if already `STREAMING` or `RECORDING`. |
+| `0x14` | `STOP_STREAM` | None | None | Stops live preview: transitions `STREAMING` → `IDLE`. No-op if not streaming (does not stop recording). |
+| `0x15` | `LIST_STREAMS` | None | JSON string: `{"active_streams":uint8}` | Returns the number of currently connected stream viewers. |
 | `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
 | `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
 | `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). Returns `INVALID_ARGS` if the key is unknown. |
@@ -681,6 +729,9 @@ Every command returns a `CommandResult` enum value:
 | `start` | `START_RECORDING` | |
 | `stop` | `STOP_RECORDING` | |
 | `photo` | `TAKE_PHOTO` | |
+| `stream_start` | `START_STREAM` | |
+| `stream_stop` | `STOP_STREAM` | |
+| `stream_list` | `LIST_STREAMS` | |
 | `config` | `GET_CONFIG` | |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 
@@ -699,6 +750,9 @@ The `/status` endpoint always dispatches `GET_STATUS` regardless of query parame
 | `PHOTO` | `TAKE_PHOTO` | None | Empty |
 | `RECORD_START` | `START_RECORDING` | None | Empty |
 | `RECORD_STOP` | `STOP_RECORDING` | None | Empty |
+| `STREAM_START` | `START_STREAM` | None | Empty |
+| `STREAM_STOP` | `STOP_STREAM` | None | Empty |
+| `STREAM_LIST` | `LIST_STREAMS` | None | JSON `{"active_streams":uint8}` |
 | `TIME <unix_ts>` | `SET_TIME` | Decimal ASCII string (parsed as `uint32_t` by transport) | Empty |
 | `GET <section>.<key>` | `GET_CONFIG_VALUE` | `"section.key"` string | The value string |
 | `SET <section>.<key>=<val>` | `SET_CONFIG_VALUE` | `"section.key=value"` string | Empty |
@@ -781,16 +835,27 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 ### State Machine
 
 ```
-                                   start_recording()              clip limit / stop_recording()
+                 start_recording()              clip limit / stop_recording()
       ┌──────────┐ ──────────────────────────────────► ┌───────────┐
       │   IDLE   │ ◄───────────────────────────────── ◆│ RECORDING │
       └──────────┘  explicit stop (synchronous)        └───────────┘  auto-rotate (new clip)
+         │  ▲                                                   ▲
+         │  │ stop_streaming()                                  │ start_recording()
+   start_streaming() │                                          │
+         │  │                                                   │
+         ▼  │                                                   │
+      ┌──────────┐ ──────────────────────────────────────────────┘
+      │ STREAMING│
+      └──────────┘
 ```
 
-- **IDLE** — Not recording. Awaits `start_recording()` or `capture_photo()`.
-- **RECORDING** — Actively capturing and writing frames at the configured FPS. Clip auto-rotates when duration or file size limit is reached.
+- **IDLE** — Not recording. Awaits `start_recording()`, `start_streaming()`, or `capture_photo()`.
+- **STREAMING** — Live preview: the capture loop runs at the configured FPS and delivers frames to connected stream clients only (no AVI/SD writes).
+- **RECORDING** — Actively capturing and writing frames at the configured FPS. Clip auto-rotates when duration or file size limit is reached. Frames are also delivered to stream clients.
 
 `stop_recording()` is **synchronous**: it flags the current clip for closure, stops the capture scheduler, and blocks (bounded) until the capture task runs its final frame callback, which closes the clip and returns the state to `IDLE`. On successful return the state is always `IDLE`, so `GET_STATUS` reports `recording:false` immediately and a subsequent `start_recording()` succeeds right away.
+
+`start_streaming()`/`stop_streaming()` manage the preview state: `start_streaming()` starts the capture scheduler without opening a clip, and `stop_streaming()` stops it and returns to `IDLE`. `start_recording()` when already `STREAMING` reuses the running scheduler (it does not start a second task).
 
 ### Capture Scheduling
 
@@ -941,6 +1006,83 @@ deactivate TASK
 
 **Clip close blocks frame capture.** While `close_clip()` runs — appending the index and overwriting the placeholder header — no new frames are captured. The next frame is processed after the clip is fully written and (for auto-rotation) the new clip is opened.
 
+### Streaming Sequence Diagram
+
+The following diagram shows the live MJPEG streaming flow: an explicit `START_STREAM` starts the capture loop, a browser connects to `/stream`, and each captured frame is delivered to the connected viewer.
+
+```plantuml
+@startuml
+title Live MJPEG Streaming Flow
+
+participant "Client\n(browser)" as CLIENT
+participant "SystemOrchestrator" as ORCH
+participant "VideoController" as VC
+participant "CaptureScheduler\nEsp32" as CS
+participant "Capture Task\n(CPU0)" as TASK
+participant "CameraController" as CAM
+participant "StreamService" as SS
+participant "AsyncWebStreamWriter" as WRITER
+participant "AsyncTCP\n(client)" as TCP
+
+== Start preview ==
+
+CLIENT -> ORCH : START_STREAM (cmd=stream_start)
+ORCH -> VC : start_streaming()
+activate VC
+VC -> CS : start(interval_ms, callback)
+note right: capture loop on,\nno clip opened
+VC -> VC : state = STREAMING
+VC --> ORCH : true
+deactivate VC
+ORCH --> CLIENT : {"result":"ok"}
+
+== Viewer connects ==
+
+CLIENT -> ORCH : GET /stream
+ORCH -> ORCH : check_basic_auth()
+ORCH -> ORCH : state == STREAMING? (yes)
+ORCH -> VC : (request.create_stream_writer())
+ORCH -> WRITER : new AsyncWebStreamWriter(client)
+ORCH -> SS : start_stream(writer)
+activate SS
+SS -> WRITER : write(HTTP 200 + multipart preamble)
+WRITER -> TCP : client->write(...)
+SS --> ORCH : slot index
+deactivate SS
+
+== Frame delivery loop ==
+
+loop at configured FPS interval
+
+TASK -> VC : capture_and_write_frame()
+activate VC
+VC -> CAM : capture_frame()
+CAM --> VC : JPEG frame
+VC -> SS : deliver_frame(jpeg, len)
+activate SS
+SS -> WRITER : write(--boundary + Content-Type: image/jpeg)
+SS -> WRITER : write(Content-Length: N)
+SS -> WRITER : write(JPEG bytes)
+WRITER -> TCP : client->write(...)
+deactivate SS
+VC -> CAM : release_frame()
+deactivate VC
+
+end
+
+== Stop preview ==
+
+CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
+ORCH -> VC : stop_streaming()
+VC -> CS : stop()
+VC -> VC : state = IDLE
+ORCH --> CLIENT : {"result":"ok"}
+
+@enduml
+```
+
+The `/stream` handler does **not** call `request->send()` — that would close the response. Instead it obtains a `hal::StreamWriter` via `request.create_stream_writer()` and hands it to `StreamService`, which writes the multipart framing and frame bytes directly to the `AsyncClient`.
+
 ### Per-Frame SD Write Strategy
 
 Frames are written to SD incrementally during recording:
@@ -988,7 +1130,7 @@ Width and height come from `build_camera_config()` (called in `main.cpp` before 
 
 ### Testability
 
-Fully testable on native via `MockCameraHal`, `MockSdCardHal`, `MockCaptureScheduler`, and `MockLogBackend`. Tests cover state transitions, frame capture, clip rotation, error handling, and `build_camera_config()` resolution mapping. In native tests, `MockCaptureScheduler::on_frame_capture()` invokes the frame callback synchronously, replacing the FreeRTOS task + timer ISR used on ESP32.
+Fully testable on native via `MockCameraHal`, `MockSdCardHal`, `MockCaptureScheduler`, and `MockLogBackend`. Tests cover state transitions, frame capture, clip rotation, error handling, streaming preview (frame delivery to a mock `IStreamService` without SD writes), and `build_camera_config()` resolution mapping. In native tests, `MockCaptureScheduler::on_frame_capture()` invokes the frame callback synchronously, replacing the FreeRTOS task + timer ISR used on ESP32.
 
 ---
 
@@ -1043,7 +1185,7 @@ Pure format logic with no hardware or I/O dependencies. Tests verify every byte 
 The `setup()` function composes all system components in a layered initialization sequence. Global instances are declared at file scope, organized into two groups:
 
 1. **Core services** — always present: `RealTimeService`, `SerialHalImpl`, `LoggingService`, `ConfigService`, `CameraController`, `VideoController`, `SdController`, `PlatformInitializer`.
-2. **Network & command services** — WiFi, web, commands, orchestrator: `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `SystemOrchestrator`.
+2. **Network & command services** — WiFi, web, commands, orchestrator: `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `StreamService`, `SystemOrchestrator`.
 
 ### Shared Pin Protocol
 
@@ -1057,10 +1199,11 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 4. **Config load** — Reads `/config.ini` from SD into a stack buffer via `SdController::read_sync()`, then calls `ConfigService::load()`. Missing or empty files result in sensible defaults.
 5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step. On ESP32, the capture task is created and pinned to CPU0.
-7. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
-8. **Web server init** — `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. The `WebCommandTransport` is added to the `CommandHandler`.
-9. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
-10. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers.
+7. **Stream init** — `StreamService::init(max_streams)` configures the concurrent stream slot count; `VideoController::set_stream_service(&stream_service)` wires frame delivery.
+8. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
+9. **Web server init** — `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. The `WebCommandTransport` is added to the `CommandHandler`.
+10. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
+11. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route.
 
 ### Main Loop
 
@@ -1240,6 +1383,7 @@ test/
     test_led_state_machine/         ← LED state machine tests
     test_logging_service/           ← Logging output tests
     test_sd_controller/             ← SD write controller tests
+    test_stream_service/            ← StreamService slot/delivery tests
     test_system_orchestrator/       ← System orchestrator commands
     test_time_service/              ← Time service tests
     test_video_controller/          ← Video recording orchestration

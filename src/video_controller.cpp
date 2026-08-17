@@ -1,4 +1,5 @@
 #include "video_controller.h"
+#include "stream_service.h"
 #include <cstring>
 #include <cstdio>
 
@@ -47,7 +48,18 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 
 bool VideoController::start_recording()
 {
-    if (m_state != RecordingState::IDLE)
+    RecordingState current = m_state.load(std::memory_order_relaxed);
+
+    if (current == RecordingState::RECORDING)
+    {
+        return false;
+    }
+
+    // If already streaming, the scheduler is already running — do not
+    // restart it; just open the clip and switch to RECORDING.
+    bool scheduler_running = (current == RecordingState::STREAMING);
+
+    if (current != RecordingState::IDLE && !scheduler_running)
     {
         return false;
     }
@@ -60,19 +72,22 @@ bool VideoController::start_recording()
         return false;
     }
 
-    m_state = RecordingState::RECORDING;
-
-    // Start the capture scheduler — invokes capture_and_write_frame() on each frame
-    if (!m_scheduler.start(m_frame_interval_ms,
-                           [this]() { capture_and_write_frame(); }))
+    if (!scheduler_running)
     {
-        // Scheduler busy (e.g. a task left over from a timed-out stop):
-        // undo the just-opened clip and stay in IDLE
-        close_clip();
-        m_state = RecordingState::IDLE;
-        m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
-        return false;
+        // Start the capture scheduler — invokes capture_and_write_frame() on each frame
+        if (!m_scheduler.start(m_frame_interval_ms,
+                               [this]() { capture_and_write_frame(); }))
+        {
+            // Scheduler busy (e.g. a task left over from a timed-out stop):
+            // undo the just-opened clip and stay in IDLE
+            close_clip();
+            m_state = RecordingState::IDLE;
+            m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
+            return false;
+        }
     }
+
+    m_state = RecordingState::RECORDING;
 
     m_log.info(SUBSYSTEM, "Recording started: %s", m_file_path);
     return true;
@@ -130,9 +145,52 @@ bool VideoController::capture_photo(const char* path)
     return ok;
 }
 
-void VideoController::set_stream_service(void* /*stream_service*/)
+void VideoController::set_stream_service(IStreamService* stream_service)
 {
-    // TODO: wire to StreamService in future phase
+    m_stream_service = stream_service;
+}
+
+bool VideoController::start_streaming()
+{
+    if (m_state == RecordingState::STREAMING ||
+        m_state == RecordingState::RECORDING)
+    {
+        // Preview is already active (or recording is, which also delivers
+        // frames) — treat as a no-op success.
+        return true;
+    }
+
+    if (m_state != RecordingState::IDLE)
+    {
+        return false;
+    }
+
+    m_stop_clip = false;
+
+    // Start the capture scheduler in preview mode: frames are delivered
+    // to streams only (no AVI/SD writes).
+    if (!m_scheduler.start(m_frame_interval_ms,
+                           [this]() { capture_and_write_frame(); }))
+    {
+        m_log.warn(SUBSYSTEM, "Streaming start failed: scheduler busy");
+        return false;
+    }
+
+    m_state = RecordingState::STREAMING;
+    m_log.info(SUBSYSTEM, "Streaming started");
+    return true;
+}
+
+void VideoController::stop_streaming()
+{
+    if (m_state != RecordingState::STREAMING)
+    {
+        return;
+    }
+
+    m_scheduler.stop();
+    m_state = RecordingState::IDLE;
+    m_log.info(SUBSYSTEM, "Streaming stopped");
 }
 
 // ============================================================
@@ -257,8 +315,10 @@ void VideoController::capture_and_write_frame()
 {
     // Guard against stale callbacks (e.g. a task notification that was
     // already queued when stop was requested): never capture outside
-    // the RECORDING state.
-    if (m_state != RecordingState::RECORDING)
+    // an active capture state (STREAMING or RECORDING).
+    RecordingState current = m_state.load(std::memory_order_relaxed);
+    if (current != RecordingState::RECORDING &&
+        current != RecordingState::STREAMING)
     {
         return;
     }
@@ -272,17 +332,34 @@ void VideoController::capture_and_write_frame()
 
     hal::CameraFrame frame = m_camera.get_frame();
 
-    // Format as AVI chunk and write to SD
-    m_avi_writer.write_frame(frame.data, frame.len);
-
-    AviBytes chunk = m_avi_writer.last_frame_chunk();
-    if (chunk.data && chunk.len > 0)
+    // Deliver the raw JPEG frame to connected stream clients (applies to
+    // both preview and recording states).
+    if (m_stream_service != nullptr && frame.data != nullptr && frame.len > 0)
     {
-        write_to_sd(chunk.data, chunk.len);
-        m_file_size += static_cast<uint32_t>(chunk.len);
+        m_stream_service->deliver_frame(frame.data, frame.len);
+    }
+
+    if (current == RecordingState::RECORDING)
+    {
+        // Format as AVI chunk and write to SD
+        m_avi_writer.write_frame(frame.data, frame.len);
+
+        AviBytes chunk = m_avi_writer.last_frame_chunk();
+        if (chunk.data && chunk.len > 0)
+        {
+            write_to_sd(chunk.data, chunk.len);
+            m_file_size += static_cast<uint32_t>(chunk.len);
+        }
     }
 
     m_camera.release_frame();
+
+    if (current == RecordingState::STREAMING)
+    {
+        // Preview mode: no clip bookkeeping or rotation.
+        return;
+    }
+
     m_frames_recorded++;
 
     // Check clip termination conditions (auto-rotation)

@@ -197,6 +197,27 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo |
+| GET | `/control?cmd=stream_start` | Yes | Start live preview (capture loop on) |
+| GET | `/control?cmd=stream_stop` | Yes | Stop live preview |
+| GET | `/control?cmd=stream_list` | Yes | List connected stream clients (JSON) |
+| GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start` or recording) |
+
+### Live Streaming
+
+The camera can serve a live MJPEG stream to web browsers. Streaming reuses the same capture loop as recording, so it works at the `[video]` resolution/framerate. To view the stream:
+
+1. Start preview: `GET /control?cmd=stream_start` (or start a recording).
+2. Open `http://<camera-ip>/stream` directly in a browser (Basic auth works on direct navigation, but not for embedded `<img>`/`<video>` subresources).
+
+The number of concurrent viewers is limited by `max_streams` (1–4).
+
+**Practical limits** (based on the ESP32-S3's ~20–30 Mbps real-world WiFi throughput, OV2640 encode time, and 8 MB PSRAM):
+
+| Resolution | Recommended FPS | Concurrent viewers |
+|-----------|-----------------|--------------------|
+| VGA (640×480) | 10–15 | 2–4 (recommended default) |
+| SVGA/XGA | low | 1–2 |
+| HD/UXGA | n/a | effectively unavailable (PSRAM + encode-time constrained) |
 
 ### Authentication
 
@@ -270,7 +291,7 @@ Edit the `HOST`, `PORT`, and `PASSWORD` variables at the top of the script to ma
 uv run script/python/camera_cli.py status
 
 # Send a control command
-uv run script/python/camera_cli.py control [start | stop | photo]
+uv run script/python/camera_cli.py control [start | stop | photo | stream_start | stream_stop | stream_list]
 
 # Set camera clock to current system time
 uv run script/python/camera_cli.py set-time

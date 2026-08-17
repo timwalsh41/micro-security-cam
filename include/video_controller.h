@@ -14,6 +14,9 @@
 #include "path_utils.h"
 #include "time_formatter.h"
 
+/** Forward declaration for the minimal stream-sink interface. */
+class IStreamService;
+
 /**
  * @file video_controller.h
  * @brief Video recording orchestrator for MJPEG video capture.
@@ -51,8 +54,9 @@
  */
 enum class RecordingState : uint8_t
 {
-    IDLE,       ///< Not recording
-    RECORDING   ///< Actively capturing and writing frames
+    IDLE,       ///< Not recording; capture loop off
+    STREAMING,  ///< Preview: capture loop on, frames delivered to streams only
+    RECORDING   ///< Actively capturing and writing frames to SD (and streams)
 };
 
 /**
@@ -173,15 +177,35 @@ class VideoController
         uint32_t file_size() const;
 
         /**
-         * @brief Sets the streaming service stub (no-op for now).
+         * @brief Begins live preview (streaming without SD recording).
          *
-         * Placeholder for future MJPEG streaming integration.
-         * Will be wired to a StreamService that serves frames over HTTP.
+         * Transitions from IDLE to STREAMING and starts the capture
+         * scheduler so frames are delivered to connected stream clients.
+         * No-op (returns true) if already STREAMING or RECORDING.
+         *
+         * @return true if preview is active after the call.
          */
-        void set_stream_service(void* stream_service);
+        bool start_streaming();
 
-    private:
         /**
+         * @brief Stops live preview.
+         *
+         * Transitions from STREAMING to IDLE and stops the capture
+         * scheduler. No-op if not STREAMING (does not stop recording).
+         */
+        void stop_streaming();
+
+        /**
+         * @brief Sets the stream-sink service for frame delivery.
+         *
+         * The sink receives every captured JPEG frame (both preview and
+         * recording frames). May be null to disable streaming.
+         *
+         * @param stream_service Optional IStreamService implementation.
+         */
+        void set_stream_service(IStreamService* stream_service);
+
+    private:        /**
          * @brief Captures a single frame and writes it to SD.
          *
          * Called by the ICaptureScheduler callback on each frame trigger.
@@ -250,6 +274,9 @@ class VideoController
         TimeService& m_time;
         LoggingService& m_log;
         ICaptureScheduler& m_scheduler;
+
+        /** Optional stream-sink for frame delivery (may be null). */
+        IStreamService* m_stream_service{nullptr};
 
         // Owned components
         AviWriter m_avi_writer;

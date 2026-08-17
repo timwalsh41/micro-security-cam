@@ -7,6 +7,10 @@
 #include "time_service.h"
 #include "config_service.h"
 #include "logging_service.h"
+#include "hal/web_server_hal.h"
+
+/** Forward declarations. */
+class StreamService;
 
 /**
  * @file system_orchestrator.h
@@ -27,13 +31,17 @@ class SystemOrchestrator
          * @param time       Reference to TimeService for time operations.
          * @param config     Reference to ConfigService for configuration.
          * @param log        Reference to LoggingService for logging.
+         * @param streams    Reference to StreamService for MJPEG stream control.
+         * @param web        Reference to WebServerHal for /stream route registration.
          */
         SystemOrchestrator(VideoController& video,
                            CameraController& camera,
                            CommandHandler& cmd_handler,
                            TimeService& time,
                            ConfigService& config,
-                           LoggingService& log);
+                           LoggingService& log,
+                           StreamService& streams,
+                           hal::WebServerHal& web);
 
         /**
          * @brief Initializes the orchestrator.
@@ -58,8 +66,15 @@ class SystemOrchestrator
         TimeService& m_time;
         ConfigService& m_config;
         LoggingService& m_log;
+        StreamService& m_streams;
+        hal::WebServerHal& m_web;
 
         void register_commands();
+
+        /**
+         * @brief Registers the /stream MJPEG route.
+         */
+        void register_stream_route();
 
         // Command handler implementations
         CommandResult handle_get_status(const uint8_t* payload, size_t len,
@@ -78,6 +93,15 @@ class SystemOrchestrator
                                               uint8_t* response, size_t& responseLen);
         CommandResult handle_set_config_value(const uint8_t* payload, size_t len,
                                               uint8_t* response, size_t& responseLen);
+        CommandResult handle_start_stream(const uint8_t* payload, size_t len,
+                                          uint8_t* response, size_t& responseLen);
+        CommandResult handle_stop_stream(const uint8_t* payload, size_t len,
+                                         uint8_t* response, size_t& responseLen);
+        CommandResult handle_list_streams(const uint8_t* payload, size_t len,
+                                          uint8_t* response, size_t& responseLen);
+
+        /** @brief Handler for GET /stream — registers a viewer slot. */
+        void handle_stream_request(hal::RequestRef& request);
 };
 
 #endif // SYSTEM_ORCHESTRATOR_H
