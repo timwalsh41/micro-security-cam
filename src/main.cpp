@@ -222,9 +222,9 @@ void loop()
 
     // Periodic heartbeat log
     hal::millis_t now = real_time.now();
-    if (now % 10000 < constants::LED_TICK_TIME_MS)
+    if (now % 30000 < constants::LED_TICK_TIME_MS)
     {
-        logger.info("MAIN", "Core temperature %.2f", temperatureRead());
+        logger.info("MAIN", "Looping...");
         real_time.delay_ms(2);
     }
 }
