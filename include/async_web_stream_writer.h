@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 /**
  * @file async_web_stream_writer.h
@@ -26,6 +27,11 @@ class AsyncClient;
  * client pointer is owned by the enclosing AsyncWebServerRequest and
  * must not outlive it; close() nulls the reference so later write()
  * calls become safe no-ops.
+ *
+ * A disconnect callback (registered via on_disconnect()) is invoked
+ * when the AsyncClient reports a disconnect. The callback must not
+ * delete this writer — the owner (StreamService) does that after
+ * freeing the slot.
  */
 class AsyncWebStreamWriter : public hal::StreamWriter
 {
@@ -49,8 +55,17 @@ class AsyncWebStreamWriter : public hal::StreamWriter
          */
         void close() override;
 
+        /**
+         * @brief Registers a callback invoked on client disconnect.
+         *
+         * Wired to AsyncClient::onDisconnect(). The callback must not
+         * delete this writer.
+         */
+        void on_disconnect(std::function<void()> cb) override;
+
     private:
         AsyncClient* m_client;
+        std::function<void()> m_disconnect_cb;
 };
 
 #endif // ASYNC_WEB_STREAM_WRITER_H

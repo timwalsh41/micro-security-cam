@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 /**
  * @file stream_writer.h
@@ -48,6 +49,19 @@ class StreamWriter
          * calls should return 0.
          */
         virtual void close() = 0;
+
+        /**
+         * @brief Registers a callback invoked when the connection drops.
+         *
+         * The callback fires when the underlying transport disconnects
+         * (e.g. the client closed the socket). The owner uses it to free
+         * the slot and delete the writer. May be called from an async
+         * context; implementations must not delete the writer from within
+         * the callback.
+         *
+         * @param cb Callback to invoke on disconnect (may be empty).
+         */
+        virtual void on_disconnect(std::function<void()> cb) = 0;
 };
 
 } // namespace hal

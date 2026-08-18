@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 /**
@@ -53,6 +54,28 @@ class MockStreamWriter : public hal::StreamWriter
         {
             close_call_count++;
         }
+
+        /**
+         * @brief Stores the disconnect callback.
+         */
+        void on_disconnect(std::function<void()> cb) override
+        {
+            m_disconnect_cb = std::move(cb);
+        }
+
+        /**
+         * @brief Simulates a client disconnect by invoking the callback.
+         */
+        void simulate_disconnect()
+        {
+            if (m_disconnect_cb)
+            {
+                m_disconnect_cb();
+            }
+        }
+
+    private:
+        std::function<void()> m_disconnect_cb;
 };
 
 #endif // MOCK_STREAM_WRITER_H

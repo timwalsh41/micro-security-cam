@@ -306,13 +306,7 @@ Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-re
 
 #### Streaming Model
 
-Streaming reuses the single capture loop owned by `VideoController` — there is no separate capture task. `VideoController` exposes a three-state model:
-
-```
-IDLE ──START_STREAM──► STREAMING ──START_RECORDING──► RECORDING
-                          ▲                              │
-                          └───── STOP_STREAM / STOP_RECORDING
-```
+Streaming leverages the single capture loop owned by `VideoController`, which exposes a three-state model (`IDLE` / `STREAMING` / `RECORDING`); see the [VideoController State Machine](#state-machine) for the canonical state diagram.
 
 - **`IDLE`** — capture loop off; no frames produced.
 - **`STREAMING`** — capture loop on at `[video]` FPS; frames delivered to streams only.
@@ -499,7 +493,7 @@ Complete list of HTTP endpoints exposed by the system, showing which class regis
 | GET | `/control` | `WebCommandTransport::register_routes()` | `handle_control()` → `map_cmd_string(cmd)` → `dispatch_and_respond(code[, payload])` → `CommandHandler::dispatch()` | Conditional¹ |
 | GET | `/stream` | `SystemOrchestrator::init()` | `handle_stream_request()` → `check_basic_auth()` → `create_stream_writer()` → `StreamService::start_stream()` | Conditional¹ |
 
-¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers do not send Basic credentials for embedded subresources (`<img>`/`<video>`), so an embedded viewer requires a different (token-based) mechanism — out of scope for this slice.
+¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers do not send Basic credentials for embedded subresources (`<img>`/`<video>`), so an embedded viewer requires a different (token-based) mechanism — which is not yet implemented.
 
 The `cmd` query parameter on `/control` selects the command to dispatch — see the **Web transport** table in the [Command Reference](#command-reference) for the mapping. `set_time` additionally requires a `ts` timestamp parameter, which the transport packs as a little-endian `uint32_t` payload.
 
@@ -834,24 +828,29 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 
 ### State Machine
 
-```
-                 start_recording()              clip limit / stop_recording()
-      ┌──────────┐ ──────────────────────────────────► ┌───────────┐
-      │   IDLE   │ ◄───────────────────────────────── ◆│ RECORDING │
-      └──────────┘  explicit stop (synchronous)        └───────────┘  auto-rotate (new clip)
-         │  ▲                                                   ▲
-         │  │ stop_streaming()                                  │ start_recording()
-   start_streaming() │                                          │
-         │  │                                                   │
-         ▼  │                                                   │
-      ┌──────────┐ ──────────────────────────────────────────────┘
-      │ STREAMING│
-      └──────────┘
+```plantuml
+@startuml
+title VideoController State Machine
+
+state IDLE
+state STREAMING
+state RECORDING
+
+IDLE --> STREAMING : start_streaming()
+IDLE --> RECORDING : start_recording()
+STREAMING --> RECORDING : start_recording()\n(reuses running scheduler)
+STREAMING --> IDLE : stop_streaming()
+RECORDING --> IDLE : stop_recording()\n(synchronous)
+RECORDING --> RECORDING : clip limit reached\n(auto-rotate new clip)
+
+@enduml
 ```
 
 - **IDLE** — Not recording. Awaits `start_recording()`, `start_streaming()`, or `capture_photo()`.
 - **STREAMING** — Live preview: the capture loop runs at the configured FPS and delivers frames to connected stream clients only (no AVI/SD writes).
 - **RECORDING** — Actively capturing and writing frames at the configured FPS. Clip auto-rotates when duration or file size limit is reached. Frames are also delivered to stream clients.
+
+`stop_streaming()` is ignored while `RECORDING` (recording keeps the capture loop alive), and `stop_recording()` is ignored while `STREAMING` (streaming keeps the capture loop alive). Because recording and streaming share the single capture loop, stopping the loop from either state ends both activities and returns to `IDLE`.
 
 `stop_recording()` is **synchronous**: it flags the current clip for closure, stops the capture scheduler, and blocks (bounded) until the capture task runs its final frame callback, which closes the clip and returns the state to `IDLE`. On successful return the state is always `IDLE`, so `GET_STATUS` reports `recording:false` immediately and a subsequent `start_recording()` succeeds right away.
 

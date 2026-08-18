@@ -33,3 +33,24 @@ void AsyncWebStreamWriter::close()
         m_client = nullptr;
     }
 }
+
+void AsyncWebStreamWriter::on_disconnect(std::function<void()> cb)
+{
+    m_disconnect_cb = std::move(cb);
+
+    if (m_client != nullptr && m_disconnect_cb)
+    {
+        // AsyncClient::onDisconnect takes a callback + opaque arg. The
+        // callback must not delete this writer (the owner does that).
+        m_client->onDisconnect(
+            [](void* arg, AsyncClient* /*client*/)
+            {
+                auto* self = static_cast<AsyncWebStreamWriter*>(arg);
+                if (self->m_disconnect_cb)
+                {
+                    self->m_disconnect_cb();
+                }
+            },
+            this);
+    }
+}

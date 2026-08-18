@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 /**
  * @file stream_service.h

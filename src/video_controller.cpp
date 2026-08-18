@@ -50,16 +50,8 @@ bool VideoController::start_recording()
 {
     RecordingState current = m_state.load(std::memory_order_relaxed);
 
+    // no-op if already recording
     if (current == RecordingState::RECORDING)
-    {
-        return false;
-    }
-
-    // If already streaming, the scheduler is already running — do not
-    // restart it; just open the clip and switch to RECORDING.
-    bool scheduler_running = (current == RecordingState::STREAMING);
-
-    if (current != RecordingState::IDLE && !scheduler_running)
     {
         return false;
     }
@@ -71,6 +63,11 @@ bool VideoController::start_recording()
     {
         return false;
     }
+
+
+    // If already streaming, the scheduler is already running — do not
+    // restart it; just open the clip and switch to RECORDING.
+    bool scheduler_running = (current == RecordingState::STREAMING);
 
     if (!scheduler_running)
     {
@@ -183,6 +180,7 @@ bool VideoController::start_streaming()
 
 void VideoController::stop_streaming()
 {
+    // no-op if not in streaming state
     if (m_state != RecordingState::STREAMING)
     {
         return;
