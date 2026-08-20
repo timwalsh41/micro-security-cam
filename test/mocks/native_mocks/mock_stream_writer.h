@@ -28,6 +28,12 @@ class MockStreamWriter : public hal::StreamWriter
         /** Number of close() calls made. */
         int close_call_count{0};
 
+        /**
+         * Optional external counter incremented on close(). Lets tests
+         * observe close() after the writer has been deleted by its owner.
+         */
+        int* close_counter{nullptr};
+
         /** Value returned by write(); set negative to drop writes. */
         bool accept_writes{true};
 
@@ -53,6 +59,10 @@ class MockStreamWriter : public hal::StreamWriter
         void close() override
         {
             close_call_count++;
+            if (close_counter != nullptr)
+            {
+                (*close_counter)++;
+            }
         }
 
         /**

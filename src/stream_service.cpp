@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 StreamService::StreamService(LoggingService& log)
     : m_log(log)
@@ -19,9 +20,9 @@ void StreamService::init(uint8_t max_streams)
                static_cast<unsigned int>(m_max_streams));
 }
 
-int StreamService::start_stream(hal::StreamWriter* writer)
+int StreamService::start_stream(std::unique_ptr<hal::StreamWriter> writer)
 {
-    if (writer == nullptr)
+    if (!writer)
     {
         m_log.warn(SUBSYSTEM, "start_stream rejected: null writer");
         return -1;
@@ -32,12 +33,21 @@ int StreamService::start_stream(hal::StreamWriter* writer)
     {
         if (!m_slots[i].active)
         {
-            m_slots[i].writer = writer;
-            m_slots[i].active = true;
+            // Bind the disconnect callback so the slot is freed when the
+            // client drops. The callback runs in the transport's context
+            // and only frees this slot via free_slot().
+            writer->on_disconnect([this, i]()
+            {
+                free_slot(i);
+            });
 
             // Send the HTTP response headers + first boundary marker.
             writer->write(reinterpret_cast<const uint8_t*>(PREAMBLE),
                           strlen(PREAMBLE));
+
+            // Transfer ownership into the slot.
+            m_slots[i].writer = std::move(writer);
+            m_slots[i].active = true;
 
             m_log.info(SUBSYSTEM, "Stream started on slot %u",
                        static_cast<unsigned int>(i));
@@ -45,6 +55,7 @@ int StreamService::start_stream(hal::StreamWriter* writer)
         }
     }
 
+    // No free slot: the unique_ptr deletes the writer on return.
     m_log.warn(SUBSYSTEM, "start_stream rejected: no free slot (max %u)",
                static_cast<unsigned int>(m_max_streams));
     return -1;
@@ -57,15 +68,47 @@ void StreamService::stop_stream(uint8_t slot)
         return;
     }
 
-    // Terminate the multipart stream and close the connection.
-    static constexpr const char* CLOSING = "--" STREAM_BOUNDARY_TOKEN "--\r\n";
-    m_slots[slot].writer->write(
-        reinterpret_cast<const uint8_t*>(CLOSING), strlen(CLOSING));
-    m_slots[slot].writer->close();
-    m_slots[slot].writer = nullptr;
+    // Take ownership out of the slot and deactivate it first so the
+    // synchronous disconnect callback fired by close() below sees an
+    // inactive slot and does not re-enter free_slot() on this writer.
+    std::unique_ptr<hal::StreamWriter> writer = std::move(m_slots[slot].writer);
     m_slots[slot].active = false;
 
+    // Terminate the multipart stream and close the connection.
+    static constexpr const char* CLOSING = "--" STREAM_BOUNDARY_TOKEN "--\r\n";
+    writer->write(reinterpret_cast<const uint8_t*>(CLOSING), strlen(CLOSING));
+    writer->close();
+
     m_log.info(SUBSYSTEM, "Stream stopped on slot %u",
+               static_cast<unsigned int>(slot));
+
+    // writer is deleted here when the unique_ptr goes out of scope.
+}
+
+void StreamService::stop_all_streams()
+{
+    for (uint8_t i = 0; i < m_max_streams; i++)
+    {
+        if (m_slots[i].active)
+        {
+            stop_stream(i);
+        }
+    }
+}
+
+void StreamService::free_slot(uint8_t slot)
+{
+    if (slot >= MAX_STREAMS || !m_slots[slot].active)
+    {
+        return;
+    }
+
+    // The connection has already dropped, so close() must not be called
+    // (it could re-fire the disconnect callback). Reclaim the writer.
+    m_slots[slot].writer.reset();
+    m_slots[slot].active = false;
+
+    m_log.info(SUBSYSTEM, "Stream slot %u freed on disconnect",
                static_cast<unsigned int>(slot));
 }
 
@@ -83,7 +126,7 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
             continue;
         }
 
-        hal::StreamWriter* writer = m_slots[i].writer;
+        hal::StreamWriter* writer = m_slots[i].writer.get();
 
         // Build the per-frame part header with the actual Content-Length.
         // PART_HEADER is ~64 bytes; add room for the decimal length

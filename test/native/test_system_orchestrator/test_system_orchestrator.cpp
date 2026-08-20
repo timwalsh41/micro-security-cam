@@ -13,6 +13,7 @@
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include "mock_web_server_hal.h"
+#include "mock_stream_writer.h"
 #include <cstring>
 #include <string>
 
@@ -450,6 +451,73 @@ void test_stop_stream_delegates()
 }
 
 /**
+ * @brief STOP_STREAM closes and frees all active stream slots.
+ *
+ * A viewer connected during STREAMING must have its writer closed and
+ * its slot reclaimed when streaming stops, so the slot is not leaked
+ * until the client disconnects.
+ */
+void test_stop_stream_closes_active_streams()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    // Connect two viewers while streaming.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
+    auto w2 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
+    int close_count = 0;
+    w1->close_counter = &close_count;
+    w2->close_counter = &close_count;
+    f.stream_service.start_stream(std::move(w1));
+    f.stream_service.start_stream(std::move(w2));
+    TEST_ASSERT_EQUAL_UINT8(2, f.stream_service.active_slot_count());
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::STOP_STREAM);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    // Both writers closed and both slots freed.
+    TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
+    TEST_ASSERT_EQUAL_INT(2, close_count);
+}
+
+/**
+ * @brief STOP_STREAM does not close streams while RECORDING.
+ *
+ * stop_streaming() is a no-op during RECORDING (the capture loop keeps
+ * delivering frames to viewers), so connected streams must stay open.
+ */
+void test_stop_stream_keeps_streams_while_recording()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    // Recording delivers frames to streams too; connect a viewer.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
+    int close_count = 0;
+    w1->close_counter = &close_count;
+    f.stream_service.start_stream(std::move(w1));
+    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::STOP_STREAM);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    // Still recording; the viewer's stream must remain open.
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+    TEST_ASSERT_EQUAL_INT(0, close_count);
+}
+
+/**
  * @brief LIST_STREAMS returns a JSON active_streams count.
  */
 void test_list_streams_returns_count()
@@ -510,6 +578,8 @@ int main()
     RUN_TEST(test_tick_does_not_crash);
     RUN_TEST(test_start_stream_delegates);
     RUN_TEST(test_stop_stream_delegates);
+    RUN_TEST(test_stop_stream_closes_active_streams);
+    RUN_TEST(test_stop_stream_keeps_streams_while_recording);
     RUN_TEST(test_list_streams_returns_count);
     RUN_TEST(test_stream_route_registered);
 

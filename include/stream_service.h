@@ -26,11 +26,10 @@
 
 /**
  * @class IStreamService
- * @brief Minimal frame-sink interface consumed by VideoController.
+ * @brief Minimal frame-sink interface.
  *
  * Implementations receive captured JPEG frames for distribution to
- * connected stream clients. Only the frame delivery contract is exposed
- * so that VideoController has no knowledge of stream slot management.
+ * connected stream clients.
  */
 class IStreamService
 {
@@ -50,7 +49,7 @@ class IStreamService
  * @brief MJPEG multipart boundary token (macro so it can be used in
  *        string-literal concatenation for the framing constants below).
  */
-#define STREAM_BOUNDARY_TOKEN "ESP32CAM_BOUNDARY"
+#define STREAM_BOUNDARY_TOKEN "CAM_BOUNDARY"
 
 /**
  * @class StreamService
@@ -97,7 +96,7 @@ class StreamService : public IStreamService
          *               Ownership transfers to the service.
          * @return The slot index on success, or -1 if no slot is free.
          */
-        int start_stream(hal::StreamWriter* writer);
+        int start_stream(std::unique_ptr<hal::StreamWriter> writer);
 
         /**
          * @brief Stops and closes the stream in the given slot.
@@ -108,6 +107,16 @@ class StreamService : public IStreamService
          * @param slot Slot index (as returned by start_stream()).
          */
         void stop_stream(uint8_t slot);
+
+        /**
+         * @brief Stops and closes all active streams.
+         *
+         * Iterates every slot and closes any active stream via
+         * stop_stream(). Used when the capture loop is being torn
+         * down (e.g. STOP_STREAM) so connected viewers are closed
+         * and their writers freed rather than left occupying slots.
+         */
+        void stop_all_streams();
 
         /**
          * @brief Delivers a JPEG frame to all active streams.
@@ -143,9 +152,20 @@ class StreamService : public IStreamService
         /** A single viewer slot. */
         struct StreamSlot
         {
-            hal::StreamWriter* writer{nullptr};
+            std::unique_ptr<hal::StreamWriter> writer;
             bool active{false};
         };
+
+        /**
+         * @brief Reclaims the writer in a slot without closing it.
+         *
+         * Used by the writer's disconnect callback; the connection has
+         * already dropped, so close() must not be called (it could
+         * re-fire the disconnect callback).
+         *
+         * @param slot Slot index to free.
+         */
+        void free_slot(uint8_t slot);
 
         LoggingService& m_log;
         uint8_t m_max_streams{0};

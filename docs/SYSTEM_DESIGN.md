@@ -86,7 +86,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
 | `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
 | `TimerHal` | `include/hal/timer_hal.h` | Hardware timer abstraction for periodic ISR callbacks. Provides `init(interval_us, isr)`, `set_frequency()`, `start()`, `stop()`. |
-| `StreamWriter` | `include/hal/stream_writer.h` | Abstract write sink for streaming bytes to a client connection. Provides `write(data, len)` and `close()`. Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native). |
+| `StreamWriter` | `include/hal/stream_writer.h` | Abstract write sink for streaming bytes to a client connection. Provides `write(data, len)`, `close()`, and `on_disconnect(cb)` (invoked when the connection drops). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native). |
 
 **`hal::FileOpenMode`** — file open modes supported by `SdCardHal::open()`:
 
@@ -194,7 +194,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `file_content` (seed content) |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
-| `MockStreamWriter` | `write_call_count`, `close_call_count`, `captured` (accumulated bytes) | `accept_writes` (to simulate a blocked/closed sink) |
+| `MockStreamWriter` | `write_call_count`, `close_call_count`, `captured` (accumulated bytes) | `accept_writes` (to simulate a blocked/closed sink), `close_counter` (external counter observed after the writer is deleted); `simulate_disconnect()` fires the registered disconnect callback |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
 
 ---
@@ -292,17 +292,21 @@ Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-re
 #### Interfaces
 
 - `IStreamService` — minimal frame-sink interface consumed by `VideoController`. Declares only `deliver_frame(data, len)`, mirroring the `ICaptureScheduler` abstraction pattern so `VideoController` stays decoupled and natively testable.
-- `hal::StreamWriter` — abstract write sink (`write()`, `close()`). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native).
+- `hal::StreamWriter` — abstract write sink (`write()`, `close()`, `on_disconnect()`). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native).
 
 #### API
 
 | Method | Purpose |
 |--------|---------|
 | `init(max_streams)` | Sets the maximum concurrent stream slots (clamped to `MAX_STREAMS = 8`). |
-| `start_stream(writer)` | Registers a viewer, writes the HTTP 200 + multipart preamble, and returns the slot index (`-1` if full). |
-| `stop_stream(slot)` | Writes the closing boundary, closes the writer, and frees the slot. |
+| `start_stream(writer)` | Takes ownership of the writer (`std::unique_ptr<hal::StreamWriter>`), registers its disconnect callback, writes the HTTP 200 + multipart preamble, and returns the slot index (`-1` if full). |
+| `stop_stream(slot)` | Writes the closing boundary, closes and deletes the writer, and frees the slot. |
 | `deliver_frame(data, len)` | Writes a multipart JPEG part (`Content-Type: image/jpeg`, `Content-Length`, frame bytes) to every active slot. |
 | `active_slot_count()` | Returns the number of active viewers. |
+
+#### Ownership & Disconnect Handling
+
+Each slot owns its writer via `std::unique_ptr`, so the writer is deleted exactly once regardless of how the stream ends. `start_stream()` wires the writer's `on_disconnect()` callback to `free_slot(slot)`, which reclaims the slot (and deletes the writer) when the client drops — without calling `close()`, since the connection is already gone. `stop_stream()` moves the writer out of the slot and deactivates it **before** calling `close()`, so the synchronous `onDisconnect` fired by `AsyncClient::close()` is a no-op and does not re-enter the slot. A `nullptr` writer is rejected; when no slot is free the passed writer is deleted by the `unique_ptr`.
 
 #### Streaming Model
 

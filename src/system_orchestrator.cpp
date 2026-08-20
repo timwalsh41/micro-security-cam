@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <memory>
+#include <utility>
 
 SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CameraController& camera,
@@ -368,8 +370,16 @@ CommandResult SystemOrchestrator::handle_stop_stream(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* /* response */, size_t& /* responseLen */)
 {
-    m_video.stop_streaming();
-    m_log.info(SUBSYSTEM, "Streaming stop requested");
+    // Only tear down streams when we actually leave STREAMING. If
+    // recording is in progress, stop_streaming() is a no-op and the
+    // capture loop keeps delivering frames to viewers, so their
+    // streams must stay open.
+    if (m_video.state() == RecordingState::STREAMING)
+    {
+        m_video.stop_streaming();
+        m_streams.stop_all_streams();
+        m_log.info(SUBSYSTEM, "Streaming stopped");
+    }
     return CommandResult::SUCCESS;
 }
 
@@ -428,19 +438,22 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
         return;
     }
 
-    hal::StreamWriter* writer = request.create_stream_writer();
-    if (writer == nullptr)
+    std::unique_ptr<hal::StreamWriter> writer(request.create_stream_writer());
+    if (!writer)
     {
         request.send(500, "application/json",
                      "{\"error\":\"streaming unavailable\"}");
         return;
     }
 
-    int slot = m_streams.start_stream(writer);
+    int slot = m_streams.start_stream(std::move(writer));
     if (slot < 0)
     {
-        // No free slot: close the writer we just created.
-        writer->close();
+        // start_stream() takes the writer by value (unique_ptr). When no
+        // slot is free it returns -1 without transferring ownership, so
+        // its parameter destructor deletes the writer here. That does not
+        // close the connection (the writer holds AsyncClient as a
+        // non-owning pointer); request.send() closes it.
         request.send(503, "application/json",
                      "{\"error\":\"no free stream slots\"}");
         return;
