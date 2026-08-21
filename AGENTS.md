@@ -27,6 +27,8 @@
 
 # Development guidelines
 
+- When making technical decisions, don’t give much something interesting that you may weight to development cost
+- When doing bug fixes always start by reproducing the bug in an end to end test setting as closely aligned to real user workflow as possible
 - **Stop and wait for explicit approval** before implementing changes requested via  plan execution prompts or similar structured workflows. Request approval to proceed and wait for the user's affirmative response.
 - C++11 standard
 - Include unit test coverage for all new code
@@ -78,9 +80,10 @@
 # Documentation
 
 - `SYSTEM_DESIGN.md` is our main architectural documentation that describes the software component design and composition; keep this up to date as changes are made impacting the design
-- Be concise but comprehensive when editing this file - review it in its entirety to ensure no redundant information is added
-- This is a record of the design architecture, NOT a record of the implementation history - do not refer to how a feature or implementation has changed, or what plan or project phase features were introduced or modifed, just document the current state
-- Do not call out the number of tests per module, this is a number that may vary over time, does not add useful information to the user understanding at this level of abstraction, and is prone to get out of date.
+    - Be concise but comprehensive when editing this file - review it in its entirety to ensure no redundant information is added
+    - This is a record of the design architecture, NOT a record of the implementation history - do not refer to how a feature or implementation has changed, or what plan or project phase features were introduced or modifed, just document the current state
+    - Do not call out the number of tests per module, this is a number that may vary over time, does not add useful information to the user understanding at this level of abstraction, and is prone to get out of date.
+- Use PlantUML to render UML diagrams (class diagrams, sequence diagrams, etc.)
 - In documentation markdowns, enclose all symbols and filenames in `backticks`
 
 # Other
