@@ -73,6 +73,556 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 - **Tick-Driven State Machines**: Most service controls are implemented as non-blocking state machines advanced by periodic `tick()` calls from the main loop or higher level services. `VideoController` is an exception — it uses a FreeRTOS task driven by a hardware timer ISR for frame capture, decoupling it from the main loop tick.
 - **Testability via Abstractions**: Abstract HAL interfaces allow full unit testing of service-layer logic on a native host (macOS/Linux) using mock implementations, with no ESP32 hardware required.
 
+### Class Diagram
+
+The following class diagram covers all classes in the firmware across `include/` and `src/` (the `lib/` directory currently contains only a `README` and no production code). A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, `camera_controller.h` declares the free function `build_camera_config()` mapping `CameraImageConfig` → `ResolvedCameraParams`, and `camera_pins.h` contains only compile-time pin-mapping macros. The composition root `main.cpp` wires all components via global instances and free functions (`setup()`, `loop()`, `cs_signal()`, `update_led()`).
+
+```plantuml
+@startuml
+title Micro Security Cam - Class Diagram
+
+hide empty members
+skinparam classAttributeIconSize 0
+
+' ==================================================================
+' Hardware Abstraction Layer
+' ==================================================================
+package "HAL (namespace hal)" {
+
+    interface CameraHal {
+        +init(config : CameraConfig) : CameraInitResult
+        +deinit()
+        +capture() : CameraFrame
+        +release()
+        +is_initialized() : bool
+        +get_capabilities() : CameraCapabilities
+    }
+
+    class CameraHalImpl {
+        -m_initialized : bool
+        -m_frame_acquired : bool
+        -m_fb : camera_fb_t*
+    }
+
+    class CameraFrame <<struct>> {
+        +data : const uint8_t*
+        +len : size_t
+    }
+
+    class CameraCapabilities <<struct>> {
+        +max_framesize : uint8_t
+        +min_jpeg_quality : uint8_t
+        +max_fb_count : uint8_t
+        +max_width : uint16_t
+        +max_height : uint16_t
+    }
+
+    class CameraConfig <<struct>> {
+        +jpeg_quality : uint8_t
+        +frame_size : uint8_t
+        +fb_count : uint8_t
+        +grab_mode : uint8_t
+    }
+
+    interface SdCardHal {
+        +init() : SdInitResult
+        +open(path : const char*, mode : FileOpenMode) : bool
+        +write(data : const uint8_t*, len : size_t) : bool
+        +read(buffer : uint8_t*, len : size_t) : size_t
+        +seek(pos : uint32_t) : bool
+        +create_dir(path : const char*) : bool
+        +exists(path : const char*) : bool
+        +close()
+        +is_initialized() : bool
+    }
+
+    class SdCardHalImpl {
+        -m_cs_pin : uint8_t
+        -m_file_open : bool
+    }
+
+    interface SerialHal {
+        +available() : int
+        +read() : int
+        +write(data : const uint8_t*, len : size_t) : size_t
+        +flush()
+    }
+
+    class SerialHalImpl {
+        -m_write_mutex : SemaphoreHandle_t
+        +write() serialises via mutex
+    }
+
+    interface TimerHal {
+        +init(interval_us : uint32_t, isr)
+        +set_frequency(interval_us : uint32_t)
+        +start()
+        +stop()
+    }
+
+    class TimerHalImpl {
+        ESP-IDF timer_group ISR timer
+    }
+
+    interface WifiHal {
+        +mode(sta : bool, ap : bool)
+        +begin_sta(ssid, password)
+        +begin_ap(ssid, password)
+        +status() : WifiStatus
+        +local_ip() : const char*
+        +config_static(ip, gateway, subnet) : bool
+        +disconnect()
+        +is_connected() : bool
+    }
+
+    class WifiHalImpl {
+        -m_connected : bool
+        -m_ip_buffer : char[16]
+    }
+
+    interface WebServerHal {
+        +init(port : uint16_t) : bool
+        +on(uri, method, handler)
+        +stop()
+    }
+
+    class WebServerHalImpl {
+        -m_server : AsyncWebServer*
+    }
+
+    interface RequestRef {
+        +uri() : const char*
+        +method() : HttpMethod
+        +arg(name) : const char*
+        +header(name) : const char*
+        +auth_header() : const char*
+        +send(code, content_type, content)
+        +create_stream_writer() : StreamWriter*
+    }
+
+    class AsyncRequestRef {
+        -m_request : AsyncWebServerRequest*
+    }
+
+    interface StreamWriter {
+        +write(data : const uint8_t*, len : size_t) : size_t
+        +close()
+        +on_disconnect(cb)
+    }
+
+    class AsyncWebStreamWriter {
+        -m_client : AsyncClient*
+    }
+
+    interface LogBackend {
+        +write(line : const char*)
+    }
+
+    class SerialLogBackend {
+        -m_serial : SerialHal&
+    }
+}
+
+CameraHalImpl -up-|> CameraHal
+SdCardHalImpl -up-|> SdCardHal
+SerialHalImpl -up-|> SerialHal
+TimerHalImpl -up-|> TimerHal
+WifiHalImpl -up-|> WifiHal
+WebServerHalImpl -up-|> WebServerHal
+AsyncRequestRef .up.|> RequestRef
+AsyncWebStreamWriter -up-|> StreamWriter
+SerialLogBackend -up-|> LogBackend
+
+' ==================================================================
+' Service / Controller Layer
+' ==================================================================
+package "Service / Controller Layer" {
+
+    interface TimeService {
+        +now() : millis_t
+        +delay_ms(ms)
+        +delay_us(us)
+        +set_unix_offset(unix_time, system_ms)
+        +unix_now() : uint32_t
+        +localtime() : std::tm
+        +{static} elapsed_ms(since, now) : millis_t
+    }
+
+    class RealTimeService {
+        -m_unix_offset : uint32_t
+        -m_system_ms_at_offset : uint32_t
+    }
+
+    enum LogLevel {
+        DEBUG
+        INFO
+        WARNING
+        ERROR
+    }
+
+    class LoggingService {
+        -m_backend : LogBackend&
+        -m_time : TimeService&
+        +log(level, subsystem, fmt)
+        +debug(subsystem, fmt)
+        +info(subsystem, fmt)
+        +warn(subsystem, fmt)
+        +error(subsystem, fmt)
+    }
+
+    enum LedMode {
+        OFF
+        ON
+        PULSE_ON
+        BLINK
+    }
+
+    class LedStateMachine {
+        -m_mode : LedMode
+        -m_on_duration_ms : millis_t
+        -m_off_duration_ms : millis_t
+        +set_mode(mode, on_ms, off_ms)
+        +tick() : bool
+    }
+
+    enum SdSignal <<peripherals>> {
+        IDLE
+        CS_ACTIVE
+        CS_INACTIVE
+    }
+
+    class SdController {
+        -m_state : SdState
+        -m_sd_hal : SdCardHal&
+        -m_cs_signal_fn : CsSignalFn
+        +tick() : SdSignal
+        +start_write(path, data, len, mode)
+        +start_read(path, buffer, buffer_size)
+        +init_card() : SdInitResult
+        +write_sync(path, data, len, mode) : bool
+        +read_sync(path, buffer, size) : size_t
+        +write_at_sync(path, offset, data, len) : bool
+        +create_dir_sync(path) : bool
+        +exists_sync(path) : bool
+    }
+
+    class CameraImageConfig <<struct>> {
+        +resolution : const char*
+        +jpeg_quality : uint8_t
+        +fb_count : uint8_t
+    }
+
+    class ResolvedCameraParams <<struct>> {
+        +hal_config : CameraConfig
+        +width : uint16_t
+        +height : uint16_t
+        +framesize : uint8_t
+    }
+
+    class CameraController {
+        -m_hal : CameraHal&
+        -m_config : CameraConfig
+        -m_initialized : bool
+        -m_frame_acquired : bool
+        -m_current_frame : CameraFrame
+        -m_actual_params : ResolvedCameraParams
+        +init() : CameraInitResult
+        +init(params : ResolvedCameraParams) : CameraInitResult
+        +deinit()
+        +capture_frame() : CameraCaptureResult
+        +get_frame() : CameraFrame
+        +release_frame()
+        +get_params() : const ResolvedCameraParams&
+    }
+
+    enum RecordingState {
+        IDLE
+        STREAMING
+        RECORDING
+    }
+
+    class VideoController {
+        -m_state : atomic<RecordingState>
+        -m_avi_writer : AviWriter
+        -m_stream_service : IStreamService*
+        -m_config : VideoConfig
+        -m_width : uint16_t
+        -m_height : uint16_t
+        +init(config : VideoConfig, width, height) : bool
+        +start_recording() : bool
+        +stop_recording()
+        +capture_photo(path : const char*) : bool
+        +make_unique_path(base_path, out, out_size) : bool
+        +start_streaming() : bool
+        +stop_streaming()
+        +set_stream_service(stream_service)
+        +state() : RecordingState
+        -capture_and_write_frame()
+        -open_clip()
+        -close_clip()
+    }
+
+    class AviWriter {
+        -m_header : vector<uint8_t>
+        -m_frame_chunk : vector<uint8_t>
+        -m_index_entries : vector<IndexEntry>
+        +open(path, fps, width, height) : bool
+        +write_frame(jpeg_data, jpeg_len) : bool
+        +close() : bool
+        +header() : AviBytes
+        +last_frame_chunk() : AviBytes
+        +patched_header() : AviBytes
+        +index() : AviBytes
+    }
+
+    interface ICaptureScheduler {
+        +start(interval_ms, frame_callback) : bool
+        +stop()
+        +on_frame_capture()
+    }
+
+    class CaptureSchedulerEsp32 {
+        -m_timer : TimerHal&
+        -m_callback
+        -m_task : atomic<TaskHandle_t>
+        -m_stop_requested : atomic<bool>
+        -m_exit_sem : SemaphoreHandle_t
+    }
+
+    interface IStreamService {
+        +deliver_frame(data : const uint8_t*, len : size_t)
+    }
+
+    class StreamService {
+        +MAX_STREAMS = 8
+        -m_slots : StreamSlot[MAX_STREAMS]
+        -m_max_streams : uint8_t
+        +init(max_streams : uint8_t)
+        +start_stream(writer : unique_ptr<StreamWriter>) : int
+        +stop_stream(slot : uint8_t)
+        +stop_all_streams()
+        +deliver_frame(data, len)
+        +active_slot_count() : uint8_t
+    }
+
+    class ConfigService {
+        -m_logger : LoggingService&
+        -m_config : ConfigData
+        +load(data : const uint8_t*, length : size_t) : bool
+        +config() : const ConfigData&
+        +mutable_config() : ConfigData&
+        +get_config_value(key, value_out, max_len) : bool
+        +set_config_value(key, value) : bool
+    }
+
+    class WifiService {
+        -m_hal : WifiHal&
+        -m_connected : bool
+        +init(sta : WifiConfig, ap : ApConfig, timeout_secs : uint16_t)
+        +is_connected() : bool
+        +local_ip() : const char*
+    }
+
+    class WebServerService {
+        -m_hal : WebServerHal&
+        -m_password : char[]
+        +init(config : WebConfig)
+        -handle_index(request : RequestRef&)
+        -check_auth(request : RequestRef&) : bool
+    }
+}
+
+RealTimeService -up-|> TimeService
+StreamService -up-|> IStreamService
+CaptureSchedulerEsp32 -up-|> ICaptureScheduler
+
+' ==================================================================
+' Orchestration & Command Layer
+' ==================================================================
+package "Orchestration & Command Layer" {
+
+    enum CommandCode {
+        GET_STATUS = 0x01
+        START_RECORDING = 0x10
+        STOP_RECORDING = 0x11
+        TAKE_PHOTO = 0x12
+        START_STREAM = 0x13
+        STOP_STREAM = 0x14
+        LIST_STREAMS = 0x15
+        SET_CONFIG = 0x20
+        GET_CONFIG = 0x21
+        GET_CONFIG_VALUE = 0x22
+        SET_CONFIG_VALUE = 0x23
+        SET_TIME = 0x30
+    }
+
+    enum CommandResult {
+        SUCCESS = 0x00
+        UNRECOGNIZED = 0x01
+        INVALID_ARGS = 0x02
+        INVALID_STATE = 0x03
+        INTERNAL_ERROR = 0xFF
+    }
+
+    interface CommandTransport {
+        +has_request() : bool
+        +read_request(code, payload, payload_len)
+        +send_response(result, data, len)
+    }
+
+    class WebCommandTransport {
+        -m_web : WebServerHal&
+        -m_handler : CommandHandler&
+        -m_password : char[]
+        +register_routes(password : const char*)
+        -check_auth(request : RequestRef&) : bool
+        -map_cmd_string(cmd : const char*) : CommandCode
+        -dispatch_and_respond(request, code)
+        -handle_status(request : RequestRef&)
+        -handle_control(request : RequestRef&)
+    }
+
+    class SerialCommandTransport {
+        +LINE_BUFFER_SIZE = 128
+        -m_serial : SerialHal&
+        -m_line_buffer : char[128]
+        -m_request_ready : bool
+        -m_echo_enabled : bool
+        +set_echo_enabled(enabled : bool)
+        -echo_line()
+        -parse_command(cmd, args, code, payload, payload_len) : bool
+    }
+
+    class CommandHandler {
+        +MAX_RESPONSE_SIZE = 256
+        -m_log : LoggingService&
+        -m_handlers : HandlerEntry[16]
+        -m_transports : CommandTransport*[4]
+        +register_handler(code, handler)
+        +add_transport(transport : CommandTransport&)
+        +tick()
+        +dispatch(code, payload, len, response, responseLen) : CommandResult
+    }
+
+    class SystemOrchestrator {
+        -m_video : VideoController&
+        -m_camera : CameraController&
+        -m_cmd_handler : CommandHandler&
+        -m_streams : StreamService&
+        +init()
+        +tick()
+        -register_commands()
+        -register_stream_route()
+        -handle_get_status()
+        -handle_start_recording()
+        -handle_stop_recording()
+        -handle_take_photo()
+        -handle_set_time()
+        -handle_get_config_value()
+        -handle_set_config_value()
+        -handle_start_stream()
+        -handle_stop_stream()
+        -handle_list_streams()
+        -handle_stream_request(request : RequestRef&)
+    }
+}
+
+WebCommandTransport -up-|> CommandTransport
+SerialCommandTransport -up-|> CommandTransport
+
+' ==================================================================
+' Utilities & Configuration Data
+' ==================================================================
+package "Utilities & Configuration Data" {
+
+    class IniParser <<utility>> {
+        +{static} defaults() : ConfigData
+        +{static} parse(content, length) : ConfigData
+        +{static} serialize(data, buffer, buffer_size) : size_t
+    }
+
+    class ConfigData <<struct>> {
+        +wifi : WifiConfig
+        +ap : ApConfig
+        +web : WebConfig
+        +camera : CameraConfig
+        +video : VideoConfig
+        (nested structs hold fixed-size
+        char arrays and typed defaults)
+    }
+
+    class TimeFormatter <<utility>> {
+        +{static} format_date(unix_seconds, out, size) : bool
+        +{static} format_time(unix_seconds, out, size) : bool
+    }
+
+    class PathUtils <<utility>> {
+        +{static} make_unique_path(base_path, exists, out, out_size) : bool
+        +{static} extract_parent_dir(path, out, out_size) : bool
+    }
+
+    class PlatformInitializer <<utility>> {
+        +init()
+        -suppress_esp_idf_logging()
+    }
+}
+
+' ==================================================================
+' Relationships: injected references (associations)
+' ==================================================================
+LoggingService --> LogBackend : formats lines
+LoggingService --> TimeService : timestamps
+LedStateMachine --> TimeService : elapsed time
+SdController --> SdCardHal : file I/O
+SdController ..> SdSignal : tick() output
+CameraController --> CameraHal : clamps against capabilities
+VideoController --> CameraController : capture cycle
+VideoController --> SdController : sync writes
+VideoController --> TimeService : clip duration
+VideoController --> LoggingService : diagnostics
+VideoController --> ICaptureScheduler : frame pacing
+VideoController ..> RecordingState : m_state
+VideoController --> "0..1" IStreamService : optional frame sink
+CaptureSchedulerEsp32 --> TimerHal : periodic ISR
+StreamService --> LoggingService : diagnostics
+ConfigService --> LoggingService : diagnostics
+WifiService --> WifiHal : connection
+WifiService --> TimeService : timeouts
+WifiService --> LoggingService : diagnostics
+WebServerService --> WebServerHal : routes
+WebServerService --> LoggingService : diagnostics
+CommandHandler --> LoggingService : diagnostics
+CommandHandler o--> "0..4" CommandTransport : polled in tick()
+CommandHandler ..> CommandCode
+CommandHandler ..> CommandResult
+WebCommandTransport --> WebServerHal : registers /status, /control
+WebCommandTransport --> CommandHandler : dispatch()
+SerialCommandTransport --> SerialHal : line protocol
+SerialCommandTransport --> TimeService : echo timestamps
+SystemOrchestrator --> VideoController : record control
+SystemOrchestrator --> CameraController : photo capture
+SystemOrchestrator --> CommandHandler : register handlers
+SystemOrchestrator --> ConfigService : config access
+SystemOrchestrator --> LoggingService : diagnostics
+SystemOrchestrator --> StreamService : stream control
+SystemOrchestrator --> WebServerHal : /stream route
+
+' ==================================================================
+' Relationships: ownership (composition) and creation
+' ==================================================================
+VideoController *-- AviWriter : owns
+ConfigService *-- "1" ConfigData : owns
+StreamService *-- "0..8" StreamWriter : stream slots
+IniParser ..> ConfigData : parse() / serialize()
+VideoController ..> CameraImageConfig : init() consumes
+VideoController ..> ResolvedCameraParams : validated dims
+WebServerHalImpl ..> AsyncRequestRef : creates per request
+RequestRef ..> StreamWriter : create_stream_writer()
+SerialLogBackend --> SerialHal : writes lines
+
+@enduml
+```
+
 ---
 
 ## Hardware Abstraction Layer (HAL)
