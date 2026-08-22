@@ -1557,7 +1557,7 @@ CS -> CS : init timer ISR
 CS -> TASK : xTaskCreatePinnedToCore()
 CS -> TMR : start()
 deactivate CS
-VC -> VC : state = RECORDING
+VC -> VC : recording = true
 VC --> MAIN : return true
 deactivate VC
 
@@ -1695,7 +1695,7 @@ ORCH -> VC : start_streaming()
 activate VC
 VC -> CS : start(interval_ms, callback)
 note right: capture loop on,\nno clip opened
-VC -> VC : state = STREAMING
+VC -> VC : streaming = true
 VC --> ORCH : true
 deactivate VC
 ORCH --> CLIENT : {"result":"ok"}
@@ -1704,7 +1704,7 @@ ORCH --> CLIENT : {"result":"ok"}
 
 CLIENT -> ORCH : GET /stream
 ORCH -> ORCH : check_basic_auth()
-ORCH -> ORCH : state == STREAMING? (yes)
+ORCH -> ORCH : is_streaming()? (yes)
 ORCH -> VC : (request.create_stream_writer())
 ORCH -> WRITER : new AsyncWebStreamWriter(client)
 ORCH -> SS : start_stream(writer)
