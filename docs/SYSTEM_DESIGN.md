@@ -86,7 +86,7 @@ title HAL - Interfaces & ESP32 Implementations
 hide empty members
 skinparam classAttributeIconSize 0
 
-package "HAL interfaces" {
+package "HAL interfaces" as HAL_IF {
 
     interface CameraHal {
         +init(config : CameraConfig) : CameraInitResult
@@ -161,7 +161,7 @@ package "HAL interfaces" {
     }
 }
 
-package "ESP32 implementations" {
+package "ESP32 implementations" as HAL_IMPL {
 
     class CameraHalImpl {
         -m_initialized : bool
@@ -227,6 +227,11 @@ package "HAL value types" {
         +grab_mode : uint8_t
     }
 }
+
+' Inheritance arrows point up (-up-|>) so interfaces sit above their
+' implementations, and a hidden package-to-package edge forces the
+' "ESP32 implementations" package to stack below "HAL interfaces".
+HAL_IF -[hidden]down- HAL_IMPL
 
 CameraHalImpl -up-|> CameraHal
 SdCardHalImpl -up-|> SdCardHal
@@ -621,12 +626,14 @@ SystemOrchestrator --> TimeService_ext : time ops
 SystemOrchestrator --> WebServerHal_ext : /stream route
 
 CameraController --> CameraHal_ext : clamps against capabilities
+VideoController *-- "1" AviWriter : owns
 VideoController --> CameraController : capture cycle
 VideoController --> SdController_ext : sync writes
 VideoController --> LoggingService_ext : diagnostics
 VideoController --> TimeService_ext : clip duration
 VideoController --> ICaptureScheduler : frame pacing
 VideoController --> "0..1" IStreamService_ext : optional frame sink
+VideoController --> StreamService_ext : set_stream_service() wiring
 VideoController ..> RecordingState : m_state
 CaptureSchedulerEsp32 --> TimerHal_ext : periodic ISR
 
