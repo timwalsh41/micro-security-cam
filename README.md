@@ -227,6 +227,65 @@ If a web password is configured in `config.ini`, all control endpoints require H
 
 The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/DEBUGGING.md](docs/DEBUGGING.md) for the full GDB workflow and PlatformIO debug configuration.
 
+## Video Recording
+
+The firmware records MJPEG video to the SD card in standard AVI containers.
+
+### How It Works
+
+- Frames are captured from the camera at the configured FPS and written to an AVI file.
+- Clips are automatically rotated when `clip_duration_s` or `max_file_size_mb` is reached.
+- Files are stored in date-stamped directories: `/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`.
+- The complete AVI is buffered in RAM and written to SD in a single flush at clip end, ensuring valid AVI files.
+
+### Capabilities
+
+Nominal recording capabilities for the OV2640 camera on the ESP32S3 board, per documentation on the [GitHub project page](https://github.com/limengdu/SeeedStudio-XIAO-ESP32S3-Sense-camera/blob/main/record_video_decorder/ESP32-CAM_MJPEG2SD/README.md) from SEEED studio. The encoding/storage should be able to keep up with the camera frame rate up to UXGA, where their tests showed a maximum of 10 fps.
+
+| Frame Size | OV2640 camera max fps | Detection time ms |
+|------------|-----------------------|-------------------|
+| 96X96 | 50 | 15 | 
+| QQVGA | 50 | 20 | 
+| QCIF | 50 | 30 | 
+| HQVGA | 50 | 40 | 
+| 240X240 | 50 | 55 | 
+| QVGA | 50 | 70 | 
+| CIF | 50 | 110 | 
+| HVGA | 50 | 130 |
+| VGA | 25 | 80 | 
+| SVGA | 25 | 120 |
+| XGA | 12.5 | 80 |
+| HD | 12.5 | 20 |
+| SXGA | 12.5 | 00 |
+| UXGA | 12.5 | 50 |
+
+### LED Feedback During Recording
+
+| State | LED Pattern | Meaning |
+|-------|-------------|---------|
+| Recording | Fast blink (200ms on / 200ms off) | Video being recorded |
+| Stopping | Single pulse (500ms) | Clip boundary — old clip closing, new clip opening |
+| Idle | Photo capture pulse or off | Not recording video |
+
+## CLI Tool
+
+The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints.
+
+Edit the `HOST`, `PORT`, and `PASSWORD` variables at the top of the script to match your device configuration.
+
+```bash
+# Get camera status (JSON)
+uv run script/python/camera_cli.py status
+
+# Send a control command
+uv run script/python/camera_cli.py control [start | stop | photo | stream_start | stream_stop | stream_list]
+
+# Set camera clock to current system time
+uv run script/python/camera_cli.py set-time
+```
+
+Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.
+
 ## VSCode IntelliSense for Tests
 
 ### The Problem
