@@ -953,6 +953,234 @@ void test_streaming_delivers_frame_without_sd_write()
 }
 
 // ============================================================
+// Streaming / multi-mode activity tests
+// ============================================================
+
+/**
+ * @brief Stream-sink test double with delivery and teardown tracking.
+ */
+struct TrackingSink : public IStreamService
+{
+    int deliveries{0};
+    int teardown_calls{0};
+    bool loop_running_at_teardown{false};
+    const MockCaptureScheduler* scheduler_ref{nullptr};
+
+    void deliver_frame(const uint8_t* /*data*/, size_t /*len*/) override
+    {
+        deliveries++;
+    }
+
+    void stop_all_streams() override
+    {
+        teardown_calls++;
+        if (scheduler_ref != nullptr)
+        {
+            loop_running_at_teardown = scheduler_ref->is_started();
+        }
+    }
+};
+
+/**
+ * @brief Derived state: recording takes precedence over streaming.
+ */
+void test_state_reports_recording_when_both_active()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.start_recording());
+
+    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.video.is_recording());
+}
+
+/**
+ * @brief stop_recording() during REC_AND_PREVIEW keeps preview alive.
+ *
+ * The capture loop must keep running (no scheduler stop), the clip must
+ * be finalized on the next frame callback, and viewers keep receiving
+ * frames — this is the core stream-hang regression at controller level.
+ */
+void test_stop_recording_during_streaming_keeps_preview()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+
+    f.video.stop_recording();
+
+    // Recording ended synchronously; preview continues untouched.
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+
+    // Next frame callback finalizes the clip and keeps delivering.
+    auto total_bytes = [&f]()
+    {
+        size_t total = 0;
+        for (auto& entry : f.sd_hal.files)
+        {
+            total += entry.second.size();
+        }
+        return total;
+    };
+    size_t bytes_before = total_bytes();
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // clip closed
+    TEST_ASSERT_TRUE(total_bytes() > bytes_before);           // index+header flushed
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);
+    // The capture loop must still be running for the surviving preview.
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief Rapid restart is rejected while a stopped clip awaits closure.
+ *
+ * With streaming keeping the loop alive, stop_recording() finalizes the
+ * clip asynchronously. start_recording() must be rejected until the
+ * finalization callback has run, then succeed.
+ */
+void test_restart_rejected_while_clip_close_pending()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+
+    f.video.stop_recording();
+
+    // Clip not yet finalized — restart must be rejected.
+    TEST_ASSERT_FALSE(f.video.start_recording());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    // Finalization callback runs → restart succeeds.
+    f.capture_one_frame();
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    // Wind down: stopping recording while streaming leaves finalization
+    // pending; stopping streaming last tears the pipeline down, whose
+    // scheduler stop runs the pending clip closure.
+    f.video.stop_recording();
+    f.video.stop_streaming();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+}
+
+/**
+ * @brief stop_streaming() during REC_AND_PREVIEW keeps recording alive.
+ */
+void test_stop_streaming_during_recording_keeps_recording()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+
+    f.video.stop_streaming();
+
+    // Recording continues on the same capture loop.
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+
+    uint32_t writes_before = f.sd_hal.write_call_count;
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
+    TEST_ASSERT_TRUE(f.sd_hal.write_call_count > writes_before);  // AVI write happened
+
+    f.video.stop_recording();
+}
+
+/**
+ * @brief Last-activity-off teardown stops the loop then closes viewers.
+ */
+void test_final_teardown_stops_loop_then_closes_viewers()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    f.video.start_streaming();
+    f.capture_one_frame();
+
+    f.video.stop_streaming();
+
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    // Viewers are closed only after the scheduler has been stopped.
+    TEST_ASSERT_FALSE(sink.loop_running_at_teardown);
+
+    // Stale callbacks after full teardown are ignored.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+}
+
+/**
+ * @brief capture_photo is rejected while any activity keeps the loop
+ *        running, and allowed once fully idle.
+ */
+void test_capture_photo_gating_across_modes()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    // Preview-only: rejected
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+
+    // Recording + preview: rejected
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+
+    // Recording only: rejected
+    f.video.stop_streaming();
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+
+    // Fully idle: allowed
+    f.video.stop_recording();
+    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -1024,6 +1252,14 @@ int main()
     RUN_TEST(test_start_streaming_transitions_to_streaming);
     RUN_TEST(test_stop_streaming_transitions_to_idle);
     RUN_TEST(test_streaming_delivers_frame_without_sd_write);
+
+    // Independent recording/streaming activities
+    RUN_TEST(test_state_reports_recording_when_both_active);
+    RUN_TEST(test_stop_recording_during_streaming_keeps_preview);
+    RUN_TEST(test_restart_rejected_while_clip_close_pending);
+    RUN_TEST(test_stop_streaming_during_recording_keeps_recording);
+    RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
+    RUN_TEST(test_capture_photo_gating_across_modes);
 
     return UNITY_END();
 }

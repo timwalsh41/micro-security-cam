@@ -249,6 +249,65 @@ void test_stop_recording_closes_connected_viewers()
 }
 
 /**
+ * @brief STOP_RECORDING keeps viewers open while streaming mode is on.
+ *
+ * When the user explicitly started streaming, stopping only the
+ * recording must leave the capture loop and connected viewers running.
+ */
+void test_stop_recording_keeps_streams_when_streaming_active()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
+    int close_count = 0;
+    w1->close_counter = &close_count;
+    f.stream_service.start_stream(std::move(w1));
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
+    f.capture_one_frame();
+
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+    TEST_ASSERT_EQUAL_INT(0, close_count);
+
+    // Cleanup: stop streaming closes the viewer.
+    dispatch_cmd(f.cmd_handler, CommandCode::STOP_STREAM);
+    TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
+    TEST_ASSERT_EQUAL_INT(1, close_count);
+}
+
+/**
+ * @brief GET_STATUS reports both recording and streaming fields.
+ */
+void test_get_status_reports_streaming_field()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    // Both activities active → recording:true streaming:true.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::GET_STATUS, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_NOT_NULL(strstr(reinterpret_cast<char*>(response),
+                                "\"recording\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(reinterpret_cast<char*>(response),
+                                "\"streaming\":true"));
+}
+
+/**
  * @brief TAKE_PHOTO captures a frame and saves to SD.
  */
 void test_take_photo_captures_frame()
@@ -590,6 +649,35 @@ void test_stream_route_registered()
     TEST_ASSERT_TRUE(found);
 }
 
+/**
+ * @brief /stream rejects viewers unless streaming mode is explicit.
+ *
+ * Recording alone no longer admits viewers: connections exist only
+ * while streaming is active so teardown always closes them.
+ */
+void test_stream_route_rejects_without_streaming_mode()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    // Recording-only: rejected with 409.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.web_hal.simulate_request("/stream", hal::HttpMethod::GET));
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(409, f.web_hal.mock_request.responses[0].code);
+
+    dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
+
+    // Explicit streaming mode: a viewer writer is created.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    f.web_hal.mock_request.responses.clear();
+    TEST_ASSERT_TRUE(f.web_hal.simulate_request("/stream", hal::HttpMethod::GET));
+    TEST_ASSERT_EQUAL_INT(0, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.stream_writers.size());
+    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+}
+
 // ============================================================
 // Test runner
 // ============================================================
@@ -604,6 +692,7 @@ int main()
     RUN_TEST(test_start_recording_fails_if_already_recording);
     RUN_TEST(test_stop_recording_delegates);
     RUN_TEST(test_stop_recording_closes_connected_viewers);
+    RUN_TEST(test_stop_recording_keeps_streams_when_streaming_active);
     RUN_TEST(test_take_photo_captures_frame);
     RUN_TEST(test_take_photo_fails_when_recording);
     RUN_TEST(test_take_photo_sd_write_failure);
@@ -618,6 +707,8 @@ int main()
     RUN_TEST(test_stop_stream_keeps_streams_while_recording);
     RUN_TEST(test_list_streams_returns_count);
     RUN_TEST(test_stream_route_registered);
+    RUN_TEST(test_stream_route_rejects_without_streaming_mode);
+    RUN_TEST(test_get_status_reports_streaming_field);
 
     return UNITY_END();
 }
