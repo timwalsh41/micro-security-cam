@@ -231,7 +231,7 @@ package "HAL value types" {
 ' Inheritance arrows point up (-up-|>) so interfaces sit above their
 ' implementations, and a hidden package-to-package edge forces the
 ' "ESP32 implementations" package to stack below "HAL interfaces".
-HAL_IF -[hidden]down- HAL_IMPL
+HAL_IF -down[hidden]- HAL_IMPL
 
 CameraHalImpl -up-|> CameraHal
 SdCardHalImpl -up-|> SdCardHal
@@ -243,9 +243,9 @@ AsyncRequestRef .up.|> RequestRef
 AsyncWebStreamWriter -up-|> StreamWriter
 SerialLogBackend -up-|> LogBackend
 
-SerialLogBackend --> SerialHal : writes log lines
-WebServerHalImpl ..> AsyncRequestRef : creates per request
-RequestRef ..> StreamWriter : create_stream_writer()
+SerialLogBackend -up-> SerialHal : writes log lines
+WebServerHalImpl .right.> AsyncRequestRef : creates per request
+RequestRef .down.> StreamWriter : create_stream_writer()
 
 @enduml
 ```
