@@ -62,6 +62,10 @@ struct TestFixture
 
         stream_service.init(4);
 
+        // Mirror main.cpp composition: the video controller delivers
+        // frames to (and tears down) the shared stream service.
+        video.set_stream_service(&stream_service);
+
         orchestrator.init();
     }
 
@@ -211,6 +215,37 @@ void test_stop_recording_delegates()
     // Capture one frame to complete the stop transition
     f.capture_one_frame();
     TEST_ASSERT_FALSE(f.video.is_recording());
+}
+
+/**
+ * @brief STOP_RECORDING closes connected stream viewers.
+ *
+ * Regression pin for the stream-hang bug: when recording stops and
+ * streaming mode is not active, the capture loop is torn down and no
+ * further frames are delivered. Any viewer still connected would hang
+ * forever on a silent multipart response, so the orchestrator must
+ * ensure the viewers are closed.
+ */
+void test_stop_recording_closes_connected_viewers()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    // Recording delivers frames to streams too; connect a viewer.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
+    int close_count = 0;
+    w1->close_counter = &close_count;
+    f.stream_service.start_stream(std::move(w1));
+    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+
+    dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    // The viewer's stream must have been closed and its slot freed.
+    TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
+    TEST_ASSERT_EQUAL_INT(1, close_count);
 }
 
 /**
@@ -568,6 +603,7 @@ int main()
     RUN_TEST(test_start_recording_delegates);
     RUN_TEST(test_start_recording_fails_if_already_recording);
     RUN_TEST(test_stop_recording_delegates);
+    RUN_TEST(test_stop_recording_closes_connected_viewers);
     RUN_TEST(test_take_photo_captures_frame);
     RUN_TEST(test_take_photo_fails_when_recording);
     RUN_TEST(test_take_photo_sd_write_failure);

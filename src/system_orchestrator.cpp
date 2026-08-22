@@ -144,8 +144,10 @@ CommandResult SystemOrchestrator::handle_get_status(
     int written = snprintf(
         reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE,
-        "{\"recording\":%s,\"state\":%d,\"frames\":%lu,\"file_size\":%lu}",
+        "{\"recording\":%s,\"streaming\":%s,\"state\":%d,\"frames\":%lu,"
+        "\"file_size\":%lu}",
         recording ? "true" : "false",
+        m_video.is_streaming() ? "true" : "false",
         state,
         static_cast<unsigned long>(frames),
         static_cast<unsigned long>(file_size));
@@ -370,16 +372,11 @@ CommandResult SystemOrchestrator::handle_stop_stream(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* /* response */, size_t& /* responseLen */)
 {
-    // Only tear down streams when we actually leave STREAMING. If
-    // recording is in progress, stop_streaming() is a no-op and the
-    // capture loop keeps delivering frames to viewers, so their
-    // streams must stay open.
-    if (m_video.state() == RecordingState::STREAMING)
-    {
-        m_video.stop_streaming();
-        m_streams.stop_all_streams();
-        m_log.info(SUBSYSTEM, "Streaming stopped");
-    }
+    // stop_streaming() is idempotent and owns the teardown rules: during
+    // recording it only ends preview delivery, otherwise it tears down
+    // the capture pipeline and closes all connected viewers.
+    m_video.stop_streaming();
+    m_log.info(SUBSYSTEM, "Streaming stopped");
     return CommandResult::SUCCESS;
 }
 
@@ -428,10 +425,10 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
         return;
     }
 
-    // Streaming must be explicitly started (or recording in progress)
-    // before a viewer can connect.
-    if (m_video.state() != RecordingState::STREAMING &&
-        m_video.state() != RecordingState::RECORDING)
+    // Streaming mode must be explicitly started before a viewer can
+    // connect. Viewers exist only while streaming is active, which
+    // guarantees they are closed when the capture pipeline tears down.
+    if (!m_video.is_streaming())
     {
         request.send(409, "application/json",
                      "{\"error\":\"streaming not started\"}");

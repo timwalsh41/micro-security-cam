@@ -33,8 +33,12 @@ class IStreamService;
  * header with the final patched header (updated sizes).
  *
  * Lifecycle:
- *   init(config) → start_recording() → [scheduler frame callback] × N
- *       → stop_recording()
+ *   init(config) → start_streaming() and/or start_recording()
+ *       → [scheduler frame callback] × N → stop_recording() / stop_streaming()
+ *
+ * Recording and live preview are independent activities sharing one
+ * capture loop, which runs while either is active. Tearing down the
+ * loop (when the last activity ends) also closes all stream viewers.
  *
  * Clip rotation:
  *   When a clip reaches clip_duration_s or max_file_size_mb,
@@ -50,13 +54,18 @@ class IStreamService;
  */
 
 /**
- * @brief Recording state machine states.
+ * @brief Recording states reported by state().
+ *
+ * These are derived views over two independent activity flags
+ * (recording and streaming). RECORDING means frames are being
+ * captured and written to SD regardless of whether viewers are
+ * connected; use is_streaming() to determine live-preview delivery.
  */
 enum class RecordingState : uint8_t
 {
-    IDLE,       ///< Not recording; capture loop off
-    STREAMING,  ///< Preview: capture loop on, frames delivered to streams only
-    RECORDING   ///< Actively capturing and writing frames to SD (and streams)
+    IDLE,       ///< Neither recording nor streaming; capture loop off
+    STREAMING,  ///< Live preview only: capture loop on, frames delivered to streams
+    RECORDING   ///< Recording to SD (with or without live preview delivery)
 };
 
 /**
@@ -107,22 +116,26 @@ class VideoController
         /**
          * @brief Starts a recording session.
          *
-         * Transitions from IDLE to RECORDING, opens the first clip,
-         * and tells the scheduler to begin periodic frame capture.
-         * Returns false if not in IDLE state or if clip open fails.
+         * Opens the first clip, ensures the capture loop is running
+         * (reusing it when streaming is already active), and marks
+         * recording active. Returns false if a recording is already in
+         * progress, if the previous clip has not finished closing, or
+         * if the clip cannot be opened.
          *
          * @return true if recording started successfully.
          */
         bool start_recording();
 
         /**
-         * @brief Stops the current recording session synchronously.
+         * @brief Stops the current recording session.
          *
-         * Flags the current clip for closure and stops the capture
-         * scheduler, waiting (bounded) for the capture task to run its
-         * final frame callback, which closes the clip. On successful
-         * return the state is IDLE. Safe to call in any state — no-op
-         * if not recording.
+         * Clears the recording state immediately so status queries
+         * observe the stop right away. When streaming remains active,
+         * the capture loop keeps running and the clip is finalized by
+         * the next frame callback; otherwise the capture pipeline is
+         * torn down synchronously (bounded) and any connected stream
+         * viewers are closed. Safe to call in any state — no-op if not
+         * recording.
          */
         void stop_recording();
 
@@ -154,12 +167,23 @@ class VideoController
 
         /**
          * @brief Returns whether the controller is actively recording.
-         * @return true if state is RECORDING.
+         * @return true if recording is active.
          */
         bool is_recording() const;
 
         /**
+         * @brief Returns whether live preview delivery is active.
+         * @return true if streaming mode is active.
+         */
+        bool is_streaming() const;
+
+        /**
          * @brief Returns the current recording state.
+         *
+         * Derived view over the independent recording and streaming
+         * activities: RECORDING takes precedence over STREAMING, and
+         * either being active implies the capture loop is running.
+         *
          * @return RecordingState enum value.
          */
         RecordingState state() const;
@@ -179,9 +203,10 @@ class VideoController
         /**
          * @brief Begins live preview (streaming without SD recording).
          *
-         * Transitions from IDLE to STREAMING and starts the capture
-         * scheduler so frames are delivered to connected stream clients.
-         * No-op (returns true) if already STREAMING or RECORDING.
+         * Marks streaming active and starts the capture loop if it is
+         * not already running (e.g. during recording), so frames are
+         * delivered to connected stream clients. No-op (returns true)
+         * if streaming is already active.
          *
          * @return true if preview is active after the call.
          */
@@ -190,8 +215,10 @@ class VideoController
         /**
          * @brief Stops live preview.
          *
-         * Transitions from STREAMING to IDLE and stops the capture
-         * scheduler. No-op if not STREAMING (does not stop recording).
+         * Clears streaming mode. During recording the capture loop
+         * keeps serving the recording; otherwise the capture pipeline
+         * is torn down and all connected stream viewers are closed.
+         * No-op if streaming is not active.
          */
         void stop_streaming();
 
@@ -205,7 +232,26 @@ class VideoController
          */
         void set_stream_service(IStreamService* stream_service);
 
-    private:        /**
+    private:
+        /**
+         * @brief Returns whether the capture loop is currently running.
+         *
+         * The loop runs while either activity (recording or streaming)
+         * is active.
+         */
+        bool loop_running() const;
+
+        /**
+         * @brief Tears down the capture pipeline completely.
+         *
+         * Stops the capture scheduler (bounded join; its final callback
+         * closes any open clip) and then closes all connected stream
+         * viewers. Called whenever the last active activity ends, so
+         * viewers never outlive frame delivery.
+         */
+        void teardown_capture_pipeline();
+
+        /**
          * @brief Captures a single frame and writes it to SD.
          *
          * Called by the ICaptureScheduler callback on each frame trigger.
@@ -282,8 +328,10 @@ class VideoController
         AviWriter m_avi_writer;
 
         // State
-        std::atomic<RecordingState> m_state{RecordingState::IDLE};
+        std::atomic<bool> m_recording{false};      ///< Recording activity active
+        std::atomic<bool> m_streaming{false};      ///< Streaming (preview) activity active
         std::atomic<bool> m_stop_clip{false};
+        std::atomic<bool> m_clip_close_pending{false}; ///< Set until the capture task finalizes a stopped clip
         hal::millis_t m_frame_interval_ms{100};
         std::atomic<uint32_t> m_frames_recorded{0};
         std::atomic<uint32_t> m_file_size{0};
