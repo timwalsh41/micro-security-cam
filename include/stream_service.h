@@ -43,6 +43,16 @@ class IStreamService
          * @param len  Number of frame bytes.
          */
         virtual void deliver_frame(const uint8_t* data, size_t len) = 0;
+
+        /**
+         * @brief Stops and closes all active streams.
+         *
+         * Writes the closing multipart boundary and closes each active
+         * stream so connected clients terminate cleanly. Used when the
+         * capture pipeline is torn down and no further frames will be
+         * delivered to viewers.
+         */
+        virtual void stop_all_streams() = 0;
 };
 
 /**

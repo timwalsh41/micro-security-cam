@@ -923,13 +923,18 @@ void test_streaming_delivers_frame_without_sd_write()
     f.setup_fake_frame();
     set_mock_millis(1000);
 
-    // Wire a minimal sink that records deliveries.
+    // Wire a minimal sink that records deliveries and teardown calls.
     struct Sink : public IStreamService
     {
         int deliveries{0};
+        int teardown_calls{0};
         void deliver_frame(const uint8_t* /*data*/, size_t /*len*/) override
         {
             deliveries++;
+        }
+        void stop_all_streams() override
+        {
+            teardown_calls++;
         }
     } sink;
 
