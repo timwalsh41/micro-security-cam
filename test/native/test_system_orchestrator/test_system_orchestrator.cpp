@@ -143,12 +143,39 @@ void test_get_status_returns_json()
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
 
-    // Verify JSON structure
+    // Verify JSON structure — the legacy "state" field is gone.
     const char* json = reinterpret_cast<const char*>(response);
     TEST_ASSERT_NOT_NULL(strstr(json, "\"recording\""));
-    TEST_ASSERT_NOT_NULL(strstr(json, "\"state\""));
+    TEST_ASSERT_NOT_NULL(strstr(json, "\"streaming\""));
     TEST_ASSERT_NOT_NULL(strstr(json, "\"frames\""));
     TEST_ASSERT_NOT_NULL(strstr(json, "\"file_size\""));
+    TEST_ASSERT_NULL(strstr(json, "\"state\""));
+}
+
+/**
+ * @brief TAKE_PHOTO is rejected during streaming-only preview.
+ *
+ * The gate must reject whenever the capture loop is running for any
+ * consumer, not just recording, and return INVALID_STATE (not the
+ * INTERNAL_ERROR a controller-level rejection would produce).
+ */
+void test_take_photo_rejected_during_streaming_only()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::TAKE_PHOTO, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INVALID_STATE),
+        static_cast<uint8_t>(result));
 }
 
 /**
@@ -513,7 +540,8 @@ void test_start_stream_delegates()
 {
     TestFixture f;
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 
     CommandResult result = dispatch_cmd(
         f.cmd_handler, CommandCode::START_STREAM);
@@ -521,7 +549,8 @@ void test_start_stream_delegates()
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
-    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.video.is_recording());
 }
 
 /**
@@ -533,7 +562,8 @@ void test_stop_stream_delegates()
     f.setup_fake_frame();
 
     dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
-    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.video.is_recording());
 
     CommandResult result = dispatch_cmd(
         f.cmd_handler, CommandCode::STOP_STREAM);
@@ -541,7 +571,8 @@ void test_stop_stream_delegates()
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 }
 
 /**
@@ -573,7 +604,8 @@ void test_stop_stream_closes_active_streams()
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     // Both writers closed and both slots freed.
     TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
     TEST_ASSERT_EQUAL_INT(2, close_count);
@@ -706,6 +738,7 @@ int main()
     RUN_TEST(test_stop_stream_closes_active_streams);
     RUN_TEST(test_stop_stream_keeps_streams_while_recording);
     RUN_TEST(test_list_streams_returns_count);
+    RUN_TEST(test_take_photo_rejected_during_streaming_only);
     RUN_TEST(test_stream_route_registered);
     RUN_TEST(test_stream_route_rejects_without_streaming_mode);
     RUN_TEST(test_get_status_reports_streaming_field);

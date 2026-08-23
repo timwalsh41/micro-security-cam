@@ -137,18 +137,17 @@ CommandResult SystemOrchestrator::handle_get_status(
     uint8_t* response, size_t& responseLen)
 {
     bool recording = m_video.is_recording();
-    int state = static_cast<int>(m_video.state());
+    bool streaming = m_video.is_streaming();
     uint32_t frames = m_video.frames_recorded();
     uint32_t file_size = m_video.file_size();
 
     int written = snprintf(
         reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE,
-        "{\"recording\":%s,\"streaming\":%s,\"state\":%d,\"frames\":%lu,"
+        "{\"recording\":%s,\"streaming\":%s,\"frames\":%lu,"
         "\"file_size\":%lu}",
         recording ? "true" : "false",
-        m_video.is_streaming() ? "true" : "false",
-        state,
+        streaming ? "true" : "false",
         static_cast<unsigned long>(frames),
         static_cast<unsigned long>(file_size));
 
@@ -195,9 +194,11 @@ CommandResult SystemOrchestrator::handle_take_photo(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* response, size_t& responseLen)
 {
-    if (m_video.is_recording())
+    // Photo capture needs exclusive camera/frame-buffer access; reject
+    // while any consumer keeps the capture loop running.
+    if (m_video.is_recording() || m_video.is_streaming())
     {
-        m_log.warn(SUBSYSTEM, "Take photo rejected — recording in progress");
+        m_log.warn(SUBSYSTEM, "Take photo rejected — capture loop active");
         return CommandResult::INVALID_STATE;
     }
 

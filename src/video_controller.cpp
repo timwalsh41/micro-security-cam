@@ -17,6 +17,8 @@ VideoController::VideoController(CameraController& cam,
     , m_time(time)
     , m_log(log)
     , m_scheduler(scheduler)
+    , m_record_sink(*this)
+    , m_stream_sink(*this)
 {
 }
 
@@ -48,19 +50,25 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 
 bool VideoController::start_recording()
 {
-    // No-op (rejected) if already recording.
-    if (m_recording.load(std::memory_order_relaxed))
+    if (is_registered(&m_record_sink))
     {
         return false;
     }
 
     // Reject while a previously stopped clip has not been finalized by
-    // the capture task yet (asynchronous stop when streaming remains
-    // active). Opening a new clip before the old one is closed would
-    // corrupt both files.
+    // the capture task yet (asynchronous stop when other consumers such
+    // as streaming remain active). Opening a new clip before the old
+    // one is closed would corrupt both files.
     if (m_clip_close_pending.load(std::memory_order_relaxed))
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
+        return false;
+    }
+
+    int id = find_free_slot();
+    if (id < 0)
+    {
+        m_log.warn(SUBSYSTEM, "Recording start rejected: consumer registry full");
         return false;
     }
 
@@ -72,23 +80,16 @@ bool VideoController::start_recording()
         return false;
     }
 
-    // If the capture loop is already running (streaming), reuse it —
-    // just open the clip and mark recording active.
-    if (!loop_running())
+    // Start the capture loop if it is not already running (reused when
+    // e.g. streaming is subscribed).
+    if (!ensure_loop_running())
     {
-        // Start the capture scheduler — invokes capture_and_write_frame() on each frame
-        if (!m_scheduler.start(m_frame_interval_ms,
-                               [this]() { capture_and_write_frame(); }))
-        {
-            // Scheduler busy (e.g. a task left over from a timed-out stop):
-            // undo the just-opened clip and stay inactive
-            close_clip();
-            m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
-            return false;
-        }
+        close_clip();
+        m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
+        return false;
     }
 
-    m_recording = true;
+    claim_slot(id, &m_record_sink);
 
     m_log.info(SUBSYSTEM, "Recording started: %s", m_file_path);
     return true;
@@ -96,33 +97,148 @@ bool VideoController::start_recording()
 
 void VideoController::stop_recording()
 {
-    if (!m_recording.exchange(false, std::memory_order_relaxed))
+    int id = find_id(&m_record_sink);
+    if (id < 0)
     {
         return;
     }
 
-    // Flag the clip for closure and mark finalization pending. When
-    // streaming remains active the capture loop keeps running and the
-    // next frame callback closes the clip; otherwise the pipeline is
-    // torn down below and the scheduler's final callback closes it.
+    // Request clip closure before detaching so the pipeline's final
+    // callback (or the next frame callback when other consumers keep
+    // the loop running) finalizes the clip.
     m_stop_clip = true;
     m_clip_close_pending = true;
 
-    if (!m_streaming.load(std::memory_order_relaxed))
+    detach_consumer(id);
+
+    if (!maybe_teardown_if_idle())
     {
-        teardown_capture_pipeline();
-        m_log.info(SUBSYSTEM, "Recording stopped");
+        m_log.info(SUBSYSTEM,
+                   "Recording stopped; capture loop serves remaining consumers, "
+                   "clip closes on next frame");
     }
     else
     {
-        m_log.info(SUBSYSTEM,
-                   "Recording stopped; streaming continues, clip closes on next frame");
+        m_log.info(SUBSYSTEM, "Recording stopped");
     }
 }
 
+// ============================================================
+// Frame-consumer registry
+// ============================================================
+
+int VideoController::find_free_slot() const
+{
+    for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
+    {
+        if (!m_slots[i].used.load(std::memory_order_relaxed))
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int VideoController::find_id(const IFrameConsumer* consumer) const
+{
+    if (consumer == nullptr)
+    {
+        return -1;
+    }
+    for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
+    {
+        if (m_slots[i].used.load(std::memory_order_relaxed) &&
+            m_slots[i].consumer == consumer)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool VideoController::is_registered(const IFrameConsumer* consumer) const
+{
+    return find_id(consumer) >= 0;
+}
+
+size_t VideoController::consumer_count() const
+{
+    size_t count = 0;
+    for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
+    {
+        if (m_slots[i].used.load(std::memory_order_relaxed))
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
+void VideoController::claim_slot(int id, IFrameConsumer* consumer)
+{
+    if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS))
+    {
+        return;
+    }
+    m_slots[id].consumer = consumer;
+    m_slots[id].used.store(true, std::memory_order_release);
+}
+
+void VideoController::detach_consumer(int id)
+{
+    if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS))
+    {
+        return;
+    }
+    // Clear the occupied flag first so an in-flight dispatch observes
+    // an empty slot rather than a dangling pointer; the pointer follows.
+    m_slots[id].used.store(false, std::memory_order_release);
+    m_slots[id].consumer = nullptr;
+}
+
+int VideoController::register_frame_consumer(IFrameConsumer* consumer)
+{
+    if (consumer == nullptr || is_registered(consumer))
+    {
+        return -1;
+    }
+
+    int id = find_free_slot();
+    if (id < 0)
+    {
+        m_log.warn(SUBSYSTEM, "Consumer registration rejected: registry full");
+        return -1;
+    }
+
+    if (!ensure_loop_running())
+    {
+        m_log.warn(SUBSYSTEM, "Consumer registration rejected: scheduler busy");
+        return -1;
+    }
+
+    claim_slot(id, consumer);
+    return id;
+}
+
+void VideoController::unregister_frame_consumer(int id)
+{
+    if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS) ||
+        !m_slots[id].used.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    detach_consumer(id);
+    maybe_teardown_if_idle();
+}
+
+// ============================================================
+// Photo capture
+// ============================================================
+
 bool VideoController::capture_photo(const char* path)
 {
-    if (loop_running())
+    if (is_capture_active())
     {
         m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
         return false;
@@ -167,47 +283,52 @@ void VideoController::set_stream_service(IStreamService* stream_service)
     m_stream_service = stream_service;
 }
 
+// ============================================================
+// Streaming control
+// ============================================================
+
 bool VideoController::start_streaming()
 {
-    if (m_streaming.load(std::memory_order_relaxed))
+    if (is_registered(&m_stream_sink))
     {
-        // Preview is already active — treat as a no-op success.
+        // Preview is already subscribed — treat as a no-op success.
         return true;
     }
 
-    // If the capture loop is already running (recording), reuse it —
-    // just mark streaming active.
-    if (!loop_running())
+    int id = find_free_slot();
+    if (id < 0)
     {
-        // Start the capture loop in preview mode: frames are delivered
-        // to streams only (no AVI/SD writes).
-        if (!m_scheduler.start(m_frame_interval_ms,
-                               [this]() { capture_and_write_frame(); }))
-        {
-            m_log.warn(SUBSYSTEM, "Streaming start failed: scheduler busy");
-            return false;
-        }
+        m_log.warn(SUBSYSTEM, "Streaming start rejected: consumer registry full");
+        return false;
     }
 
-    m_streaming = true;
+    // Start the capture loop if it is not already running (reused when
+    // e.g. recording is subscribed).
+    if (!ensure_loop_running())
+    {
+        m_log.warn(SUBSYSTEM, "Streaming start failed: scheduler busy");
+        return false;
+    }
+
+    claim_slot(id, &m_stream_sink);
+
     m_log.info(SUBSYSTEM, "Streaming started");
     return true;
 }
 
 void VideoController::stop_streaming()
 {
-    if (!m_streaming.exchange(false, std::memory_order_relaxed))
+    int id = find_id(&m_stream_sink);
+    if (id < 0)
     {
         return;
     }
 
-    if (!m_recording.load(std::memory_order_relaxed))
-    {
-        // Last activity ends: tear down the loop and close all viewers.
-        teardown_capture_pipeline();
-    }
-
+    detach_consumer(id);
     m_log.info(SUBSYSTEM, "Streaming stopped");
+
+    // Last consumer gone: tear down the loop and close all viewers.
+    maybe_teardown_if_idle();
 }
 
 // ============================================================
@@ -216,25 +337,17 @@ void VideoController::stop_streaming()
 
 bool VideoController::is_recording() const
 {
-    return m_recording.load(std::memory_order_relaxed);
+    return is_registered(&m_record_sink);
 }
 
 bool VideoController::is_streaming() const
 {
-    return m_streaming.load(std::memory_order_relaxed);
+    return is_registered(&m_stream_sink);
 }
 
-RecordingState VideoController::state() const
+bool VideoController::is_capture_active() const
 {
-    if (m_recording.load(std::memory_order_relaxed))
-    {
-        return RecordingState::RECORDING;
-    }
-    if (m_streaming.load(std::memory_order_relaxed))
-    {
-        return RecordingState::STREAMING;
-    }
-    return RecordingState::IDLE;
+    return consumer_count() > 0;
 }
 
 uint32_t VideoController::frames_recorded() const
@@ -245,6 +358,48 @@ uint32_t VideoController::frames_recorded() const
 uint32_t VideoController::file_size() const
 {
     return m_file_size;
+}
+
+// ============================================================
+// Capture loop lifecycle
+// ============================================================
+
+bool VideoController::ensure_loop_running()
+{
+    if (m_loop_active)
+    {
+        return true;
+    }
+
+    m_loop_active = m_scheduler.start(m_frame_interval_ms,
+                                      [this]() { capture_and_dispatch_frame(); });
+    return m_loop_active;
+}
+
+void VideoController::teardown_capture_pipeline()
+{
+    // Stop the capture loop first: the scheduler's final callback runs
+    // any pending clip closure, and after the (bounded) join no further
+    // dispatch can race the writer close below.
+    m_scheduler.stop();
+    m_loop_active = false;
+
+    // Close all connected viewers: with the loop gone they would
+    // otherwise hang forever on a silent multipart response.
+    if (m_stream_service != nullptr)
+    {
+        m_stream_service->stop_all_streams();
+    }
+}
+
+bool VideoController::maybe_teardown_if_idle()
+{
+    if (consumer_count() == 0 && m_loop_active)
+    {
+        teardown_capture_pipeline();
+        return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -337,41 +492,18 @@ void VideoController::close_clip()
     m_avi_writer = AviWriter();  // Reset writer state
 }
 
-void VideoController::teardown_capture_pipeline()
-{
-    // Stop the capture loop first: the scheduler's final callback runs
-    // any pending clip closure, and after the (bounded) join no further
-    // deliver_frame() calls can race the writer close() below.
-    m_scheduler.stop();
-
-    // Close all connected viewers: with the loop gone they would
-    // otherwise hang forever on a silent multipart response.
-    if (m_stream_service != nullptr)
-    {
-        m_stream_service->stop_all_streams();
-    }
-}
-
-bool VideoController::loop_running() const
-{
-    return m_recording.load(std::memory_order_relaxed) ||
-           m_streaming.load(std::memory_order_relaxed);
-}
-
 // ============================================================
-// Frame capture
+// Frame pump
 // ============================================================
 
-void VideoController::capture_and_write_frame()
+void VideoController::capture_and_dispatch_frame()
 {
-    bool recording = m_recording.load(std::memory_order_relaxed);
-    bool streaming = m_streaming.load(std::memory_order_relaxed);
-    bool stop_pending = m_stop_clip.load(std::memory_order_relaxed);
+    bool closing = m_stop_clip.load(std::memory_order_relaxed);
 
     // Guard against stale callbacks (e.g. a task notification that was
-    // already queued after teardown): never capture unless an activity
-    // is active or a stopped clip still awaits its final closure.
-    if (!recording && !streaming && !stop_pending)
+    // already queued after teardown): never capture unless a consumer is
+    // subscribed or a stopped clip still awaits its final closure.
+    if (consumer_count() == 0 && !closing)
     {
         return;
     }
@@ -383,7 +515,7 @@ void VideoController::capture_and_write_frame()
 
         // Never wedge the pipeline: if a stopped clip was awaiting its
         // final closure, finalize it even though this frame failed.
-        if (stop_pending)
+        if (closing)
         {
             close_clip();
             m_clip_close_pending = false;
@@ -393,64 +525,90 @@ void VideoController::capture_and_write_frame()
 
     hal::CameraFrame frame = m_camera.get_frame();
 
-    // Deliver the raw JPEG frame to connected stream clients (applies to
-    // both preview and recording activities).
-    if (m_stream_service != nullptr && frame.data != nullptr && frame.len > 0)
+    // Dispatch the raw JPEG frame to every subscribed consumer.
+    for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
     {
-        m_stream_service->deliver_frame(frame.data, frame.len);
-    }
-
-    // Check clip termination conditions (auto-rotation)
-    bool clip_limit_reached = false;
-
-    if (recording)
-    {
-        // Format as AVI chunk and write to SD
-        m_avi_writer.write_frame(frame.data, frame.len);
-
-        AviBytes chunk = m_avi_writer.last_frame_chunk();
-        if (chunk.data && chunk.len > 0)
+        if (!m_slots[i].used.load(std::memory_order_acquire))
         {
-            write_to_sd(chunk.data, chunk.len);
-            m_file_size += static_cast<uint32_t>(chunk.len);
+            continue;
         }
-
-        m_frames_recorded++;
-
-        if (m_config.clip_duration_s > 0 &&
-            m_frames_recorded >=
-                static_cast<uint32_t>(m_config.fps) * m_config.clip_duration_s)
+        IFrameConsumer* consumer = m_slots[i].consumer;
+        if (consumer != nullptr)
         {
-            clip_limit_reached = true;
-        }
-        else if (m_config.max_file_size_mb > 0 &&
-                 m_file_size >= static_cast<uint32_t>(m_config.max_file_size_mb) *
-                                    1024UL * 1024UL)
-        {
-            clip_limit_reached = true;
+            consumer->on_frame(frame.data, frame.len);
         }
     }
 
     m_camera.release_frame();
 
-    // Handle clip closure
-    if (m_stop_clip || clip_limit_reached)
-    {
-        bool explicit_stop = m_stop_clip;
-        close_clip();
-        m_clip_close_pending = false;
+    handle_clip_closure();
+}
 
-        if (!explicit_stop)
+void VideoController::write_avi_frame(const uint8_t* data, size_t len)
+{
+    // Format as AVI chunk and write to SD
+    m_avi_writer.write_frame(data, len);
+
+    AviBytes chunk = m_avi_writer.last_frame_chunk();
+    if (chunk.data && chunk.len > 0)
+    {
+        write_to_sd(chunk.data, chunk.len);
+        m_file_size += static_cast<uint32_t>(chunk.len);
+    }
+
+    m_frames_recorded++;
+
+    // Check clip termination conditions (auto-rotation); closure itself
+    // is handled by the pump after frame release.
+    if (m_config.clip_duration_s > 0 &&
+        m_frames_recorded >=
+            static_cast<uint32_t>(m_config.fps) * m_config.clip_duration_s)
+    {
+        m_stop_clip = true;
+    }
+    else if (m_config.max_file_size_mb > 0 &&
+             m_file_size >= static_cast<uint32_t>(m_config.max_file_size_mb) *
+                                1024UL * 1024UL)
+    {
+        m_stop_clip = true;
+    }
+}
+
+void VideoController::handle_clip_closure()
+{
+    if (!m_stop_clip.exchange(false, std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    close_clip();
+    m_clip_close_pending = false;
+
+    if (is_recording())
+    {
+        // Auto-rotation: recording remains subscribed — open new clip
+        // and resume.
+        open_clip();
+        if (m_avi_writer.is_open())
         {
-            // Auto-rotation: open new clip and resume
-            open_clip();
-            if (m_avi_writer.is_open())
-            {
-                m_log.info(SUBSYSTEM, "New clip: %s", m_clip_path);
-            }
+            m_log.info(SUBSYSTEM, "New clip: %s", m_clip_path);
         }
-        // Explicit stop: m_recording was cleared synchronously by
-        // stop_recording(); nothing further to do here.
+    }
+    // Explicit stop: the recording consumer is already detached; the
+    // clip stays closed.
+}
+
+void VideoController::RecordSink::on_frame(const uint8_t* data, size_t len)
+{
+    m_vc.write_avi_frame(data, len);
+}
+
+void VideoController::StreamSink::on_frame(const uint8_t* data, size_t len)
+{
+    IStreamService* stream_service = m_vc.m_stream_service;
+    if (stream_service != nullptr && data != nullptr && len > 0)
+    {
+        stream_service->deliver_frame(data, len);
     }
 }
 

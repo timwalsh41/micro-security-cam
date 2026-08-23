@@ -492,18 +492,6 @@ package "Command dispatch framework" {
 
 package "Controllers" {
 
-    enum RecordingState {
-        IDLE
-        STREAMING
-        RECORDING
-    }
-    note bottom of RecordingState
-      Derived view over the independent recording and streaming
-      activity flags; RECORDING takes precedence over STREAMING.
-      Callers needing per-activity truth use is_recording() /
-      is_streaming().
-    end note
-
     class CameraController {
         -m_hal : CameraHal&
         -m_config : CameraConfig
@@ -521,8 +509,9 @@ package "Controllers" {
     }
 
     class VideoController {
-        -m_recording : atomic<bool>
-        -m_streaming : atomic<bool>
+        -m_slots : ConsumerSlot[3]
+        -m_record_sink : RecordSink
+        -m_stream_sink : StreamSink
         -m_stop_clip : atomic<bool>
         -m_clip_close_pending : atomic<bool>
         -m_avi_writer : AviWriter
@@ -538,12 +527,16 @@ package "Controllers" {
         +start_streaming() : bool
         +stop_streaming()
         +set_stream_service(stream_service)
+        +register_frame_consumer(consumer) : int
+        +unregister_frame_consumer(id)
         +is_recording() : bool
         +is_streaming() : bool
-        +state() : RecordingState
+        +is_capture_active() : bool
+        -capture_and_dispatch_frame()
+        -write_avi_frame(data, len)
+        -handle_clip_closure()
         -teardown_capture_pipeline()
-        -loop_running() : bool
-        -capture_and_write_frame()
+        -ensure_loop_running() : bool
         -open_clip()
         -close_clip()
     }
@@ -648,7 +641,7 @@ VideoController --> TimeService_ext : clip duration
 VideoController --> ICaptureScheduler : frame pacing
 VideoController --> "0..1" IStreamService_ext : optional frame sink + viewer teardown
 VideoController --> StreamService_ext : set_stream_service() wiring
-VideoController ..> RecordingState : derived state()
+VideoController o-right-> "0..3" IFrameConsumer : consumer registry
 CaptureSchedulerEsp32 --> TimerHal_ext : periodic ISR
 
 @enduml
@@ -961,7 +954,7 @@ Each slot owns its writer via `std::unique_ptr`, so the writer is deleted exactl
 
 #### Streaming Model
 
-Streaming leverages the single capture loop owned by `VideoController`, which tracks recording and streaming as independent activities over a derived three-value state (`IDLE` / `STREAMING` / `RECORDING`); see the [VideoController State Machine](#state-machine) for the canonical activity model.
+Streaming leverages the single capture loop owned by `VideoController`, where recording and streaming are independent frame-consumer subscriptions over one producer; see the [Consumer Registry](#consumer-registry-activity-model) section for the canonical model.
 
 - **capture loop off (IDLE)** — no frames produced.
 - **streaming only** — capture loop on at `[video]` FPS; frames delivered to streams only.
@@ -1355,7 +1348,7 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"state":int,"frames":uint32,"file_size":uint32}` | Returns current recording and streaming activity, derived state value, frame count, and accumulated file size. No side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"frames":uint32,"file_size":uint32}` | Returns current recording and streaming subscription state, frame count, and accumulated file size. No side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` while the capture loop is running (either activity), `INTERNAL_ERROR` if capture or write fails. |
@@ -1478,54 +1471,71 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 - `SdController &` — for SD file I/O via synchronous API (write, seek, create directory).
 - `TimeService &` — for clip duration tracking (elapsed time checks).
 - `LoggingService &` — for diagnostic output.
-- `ICaptureScheduler &` — for platform-agnostic periodic frame capture scheduling. The scheduler invokes `capture_and_write_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
+- `ICaptureScheduler &` — for platform-agnostic capture scheduling. The scheduler invokes `capture_and_dispatch_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
 - `AviWriter` — owned; formats AVI byte streams in memory.
 
-### State Machine
+### Consumer Registry (Activity Model)
 
-Recording and streaming are **independent activities** sharing a single
-capture loop. Internally the controller tracks two atomic activity flags;
-`state()` reports a derived view in which `RECORDING` takes precedence over
-`STREAMING`, and `is_streaming()` / `is_recording()` expose each activity
-directly. The capture loop runs while either activity is active.
+The capture loop is the sole frame **producer**; activities interested in
+frames are **subscribers**. `VideoController` hosts a fixed-size registry
+of `IFrameConsumer` implementations (`include/frame_consumer.h`); the loop
+runs while at least one consumer is registered and is torn down — closing
+all connected stream viewers — when the last one detaches. There is no
+enumerated mode: which activities are live is exactly "which consumers are
+registered". Recording and streaming are independent subscribers sharing
+the single loop; `is_recording()` / `is_streaming()` report each
+subscription directly, and `is_capture_active()` reports whether the loop
+is running for any consumer.
 
 ```plantuml
 @startuml
-title VideoController Activity Model
+title VideoController Producer / Subscriber Model
 
-state IDLE
-state STREAMING
-state RECORDING
-state REC_AND_PREVIEW
+interface ICaptureScheduler
+interface IFrameConsumer
 
-IDLE --> STREAMING : start_streaming()
-IDLE --> RECORDING : start_recording()
-IDLE --> REC_AND_PREVIEW : start_streaming() +\nstart_recording() (either order)
-STREAMING --> REC_AND_PREVIEW : start_recording()
-RECORDING --> REC_AND_PREVIEW : start_streaming()
-STREAMING --> IDLE : stop_streaming()
-RECORDING --> IDLE : stop_recording()\n(teardown closes viewers)
-REC_AND_PREVIEW --> RECORDING : stop_streaming()
-REC_AND_PREVIEW --> STREAMING : stop_recording()\n(clip finalizes on next frame)
-RECORDING --> RECORDING : clip limit reached\n(auto-rotate new clip)
-STREAMING : frames to viewers only
-RECORDING : AVI writes (+ viewers)
-REC_AND_PREVIEW : AVI writes (+ viewers)
+class VideoController {
+  registry : ConsumerSlot[3]
+  +register_frame_consumer(c) : int
+  +unregister_frame_consumer(id)
+  +is_recording() / is_streaming() / is_capture_active()
+  -capture_and_dispatch_frame()
+}
 
+class RecordSink {
+  AVI format + SD write
+}
+class StreamSink {
+  IStreamService::deliver_frame()
+}
+
+ICaptureScheduler ..> VideoController : frame trigger
+circle "frame pump" as PUMP
+VideoController ..> PUMP
+PUMP --> IFrameConsumer : on_frame(data, len)
+IFrameConsumer <|.. RecordSink
+IFrameConsumer <|.. StreamSink
+note bottom of IFrameConsumer
+  future subscribers (e.g. phase-6 motion detection)
+end note
+VideoController --> RecordSink : owns
+VideoController --> StreamSink : owns
 @enduml
 ```
 
-- **IDLE** — No active activity; capture loop off. Awaits `start_recording()`, `start_streaming()`, or `capture_photo()`.
-- **STREAMING** — Live preview only: the capture loop runs at the configured FPS and delivers frames to connected stream clients (no AVI/SD writes).
-- **RECORDING** — Recording to SD at the configured FPS; clip auto-rotates when duration or file size limit is reached. Frames are delivered to stream clients only when streaming mode is also active (`is_streaming()`).
+Built-in consumers:
 
-Each activity is started and stopped independently:
+- **RecordSink** — subscribed by `start_recording()`, which opens a clip first. Formats each frame as an AVI chunk and writes it to SD; requests clip closure via the rotation limit or explicit stop.
+- **StreamSink** — subscribed by `start_streaming()`; forwards every frame to the `IStreamService` for delivery to connected viewers.
+- **Future consumers** — a phase-6 motion-detection consumer registers through the same public `register_frame_consumer()` API and may call `start_recording()` from its frame callback; no controller special-casing is required.
 
-- `start_streaming()` marks streaming active and starts the capture loop if it is not already running (e.g. during recording it is reused, no second task).
-- `stop_streaming()` clears streaming mode. During recording the loop keeps serving the recording; otherwise the capture pipeline is torn down and all connected stream viewers are closed.
-- `start_recording()` opens a clip, reusing the running loop when streaming is active. It is rejected while recording is already active or while a previously stopped clip has not finished closing.
-- `stop_recording()` clears recording state synchronously so status queries observe the stop immediately. When streaming remains active the capture loop keeps running and the clip is finalized by the next frame callback (bounded by one frame period); otherwise the pipeline is torn down synchronously (bounded) and all connected viewers are closed.
-- `capture_photo()` is rejected whenever the capture loop is running (either activity) and performed directly when fully idle.
+Lifecycle rules:
+
+- `start_recording()` / `start_streaming()` subscribe their consumer and start the loop if it is not already running (reused, never duplicated).
+- `stop_recording()` unsubscribes immediately so status queries observe the stop right away and requests clip closure. When other consumers keep the loop running the clip is finalized by the next frame callback (bounded by one frame period); `start_recording()` is rejected until finalization completes (`clip close pending`). When it was the last subscriber the pipeline is torn down synchronously (bounded), whose final callback closes the clip and closes all connected stream viewers.
+- `stop_streaming()` unsubscribes; during recording the loop keeps serving the recording, otherwise the last-subscriber teardown runs.
+- Clip rotation reopens a fresh clip while recording remains subscribed.
+- `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle.
 
 ### Capture Scheduling
 

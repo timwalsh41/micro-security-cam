@@ -10,6 +10,7 @@
 #include "time_service.h"
 #include "logging_service.h"
 #include "capture_scheduler.h"
+#include "frame_consumer.h"
 #include "ini_parser.h"
 #include "path_utils.h"
 #include "time_formatter.h"
@@ -19,12 +20,14 @@ class IStreamService;
 
 /**
  * @file video_controller.h
- * @brief Video recording orchestrator for MJPEG video capture.
+ * @brief Capture pipeline: frame pump plus recording session owner.
  *
- * Coordinates camera frame capture, AVI container formatting, and
- * per-frame SD card writing into a recording session. Delegates all
- * capture scheduling to an injected ICaptureScheduler, keeping this
- * class free of platform-specific code.
+ * The capture loop is the sole frame producer. Activities interested
+ * in frames — SD recording and live streaming delivery today, motion
+ * detection in a future phase — subscribe by registering an
+ * IFrameConsumer; the loop runs while at least one consumer is
+ * registered and is torn down (closing any connected stream viewers)
+ * when the last one detaches.
  *
  * AVI Write Strategy: Per-Frame SD Writes
  * Each captured frame is formatted by AviWriter and immediately
@@ -36,41 +39,31 @@ class IStreamService;
  *   init(config) → start_streaming() and/or start_recording()
  *       → [scheduler frame callback] × N → stop_recording() / stop_streaming()
  *
- * Recording and live preview are independent activities sharing one
- * capture loop, which runs while either is active. Tearing down the
- * loop (when the last activity ends) also closes all stream viewers.
+ * Recording and live preview are independent subscribers sharing one
+ * capture loop. Stopping recording while streaming remains subscribed
+ * finalizes the clip asynchronously on the next frame callback
+ * (start_recording() is rejected until then); stopping the last
+ * subscriber tears down the capture pipeline synchronously (bounded)
+ * and closes all stream viewers.
  *
  * Clip rotation:
  *   When a clip reaches clip_duration_s or max_file_size_mb,
  *   close_clip() is called and a new clip is opened immediately
- *   (if recording was not explicitly stopped).
+ *   (while recording remains subscribed).
  *
  * Photo capture:
  *   capture_photo(path) captures a single JPEG frame and writes
- *   it directly to the given SD card path.
+ *   it directly to the given SD card path; it is rejected whenever
+ *   the capture loop is running for any consumer.
  *
  * File naming:
  *   /YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
  */
 
 /**
- * @brief Recording states reported by state().
- *
- * These are derived views over two independent activity flags
- * (recording and streaming). RECORDING means frames are being
- * captured and written to SD regardless of whether viewers are
- * connected; use is_streaming() to determine live-preview delivery.
- */
-enum class RecordingState : uint8_t
-{
-    IDLE,       ///< Neither recording nor streaming; capture loop off
-    STREAMING,  ///< Live preview only: capture loop on, frames delivered to streams
-    RECORDING   ///< Recording to SD (with or without live preview delivery)
-};
-
-/**
  * @class VideoController
- * @brief Orchestrates MJPEG video recording to SD card.
+ * @brief Owns the capture pump, the consumer registry, and the
+ *        recording (AVI/clip) session.
  *
  * Depends on CameraController for frame capture, SdController for
  * SD I/O (synchronous per-frame writes), AviWriter for AVI
@@ -116,11 +109,12 @@ class VideoController
         /**
          * @brief Starts a recording session.
          *
-         * Opens the first clip, ensures the capture loop is running
-         * (reusing it when streaming is already active), and marks
-         * recording active. Returns false if a recording is already in
-         * progress, if the previous clip has not finished closing, or
-         * if the clip cannot be opened.
+         * Opens the first clip and subscribes the recording frame
+         * consumer, starting the capture loop if it is not already
+         * running (reusing it when streaming is already active).
+         * Returns false if a recording is already in progress, if the
+         * previous clip has not finished closing, or if the clip cannot
+         * be opened.
          *
          * @return true if recording started successfully.
          */
@@ -129,13 +123,13 @@ class VideoController
         /**
          * @brief Stops the current recording session.
          *
-         * Clears the recording state immediately so status queries
-         * observe the stop right away. When streaming remains active,
-         * the capture loop keeps running and the clip is finalized by
-         * the next frame callback; otherwise the capture pipeline is
-         * torn down synchronously (bounded) and any connected stream
-         * viewers are closed. Safe to call in any state — no-op if not
-         * recording.
+         * Unsubscribes the recording consumer immediately so status
+         * queries observe the stop right away. When other consumers
+         * (streaming) remain subscribed, the capture loop keeps running
+         * and the clip is finalized by the next frame callback;
+         * otherwise the capture pipeline is torn down synchronously
+         * (bounded) and any connected stream viewers are closed. Safe
+         * to call in any state — no-op if not recording.
          */
         void stop_recording();
 
@@ -144,7 +138,7 @@ class VideoController
          *
          * Captures one frame from the camera, writes the JPEG data
          * to the given path, and releases the frame buffer. Will
-         * fail if video recording is in progress.
+         * fail while the capture loop is running for any consumer.
          *
          * @param path Full SD card path for the photo file.
          * @return true if the photo was captured and written successfully.
@@ -166,27 +160,27 @@ class VideoController
         bool make_unique_path(const char* base_path, char* out, size_t out_size);
 
         /**
-         * @brief Returns whether the controller is actively recording.
+         * @brief Returns whether a recording session is subscribed.
          * @return true if recording is active.
          */
         bool is_recording() const;
 
         /**
-         * @brief Returns whether live preview delivery is active.
-         * @return true if streaming mode is active.
+         * @brief Returns whether live preview delivery is subscribed.
+         * @return true if streaming is active.
          */
         bool is_streaming() const;
 
         /**
-         * @brief Returns the current recording state.
+         * @brief Returns whether the capture loop is running for any
+         *        consumer.
          *
-         * Derived view over the independent recording and streaming
-         * activities: RECORDING takes precedence over STREAMING, and
-         * either being active implies the capture loop is running.
+         * While this returns true, single-frame photo capture is
+         * rejected because the camera/frame buffers are in use.
          *
-         * @return RecordingState enum value.
+         * @return true if at least one frame consumer is subscribed.
          */
-        RecordingState state() const;
+        bool is_capture_active() const;
 
         /**
          * @brief Returns the number of frames recorded in the current clip.
@@ -203,10 +197,10 @@ class VideoController
         /**
          * @brief Begins live preview (streaming without SD recording).
          *
-         * Marks streaming active and starts the capture loop if it is
-         * not already running (e.g. during recording), so frames are
-         * delivered to connected stream clients. No-op (returns true)
-         * if streaming is already active.
+         * Subscribes the streaming frame consumer, starting the capture
+         * loop if it is not already running (e.g. during recording), so
+         * frames are delivered to connected stream clients. No-op
+         * (returns true) if streaming is already subscribed.
          *
          * @return true if preview is active after the call.
          */
@@ -215,52 +209,173 @@ class VideoController
         /**
          * @brief Stops live preview.
          *
-         * Clears streaming mode. During recording the capture loop
-         * keeps serving the recording; otherwise the capture pipeline
-         * is torn down and all connected stream viewers are closed.
-         * No-op if streaming is not active.
+         * Unsubscribes the streaming consumer. During recording the
+         * capture loop keeps serving the recording; otherwise the
+         * capture pipeline is torn down and all connected stream
+         * viewers are closed. No-op if streaming is not active.
          */
         void stop_streaming();
 
         /**
          * @brief Sets the stream-sink service for frame delivery.
          *
-         * The sink receives every captured JPEG frame (both preview and
-         * recording frames). May be null to disable streaming.
+         * The sink receives every captured JPEG frame while the
+         * streaming consumer is subscribed. May be null to disable
+         * streaming.
          *
          * @param stream_service Optional IStreamService implementation.
          */
         void set_stream_service(IStreamService* stream_service);
 
+        /**
+         * @brief Maximum number of simultaneously subscribed frame
+         *        consumers (recording + streaming + headroom for motion).
+         */
+        static constexpr size_t MAX_FRAME_CONSUMERS = 3;
+
+        /**
+         * @brief Registers a frame consumer with the capture pipeline.
+         *
+         * Starts the capture loop if it is not already running. The
+         * same consumer pointer may not be registered twice.
+         *
+         * @param consumer Consumer to subscribe; must outlive the
+         *                 registration.
+         * @return Registration id (>= 0), or -1 if the registry is full
+         *         or the consumer is null or already registered.
+         */
+        int register_frame_consumer(IFrameConsumer* consumer);
+
+        /**
+         * @brief Unsubscribes a previously registered frame consumer.
+         *
+         * When the last consumer unsubscribes, the capture pipeline is
+         * torn down (bounded) and all connected stream viewers are
+         * closed.
+         *
+         * @param id Registration id returned by register_frame_consumer().
+         */
+        void unregister_frame_consumer(int id);
+
     private:
         /**
-         * @brief Returns whether the capture loop is currently running.
-         *
-         * The loop runs while either activity (recording or streaming)
-         * is active.
+         * @brief Frame consumer that formats AVI chunks and writes them
+         *        to SD while recording is subscribed.
          */
-        bool loop_running() const;
+        class RecordSink : public IFrameConsumer
+        {
+            public:
+                explicit RecordSink(VideoController& vc) : m_vc(vc) {}
+                void on_frame(const uint8_t* data, size_t len) override;
+
+            private:
+                VideoController& m_vc;
+        };
+
+        /**
+         * @brief Frame consumer that forwards frames to the stream
+         *        service while streaming is subscribed.
+         */
+        class StreamSink : public IFrameConsumer
+        {
+            public:
+                explicit StreamSink(VideoController& vc) : m_vc(vc) {}
+                void on_frame(const uint8_t* data, size_t len) override;
+
+            private:
+                VideoController& m_vc;
+        };
+
+        /**
+         * @brief One registry entry for a subscribed frame consumer.
+         */
+        struct ConsumerSlot
+        {
+            std::atomic<bool> used{false}; ///< Slot occupied flag (read by the capture task)
+            IFrameConsumer* consumer{nullptr};
+        };
+
+        /**
+         * @brief Returns whether the given consumer is registered.
+         */
+        bool is_registered(const IFrameConsumer* consumer) const;
+
+        /**
+         * @brief Returns a free slot id, or -1 if the registry is full.
+         */
+        int find_free_slot() const;
+
+        /**
+         * @brief Returns the slot id the consumer is registered under,
+         *        or -1 if not registered.
+         */
+        int find_id(const IFrameConsumer* consumer) const;
+
+        /**
+         * @brief Returns the number of currently subscribed consumers.
+         */
+        size_t consumer_count() const;
+
+        /**
+         * @brief Binds a consumer into a free slot.
+         */
+        void claim_slot(int id, IFrameConsumer* consumer);
+
+        /**
+         * @brief Releases a consumer's slot (flag first, then pointer).
+         */
+        void detach_consumer(int id);
+
+        /**
+         * @brief Tears down the pipeline if no consumer remains.
+         * @return true if a teardown was performed.
+         */
+        bool maybe_teardown_if_idle();
+
+        /**
+         * @brief Ensures the capture loop is running.
+         *
+         * @return true if the loop is running after the call.
+         */
+        bool ensure_loop_running();
 
         /**
          * @brief Tears down the capture pipeline completely.
          *
          * Stops the capture scheduler (bounded join; its final callback
-         * closes any open clip) and then closes all connected stream
-         * viewers. Called whenever the last active activity ends, so
+         * closes any pending clip) and then closes all connected stream
+         * viewers. Called when the last consumer unsubscribes, so
          * viewers never outlive frame delivery.
          */
         void teardown_capture_pipeline();
 
         /**
-         * @brief Captures a single frame and writes it to SD.
+         * @brief Captures one frame and dispatches it to consumers.
          *
          * Called by the ICaptureScheduler callback on each frame trigger.
-         * Calls CameraController::capture_frame(), formats the AVI chunk
-         * via AviWriter::write_frame(), writes the chunk to SD, updates
-         * clip byte count, and releases the frame. Also checks clip
-         * rotation conditions.
+         * Captures a frame, dispatches it to every subscribed consumer,
+         * releases the frame buffer, and processes any pending clip
+         * closure. Also serves as the finalization pass for a clip whose
+         * recording consumer detached before closure.
          */
-        void capture_and_write_frame();
+        void capture_and_dispatch_frame();
+
+        /**
+         * @brief Formats one frame as an AVI chunk and writes it to SD.
+         *
+         * Updates clip counters and requests clip closure via
+         * m_stop_clip when a rotation limit is reached.
+         */
+        void write_avi_frame(const uint8_t* data, size_t len);
+
+        /**
+         * @brief Finalizes the current clip if closure was requested.
+         *
+         * On explicit stop the clip stays closed; while recording
+         * remains subscribed (rotation limit), a fresh clip opens
+         * immediately.
+         */
+        void handle_clip_closure();
 
         /**
          * @brief Opens a new AVI clip file.
@@ -327,11 +442,18 @@ class VideoController
         // Owned components
         AviWriter m_avi_writer;
 
+        // Frame-consumer registry (main-loop context mutates; the
+        // capture task reads slots between dispatches)
+        ConsumerSlot m_slots[MAX_FRAME_CONSUMERS]{};
+
+        // Built-in consumers (one instance each)
+        RecordSink m_record_sink;
+        StreamSink m_stream_sink;
+
         // State
-        std::atomic<bool> m_recording{false};      ///< Recording activity active
-        std::atomic<bool> m_streaming{false};      ///< Streaming (preview) activity active
         std::atomic<bool> m_stop_clip{false};
         std::atomic<bool> m_clip_close_pending{false}; ///< Set until the capture task finalizes a stopped clip
+        bool m_loop_active{false};                     ///< Capture scheduler running
         hal::millis_t m_frame_interval_ms{100};
         std::atomic<uint32_t> m_frames_recorded{0};
         std::atomic<uint32_t> m_file_size{0};
