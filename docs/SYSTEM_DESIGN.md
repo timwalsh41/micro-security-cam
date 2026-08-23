@@ -59,7 +59,7 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 | Task | Created By | Layer | Core | Stack (bytes) | Priority | Scope / Responsibility |
 |------|-----------|-------|------|---------------|----------|------------------------|
 | `loopTask` | Arduino framework | Arduino framework | 1 | framework-managed | framework-managed | Runs `setup()` then `loop()`. `loop()` ticks the `CommandHandler` (polls serial/web transports), the `SystemOrchestrator`, and the `LedStateMachine`, and emits the periodic heartbeat log. |
-| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_write_frame()` to capture a frame and write it to SD. Exits (and signals an exit semaphore) when `stop()` is requested. |
+| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_dispatch_frame()` to capture a frame and dispatch it to registered consumers. Exits (and signals an exit semaphore) when `stop()` is requested. |
 | `async_tcp` | `AsyncTCP` library | Arduino framework | 1 | library-managed | library-managed | AsyncTCP event loop task that services TCP connections for the `ESPAsyncWebServer`. |
 | `wifi` | ESP-IDF | ESP-IDF framework | 0 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF WiFi driver task handling the WiFi MAC/PHY event loop. |
 | `ipc0` / `ipc1` | ESP-IDF | ESP-IDF framework | 0 / 1 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF inter-processor call tasks used for cross-core function calls (e.g. cache flush, flash operations). |
@@ -1598,7 +1598,7 @@ TMR -> CS : on_frame_capture()
 CS -> TASK : vTaskNotifyGiveFromISR()
 activate TASK
 
-TASK -> VC : capture_and_write_frame()
+TASK -> VC : capture_and_dispatch_frame()
 activate VC
 
 VC -> CAM : capture_frame()
@@ -1673,7 +1673,7 @@ end
 deactivate VC
 
 activate TASK
-TASK -> VC : capture_and_write_frame()
+TASK -> VC : capture_and_dispatch_frame()
 activate VC
 VC -> VC : close_clip()
 note right: Appends index,\nthen seeks to offset 0\nto overwrite header
@@ -1747,7 +1747,7 @@ deactivate SS
 
 loop at configured FPS interval
 
-TASK -> VC : capture_and_write_frame()
+TASK -> VC : capture_and_dispatch_frame()
 activate VC
 VC -> CAM : capture_frame()
 CAM --> VC : JPEG frame

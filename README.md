@@ -270,7 +270,7 @@ The firmware records MJPEG video to the SD card in standard AVI containers.
 - Frames are captured from the camera at the configured FPS and written to an AVI file.
 - Clips are automatically rotated when `clip_duration_s` or `max_file_size_mb` is reached.
 - Files are stored in date-stamped directories: `/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`.
-- The complete AVI is buffered in RAM and written to SD in a single flush at clip end, ensuring valid AVI files.
+- Frames are written to SD incrementally, one AVI chunk per frame; at clip end the header is patched in place.
 
 ### LED Feedback During Recording
 

@@ -41,6 +41,15 @@ class MockLogBackend : public hal::LogBackend
             messages.push_back(last_message);
         }
 
+        /** Clears all captured state so the mock can be reused between tests. */
+        void reset()
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            write_call_count = 0;
+            last_message.clear();
+            messages.clear();
+        }
+
     private:
         /** Serializes capture when logs are written from multiple tasks. */
         std::mutex m_mutex;
