@@ -347,9 +347,12 @@ class VideoController
 
         /**
          * @brief Tears down the pipeline if no consumer remains.
-         * @return true if a teardown was performed.
+         *
+         * @param lock Caller-held lifecycle mutex lock; released around
+         *             the bounded scheduler join inside.
+         * @return true if a teardown ran to completion.
          */
-        bool maybe_teardown_if_idle();
+        bool maybe_teardown_if_idle(std::unique_lock<std::mutex>& lock);
 
         /**
          * @brief Ensures the capture loop is running.
@@ -361,12 +364,20 @@ class VideoController
         /**
          * @brief Tears down the capture pipeline completely.
          *
-         * Stops the capture scheduler (bounded join; its final callback
-         * closes any pending clip) and then closes all connected stream
-         * viewers. Called when the last consumer unsubscribes, so
-         * viewers never outlive frame delivery.
+         * Releases the lifecycle mutex, stops the capture scheduler
+         * (bounded join; its final callback closes any pending clip),
+         * then re-acquires the mutex and rechecks the registry: if a
+         * concurrent start registered consumers while the mutex was
+         * released, the teardown aborts, restarts the loop for them,
+         * and defers to a later stop. Otherwise it marks the loop
+         * inactive and closes all connected stream viewers. Called when
+         * the last consumer unsubscribes, so viewers never outlive
+         * frame delivery.
+         *
+         * @param lock Caller-held lifecycle mutex lock.
+         * @return true if the teardown completed.
          */
-        void teardown_capture_pipeline();
+        bool teardown_capture_pipeline(std::unique_lock<std::mutex>& lock);
 
         /**
          * @brief Captures one frame and dispatches it to consumers.
@@ -506,11 +517,13 @@ class VideoController
          * viewer-close decision cannot be reordered behind a concurrent
          * streaming restart. The frame pump path itself stays lock-free
          * over the registry slots; consumers invoking start_recording()
-         * from on_frame() acquire it only for a short critical section
-         * since no holder ever blocks indefinitely on the capture task
-         * (the teardown join is bounded). Held across the bounded
-         * scheduler join inside teardown_capture_pipeline() when called
-         * from a stop path.
+         * from on_frame() acquire it only for a short critical section:
+         * stop paths release this mutex around the bounded scheduler
+         * join inside teardown_capture_pipeline(), so the capture task
+         * can never block behind a joiner (no holder ever blocks
+         * indefinitely on the capture task). After the join, a post-join
+         * registry recheck either honors a concurrent registration or
+         * completes the teardown.
          */
         mutable std::mutex m_lifecycle_mutex;
         std::atomic<bool> m_loop_active{false};        ///< Capture scheduler running

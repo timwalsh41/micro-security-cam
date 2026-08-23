@@ -1088,6 +1088,38 @@ void test_register_rejects_full_and_duplicate()
 }
 
 /**
+ * @brief A rejected registration leaves no reserved slot behind.
+ *
+ * When the capture loop cannot start (scheduler busy), the registry
+ * slot reserved by the failed registration must be released: no
+ * phantom consumer may keep is_capture_active() true or permanently
+ * consume registry capacity.
+ */
+void test_failed_registration_leaves_no_reserved_slot()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.capture_scheduler.start_result = false;
+
+    FakeFrameConsumer consumer;
+    TEST_ASSERT_EQUAL_INT(-1, f.video.register_frame_consumer(&consumer));
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+
+    // The registry has room again once the scheduler recovers.
+    f.capture_scheduler.start_result = true;
+    int id = f.video.register_frame_consumer(&consumer);
+    TEST_ASSERT_TRUE(id >= 0);
+    TEST_ASSERT_TRUE(f.video.is_capture_active());
+
+    f.video.unregister_frame_consumer(id);
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+}
+
+/**
  * @brief A consumer can start recording from within on_frame() —
  *        the phase-6 motion-trigger story with no special casing.
  */
@@ -1763,6 +1795,7 @@ int main()
     // Consumer registry (phase-6 readiness)
     RUN_TEST(test_register_consumer_lifecycle);
     RUN_TEST(test_register_rejects_full_and_duplicate);
+    RUN_TEST(test_failed_registration_leaves_no_reserved_slot);
     RUN_TEST(test_consumer_can_trigger_recording_from_on_frame);
 
     // Registry concurrency (dual-transport contention)

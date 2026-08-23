@@ -109,7 +109,7 @@ bool VideoController::start_recording()
 
 void VideoController::stop_recording()
 {
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+    std::unique_lock<std::mutex> lock(m_lifecycle_mutex);
 
     int id = find_id(&m_record_sink);
     if (id < 0)
@@ -128,7 +128,7 @@ void VideoController::stop_recording()
     // concurrent restart cannot re-enter until the stop is observable.
     m_record_claim.store(false, std::memory_order_release);
 
-    if (!maybe_teardown_if_idle())
+    if (!maybe_teardown_if_idle(lock))
     {
         m_log.info(SUBSYSTEM,
                    "Recording stopped; capture loop serves remaining consumers, "
@@ -245,6 +245,7 @@ int VideoController::register_frame_consumer(IFrameConsumer* consumer)
 
     if (!ensure_loop_running())
     {
+        release_slot(id);
         m_log.warn(SUBSYSTEM, "Consumer registration rejected: scheduler busy");
         return -1;
     }
@@ -255,7 +256,7 @@ int VideoController::register_frame_consumer(IFrameConsumer* consumer)
 
 void VideoController::unregister_frame_consumer(int id)
 {
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+    std::unique_lock<std::mutex> lock(m_lifecycle_mutex);
 
     if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS) ||
         !m_slots[id].used.load(std::memory_order_relaxed))
@@ -264,7 +265,7 @@ void VideoController::unregister_frame_consumer(int id)
     }
 
     detach_consumer(id);
-    maybe_teardown_if_idle();
+    maybe_teardown_if_idle(lock);
 }
 
 // ============================================================
@@ -373,7 +374,7 @@ bool VideoController::start_streaming()
 
 void VideoController::stop_streaming()
 {
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+    std::unique_lock<std::mutex> lock(m_lifecycle_mutex);
 
     int id = find_id(&m_stream_sink);
     if (id < 0)
@@ -391,7 +392,7 @@ void VideoController::stop_streaming()
     // the close is deferred to the next dispatch boundary so it cannot
     // interleave with an in-flight deliver_frame() inside the capture
     // task; full teardown closes the viewers itself after the join.
-    if (!maybe_teardown_if_idle())
+    if (!maybe_teardown_if_idle(lock))
     {
         m_close_viewers_pending.store(true, std::memory_order_release);
     }
@@ -442,17 +443,43 @@ bool VideoController::ensure_loop_running()
     return m_loop_active;
 }
 
-void VideoController::teardown_capture_pipeline()
+bool VideoController::teardown_capture_pipeline(
+    std::unique_lock<std::mutex>& lock)
 {
     // A viewer close queued by stop_streaming() is subsumed by the
     // synchronous close below; clear it first so the scheduler's final
-    // callback does not run a duplicate close.
-    m_close_viewers_pending.store(false, std::memory_order_release);
+    // callback does not run a duplicate close. If this teardown aborts
+    // below, the flag is restored for activities that still need it.
+    const bool was_pending =
+        m_close_viewers_pending.exchange(false, std::memory_order_release);
 
-    // Stop the capture loop first: the scheduler's final callback runs
-    // any pending clip closure, and after the (bounded) join no further
-    // dispatch can race the writer close below.
+    // Release the lifecycle mutex around the scheduler stop/join: a
+    // consumer invoking start_recording() from within on_frame() must
+    // never block behind this joiner, or the bounded join would wait on
+    // a task waiting on us and wedge the scheduler until reboot.
+    lock.unlock();
     m_scheduler.stop();
+    lock.lock();
+
+    if (consumer_count() > 0)
+    {
+        // A concurrent start registered consumers while the mutex was
+        // released: honor it by restoring the loop and deferring this
+        // teardown to a later stop. Under pathological start/stop churn
+        // a teardown attempt may be deferred repeatedly, but it can
+        // never complete under a live registry.
+        m_loop_active = false;
+        if (!ensure_loop_running())
+        {
+            m_log.warn(SUBSYSTEM, "Teardown aborted: loop restart failed");
+        }
+        if (was_pending && !is_streaming())
+        {
+            m_close_viewers_pending.store(true, std::memory_order_release);
+        }
+        return false;
+    }
+
     m_loop_active = false;
 
     // Close all connected viewers: with the loop gone they would
@@ -461,14 +488,15 @@ void VideoController::teardown_capture_pipeline()
     {
         m_stream_service->stop_all_streams();
     }
+    return true;
 }
 
-bool VideoController::maybe_teardown_if_idle()
+bool VideoController::maybe_teardown_if_idle(
+    std::unique_lock<std::mutex>& lock)
 {
     if (consumer_count() == 0 && m_loop_active)
     {
-        teardown_capture_pipeline();
-        return true;
+        return teardown_capture_pipeline(lock);
     }
     return false;
 }

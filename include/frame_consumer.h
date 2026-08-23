@@ -20,7 +20,11 @@
  * inside the capture task itself, which blocks on joining its own task
  * until the bounded join times out and permanently wedges the
  * scheduler. Calling start_recording() from within on_frame() is safe
- * and is the sanctioned way for consumers to trigger recording.
+ * and is the sanctioned way for consumers to trigger recording: the
+ * controller's internal lifecycle lock is never held across the bounded
+ * teardown join, so the capture task can never block behind a joining
+ * stop path and the short critical sections a start waits on always
+ * complete without waiting on the capture task.
  */
 class IFrameConsumer
 {
