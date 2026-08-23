@@ -50,7 +50,10 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 
 bool VideoController::start_recording()
 {
-    if (is_registered(&m_record_sink))
+    // Claim the recording activity up front so concurrent start
+    // attempts arriving from different command tasks cannot both
+    // proceed to mutate clip state and the registry.
+    if (m_record_claim.exchange(true, std::memory_order_acq_rel))
     {
         return false;
     }
@@ -63,13 +66,15 @@ bool VideoController::start_recording()
     if (m_clip_close_pending.load(std::memory_order_relaxed))
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
+        m_record_claim.store(false, std::memory_order_release);
         return false;
     }
 
-    int id = find_free_slot();
+    int id = acquire_free_slot();
     if (id < 0)
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: consumer registry full");
+        m_record_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -78,6 +83,8 @@ bool VideoController::start_recording()
 
     if (!m_avi_writer.is_open())
     {
+        release_slot(id);
+        m_record_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -86,6 +93,8 @@ bool VideoController::start_recording()
     if (!ensure_loop_running())
     {
         close_clip();
+        release_slot(id);
+        m_record_claim.store(false, std::memory_order_release);
         m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
         return false;
     }
@@ -111,6 +120,10 @@ void VideoController::stop_recording()
 
     detach_consumer(id);
 
+    // Release the activity claim only after the sink is detached so a
+    // concurrent restart cannot re-enter until the stop is observable.
+    m_record_claim.store(false, std::memory_order_release);
+
     if (!maybe_teardown_if_idle())
     {
         m_log.info(SUBSYSTEM,
@@ -127,16 +140,27 @@ void VideoController::stop_recording()
 // Frame-consumer registry
 // ============================================================
 
-int VideoController::find_free_slot() const
+int VideoController::acquire_free_slot()
 {
     for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
     {
-        if (!m_slots[i].used.load(std::memory_order_relaxed))
+        bool expected = false;
+        if (m_slots[i].used.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel))
         {
             return static_cast<int>(i);
         }
     }
     return -1;
+}
+
+void VideoController::release_slot(int id)
+{
+    if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS))
+    {
+        return;
+    }
+    m_slots[id].used.store(false, std::memory_order_release);
 }
 
 int VideoController::find_id(const IFrameConsumer* consumer) const
@@ -180,8 +204,11 @@ void VideoController::claim_slot(int id, IFrameConsumer* consumer)
     {
         return;
     }
+    // The slot was reserved via acquire_free_slot(), so the used flag
+    // is already set; binding the pointer after the reservation store
+    // makes the pointer visible to the capture task once it observes
+    // the flag (dispatch skips null consumers in the interim).
     m_slots[id].consumer = consumer;
-    m_slots[id].used.store(true, std::memory_order_release);
 }
 
 void VideoController::detach_consumer(int id)
@@ -203,7 +230,7 @@ int VideoController::register_frame_consumer(IFrameConsumer* consumer)
         return -1;
     }
 
-    int id = find_free_slot();
+    int id = acquire_free_slot();
     if (id < 0)
     {
         m_log.warn(SUBSYSTEM, "Consumer registration rejected: registry full");
@@ -289,16 +316,22 @@ void VideoController::set_stream_service(IStreamService* stream_service)
 
 bool VideoController::start_streaming()
 {
-    if (is_registered(&m_stream_sink))
+    // Claim the streaming activity up front so concurrent start
+    // attempts arriving from different command tasks cannot both
+    // proceed to reserve slots.
+    if (m_stream_claim.exchange(true, std::memory_order_acq_rel))
     {
-        // Preview is already subscribed — treat as a no-op success.
-        return true;
+        // Already active — treat as a no-op success. A start attempt
+        // still in flight on another task is not yet observable and
+        // reports as not active.
+        return is_registered(&m_stream_sink);
     }
 
-    int id = find_free_slot();
+    int id = acquire_free_slot();
     if (id < 0)
     {
         m_log.warn(SUBSYSTEM, "Streaming start rejected: consumer registry full");
+        m_stream_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -306,6 +339,8 @@ bool VideoController::start_streaming()
     // e.g. recording is subscribed).
     if (!ensure_loop_running())
     {
+        release_slot(id);
+        m_stream_claim.store(false, std::memory_order_release);
         m_log.warn(SUBSYSTEM, "Streaming start failed: scheduler busy");
         return false;
     }
@@ -329,6 +364,7 @@ void VideoController::stop_streaming()
     }
 
     detach_consumer(id);
+    m_stream_claim.store(false, std::memory_order_release);
     m_log.info(SUBSYSTEM, "Streaming stopped");
 
     // Viewers exist only while streaming mode is active: close them as

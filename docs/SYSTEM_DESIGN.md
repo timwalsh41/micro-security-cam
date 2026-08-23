@@ -1536,6 +1536,11 @@ Lifecycle rules:
 - `stop_streaming()` unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` within that window cancels the pending close since streaming mode is active again.
 - Clip rotation reopens a fresh clip while recording remains subscribed.
 - `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle.
+- Start/stop commands may arrive from multiple task contexts (the web transport dispatches in the AsyncTCP task, serial commands in the main-loop task). Registry slots are reserved with an atomic compare-and-swap and each activity start is serialized by a per-activity claim, so concurrent starts can fail cleanly with an error response but can never silently lose or duplicate a registration.
+
+Known limitations:
+
+- Clip open/close state (`clip open`, finalization, rotation reopen) is currently mutated from both command-task contexts and the capture task without mutual exclusion. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the capture task's rotation window can in principle abandon a clip with an unpatched AVI header; hardening this lifecycle (single-owner clip operations in the capture task) is scheduled as a dedicated follow-up.
 
 ### Capture Scheduling
 

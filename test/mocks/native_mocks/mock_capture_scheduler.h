@@ -1,6 +1,7 @@
 #ifndef MOCK_CAPTURE_SCHEDULER_H
 #define MOCK_CAPTURE_SCHEDULER_H
 
+#include <atomic>
 #include "capture_scheduler.h"
 
 /**
@@ -45,7 +46,10 @@ class MockCaptureScheduler : public ICaptureScheduler
                    std::function<void()> frame_callback) override
         {
             (void)interval_ms;
-            if (m_started)
+            // Atomically claim the running state so concurrent starts
+            // from multiple tasks cannot both proceed.
+            bool expected = false;
+            if (!m_started.compare_exchange_strong(expected, true))
             {
                 // Already running — do not overwrite the stored callback
                 return false;
@@ -53,17 +57,17 @@ class MockCaptureScheduler : public ICaptureScheduler
             start_call_count++;
             if (!start_result)
             {
+                m_started.store(false);
                 return false;
             }
             m_callback = frame_callback;
-            m_started = true;
             return true;
         }
 
         void stop() override
         {
             stop_call_count++;
-            if (!m_started)
+            if (!m_started.exchange(false))
             {
                 return;
             }
@@ -81,7 +85,7 @@ class MockCaptureScheduler : public ICaptureScheduler
         void on_frame_capture() override
         {
             trigger_count++;
-            if (m_callback)
+            if (m_started.load() && m_callback)
             {
                 m_callback();
             }
@@ -97,7 +101,7 @@ class MockCaptureScheduler : public ICaptureScheduler
 
     private:
         std::function<void()> m_callback;
-        bool m_started{false};
+        std::atomic<bool> m_started{false};
 };
 
 #endif // MOCK_CAPTURE_SCHEDULER_H

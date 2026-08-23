@@ -2,6 +2,7 @@
 #define MOCK_LOG_BACKEND_H
 
 #include "hal/log_backend.h"
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -34,10 +35,15 @@ class MockLogBackend : public hal::LogBackend
 
         void write(const char* line) override
         {
+            std::lock_guard<std::mutex> lock(m_mutex);
             write_call_count++;
             last_message = std::string(line);
             messages.push_back(last_message);
         }
+
+    private:
+        /** Serializes capture when logs are written from multiple tasks. */
+        std::mutex m_mutex;
 };
 
 #endif // MOCK_LOG_BACKEND_H

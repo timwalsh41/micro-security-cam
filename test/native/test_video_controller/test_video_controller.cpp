@@ -7,6 +7,8 @@
 #include "mock_sd_card_hal.h"
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
+#include <atomic>
+#include <thread>
 #include <cstring>
 
 // ============================================================
@@ -1424,6 +1426,89 @@ void test_capture_photo_gating_across_modes()
 }
 
 // ============================================================
+// Concurrent start contention
+// ============================================================
+
+/**
+ * @brief Concurrent start attempts can never silently lose or
+ *        duplicate a registration.
+ *
+ * Contends START_RECORDING (main thread, standing in for the serial
+ * transport) against several concurrent START_STREAM attempts (worker
+ * threads, standing in for the web transport) and asserts the registry
+ * invariants: every command that reports success leaves its activity
+ * observable via the status queries, each frame trigger is delivered
+ * exactly once to the stream sink, and recording accumulates exactly
+ * one frame per trigger (duplicate sink registration would double
+ * these observables).
+ */
+void test_concurrent_starts_never_lose_registration()
+{
+    constexpr int ROUNDS = 150;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        TestFixture f;
+        TrackingSink sink;
+        f.video.set_stream_service(&sink);
+        f.setup_fake_frame();
+
+        std::atomic<bool> go{false};
+        std::atomic<int> stream_started{0};
+        std::atomic<int> record_started{0};
+
+        auto stream_contender = [&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            if (f.video.start_streaming())
+            {
+                stream_started.fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+
+        std::thread s1(stream_contender);
+        std::thread s2(stream_contender);
+        std::thread s3(stream_contender);
+
+        // Give the contenders time to reach the barrier before opening it.
+        for (int i = 0; i < 64; i++)
+        {
+            std::this_thread::yield();
+        }
+        go.store(true, std::memory_order_release);
+
+        // Main thread contends as the second command transport.
+        if (f.video.start_recording())
+        {
+            record_started.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        s1.join();
+        s2.join();
+        s3.join();
+
+        // Every successful start leaves its activity observable.
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(record_started.load() > 0),
+                              static_cast<int>(f.video.is_recording()));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(stream_started.load() > 0),
+                              static_cast<int>(f.video.is_streaming()));
+
+        // Exactly one registration per successful activity.
+        const uint32_t frames_before = f.video.frames_recorded();
+        f.capture_one_frame();
+
+        TEST_ASSERT_EQUAL_INT(f.video.is_streaming() ? 1 : 0,
+                              sink.deliveries);
+        TEST_ASSERT_EQUAL_UINT32(
+            frames_before + (f.video.is_recording() ? 1u : 0u),
+            f.video.frames_recorded());
+    }
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -1510,6 +1595,9 @@ int main()
     RUN_TEST(test_register_consumer_lifecycle);
     RUN_TEST(test_register_rejects_full_and_duplicate);
     RUN_TEST(test_consumer_can_trigger_recording_from_on_frame);
+
+    // Registry concurrency (dual-transport contention)
+    RUN_TEST(test_concurrent_starts_never_lose_registration);
 
     return UNITY_END();
 }

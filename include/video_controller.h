@@ -294,7 +294,11 @@ class VideoController
          */
         struct ConsumerSlot
         {
-            std::atomic<bool> used{false}; ///< Slot occupied flag (read by the capture task)
+            /// Slot flag: compare-and-swap reserved by registrars before
+            /// the consumer pointer is bound; polled by the capture task
+            /// (a reserved-but-unbound slot reads as a null consumer and
+            /// is skipped by dispatch).
+            std::atomic<bool> used{false};
             IFrameConsumer* consumer{nullptr};
         };
 
@@ -304,9 +308,20 @@ class VideoController
         bool is_registered(const IFrameConsumer* consumer) const;
 
         /**
-         * @brief Returns a free slot id, or -1 if the registry is full.
+         * @brief Atomically reserves a free slot.
+         *
+         * Claims the slot's used flag with a compare-and-swap so two
+         * concurrent registrars can never reserve the same slot.
+         *
+         * @return Reserved slot id, or -1 if the registry is full.
          */
-        int find_free_slot() const;
+        int acquire_free_slot();
+
+        /**
+         * @brief Releases a reserved slot whose registration failed
+         *        before the consumer was bound.
+         */
+        void release_slot(int id);
 
         /**
          * @brief Returns the slot id the consumer is registered under,
@@ -456,8 +471,9 @@ class VideoController
         // Owned components
         AviWriter m_avi_writer;
 
-        // Frame-consumer registry (main-loop context mutates; the
-        // capture task reads slots between dispatches)
+        // Frame-consumer registry (command-task contexts mutate via
+        // compare-and-swap slot reservations; the capture task reads
+        // slots between dispatches)
         ConsumerSlot m_slots[MAX_FRAME_CONSUMERS]{};
 
         // Built-in consumers (one instance each)
@@ -467,10 +483,16 @@ class VideoController
         // State
         std::atomic<bool> m_stop_clip{false};
         std::atomic<bool> m_close_viewers_pending{false}; ///< Viewer close deferred to the next dispatch boundary
+        // Per-activity claims: exchanged at entry of start_recording() /
+        // start_streaming() so concurrent starts arriving from different
+        // command tasks are mutually exclusive; held while the activity
+        // is subscribed and released when it stops.
+        std::atomic<bool> m_record_claim{false};
+        std::atomic<bool> m_stream_claim{false};
         // True while an unfinalized clip is open; owned exclusively by
         // the capture task (set by open_clip(), cleared by close_clip()).
         std::atomic<bool> m_clip_close_pending{false};
-        bool m_loop_active{false};                     ///< Capture scheduler running
+        std::atomic<bool> m_loop_active{false};        ///< Capture scheduler running
         hal::millis_t m_frame_interval_ms{100};
         std::atomic<uint32_t> m_frames_recorded{0};
         std::atomic<uint32_t> m_file_size{0};
