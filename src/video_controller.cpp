@@ -312,6 +312,10 @@ bool VideoController::start_streaming()
 
     claim_slot(id, &m_stream_sink);
 
+    // A deferred viewer close from a stop/restart within one frame
+    // period is obsolete: streaming mode is active again.
+    m_close_viewers_pending.store(false, std::memory_order_release);
+
     m_log.info(SUBSYSTEM, "Streaming started");
     return true;
 }
@@ -329,11 +333,13 @@ void VideoController::stop_streaming()
 
     // Viewers exist only while streaming mode is active: close them as
     // soon as the StreamSink detaches, even when other consumers keep
-    // the capture loop running for recording. Full teardown closes the
-    // viewers itself.
-    if (!maybe_teardown_if_idle() && m_stream_service != nullptr)
+    // the capture loop running for recording. When the loop survives,
+    // the close is deferred to the next dispatch boundary so it cannot
+    // interleave with an in-flight deliver_frame() inside the capture
+    // task; full teardown closes the viewers itself after the join.
+    if (!maybe_teardown_if_idle())
     {
-        m_stream_service->stop_all_streams();
+        m_close_viewers_pending.store(true, std::memory_order_release);
     }
 }
 
@@ -384,6 +390,11 @@ bool VideoController::ensure_loop_running()
 
 void VideoController::teardown_capture_pipeline()
 {
+    // A viewer close queued by stop_streaming() is subsumed by the
+    // synchronous close below; clear it first so the scheduler's final
+    // callback does not run a duplicate close.
+    m_close_viewers_pending.store(false, std::memory_order_release);
+
     // Stop the capture loop first: the scheduler's final callback runs
     // any pending clip closure, and after the (bounded) join no further
     // dispatch can race the writer close below.
@@ -546,6 +557,15 @@ void VideoController::capture_and_dispatch_frame()
     }
 
     m_camera.release_frame();
+
+    // Drain a viewer close deferred by stop_streaming() while other
+    // consumers kept the loop alive: running here serializes the close
+    // with frame delivery inside the capture task.
+    if (m_close_viewers_pending.exchange(false, std::memory_order_relaxed) &&
+        m_stream_service != nullptr)
+    {
+        m_stream_service->stop_all_streams();
+    }
 
     handle_clip_closure();
 }

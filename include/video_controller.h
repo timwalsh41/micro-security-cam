@@ -209,10 +209,13 @@ class VideoController
         /**
          * @brief Stops live preview.
          *
-         * Unsubscribes the streaming consumer. During recording the
-         * capture loop keeps serving the recording; otherwise the
-         * capture pipeline is torn down and all connected stream
-         * viewers are closed. No-op if streaming is not active.
+         * Unsubscribes the streaming consumer. Connected stream viewers
+         * are closed whenever streaming turns off: when other consumers
+         * keep the capture loop running, the close is deferred to the
+         * next dispatch boundary so it cannot race an in-flight frame
+         * delivery inside the capture task; otherwise the capture
+         * pipeline is torn down (bounded) and viewers are closed after
+         * the join. No-op if streaming is not active.
          */
         void stop_streaming();
 
@@ -354,9 +357,10 @@ class VideoController
          *
          * Called by the ICaptureScheduler callback on each frame trigger.
          * Captures a frame, dispatches it to every subscribed consumer,
-         * releases the frame buffer, and processes any pending clip
-         * closure. Also serves as the finalization pass for a clip whose
-         * recording consumer detached before closure.
+         * releases the frame buffer, then drains any deferred viewer
+         * close and pending clip closure. Also serves as the
+         * finalization pass for a clip whose recording consumer detached
+         * before closure.
          */
         void capture_and_dispatch_frame();
 
@@ -452,6 +456,7 @@ class VideoController
 
         // State
         std::atomic<bool> m_stop_clip{false};
+        std::atomic<bool> m_close_viewers_pending{false}; ///< Viewer close deferred to the next dispatch boundary
         std::atomic<bool> m_clip_close_pending{false}; ///< Set until the capture task finalizes a stopped clip
         bool m_loop_active{false};                     ///< Capture scheduler running
         hal::millis_t m_frame_interval_ms{100};

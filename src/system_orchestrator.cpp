@@ -196,7 +196,7 @@ CommandResult SystemOrchestrator::handle_take_photo(
 {
     // Photo capture needs exclusive camera/frame-buffer access; reject
     // while any consumer keeps the capture loop running.
-    if (m_video.is_recording() || m_video.is_streaming())
+    if (m_video.is_capture_active())
     {
         m_log.warn(SUBSYSTEM, "Take photo rejected — capture loop active");
         return CommandResult::INVALID_STATE;

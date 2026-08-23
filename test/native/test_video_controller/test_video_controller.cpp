@@ -1233,7 +1233,9 @@ void test_restart_rejected_while_clip_close_pending()
 }
 
 /**
- * @brief stop_streaming() during REC_AND_PREVIEW keeps recording alive.
+ * @brief stop_streaming() during REC_AND_PREVIEW keeps recording alive
+ *        and closes all viewers via the deferred dispatch-boundary
+ *        path (viewers exist only while streaming mode is active).
  */
 void test_stop_streaming_during_recording_keeps_recording()
 {
@@ -1254,15 +1256,65 @@ void test_stop_streaming_during_recording_keeps_recording()
     // Recording continues on the same capture loop.
     TEST_ASSERT_TRUE(f.video.is_recording());
     TEST_ASSERT_FALSE(f.video.is_streaming());
-    TEST_ASSERT_TRUE(f.video.is_recording());
     TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+    // Viewer close is deferred to the next dispatch boundary — it has
+    // not run yet and must not have stopped the scheduler.
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
 
     uint32_t writes_before = f.sd_hal.write_call_count;
     f.capture_one_frame();
+    // Deferred viewer close ran inside the still-running capture loop.
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(sink.loop_running_at_teardown);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+    // Recording persisted through STOP_STREAM and the frame was written.
+    TEST_ASSERT_TRUE(f.video.is_recording());
     TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
     TEST_ASSERT_TRUE(f.sd_hal.write_call_count > writes_before);  // AVI write happened
 
     f.video.stop_recording();
+}
+
+/**
+ * @brief A deferred viewer close does not leak into a later session:
+ *        teardown clears the pending flag, so a fresh streaming session
+ *        started afterwards keeps its new viewers connected.
+ */
+void test_deferred_viewer_close_does_not_leak_into_new_session()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    // Record + stream, then stop streaming while recording continues:
+    // the viewer close is deferred to the capture task boundary.
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+    f.video.stop_streaming();
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+
+    // Recording stops first: full teardown closes the viewers itself
+    // and consumes the pending close.
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_FALSE(sink.loop_running_at_teardown);
+
+    // A brand-new preview session must keep its viewers connected.
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);  // initial frame + new-session frame
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    f.video.stop_streaming();
 }
 
 /**
@@ -1406,6 +1458,7 @@ int main()
     RUN_TEST(test_stop_recording_during_streaming_keeps_preview);
     RUN_TEST(test_restart_rejected_while_clip_close_pending);
     RUN_TEST(test_stop_streaming_during_recording_keeps_recording);
+    RUN_TEST(test_deferred_viewer_close_does_not_leak_into_new_session);
     RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
     RUN_TEST(test_capture_photo_gating_across_modes);
 

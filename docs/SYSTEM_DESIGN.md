@@ -944,7 +944,7 @@ Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-re
 | `init(max_streams)` | Sets the maximum concurrent stream slots (clamped to `MAX_STREAMS = 8`). |
 | `start_stream(writer)` | Takes ownership of the writer (`std::unique_ptr<hal::StreamWriter>`), registers its disconnect callback, writes the HTTP 200 + multipart preamble, and returns the slot index (`-1` if full). |
 | `stop_stream(slot)` | Writes the closing boundary, closes and deletes the writer, and frees the slot. |
-| `stop_all_streams()` | Stops every active stream via `stop_stream()`. Invoked by `VideoController` whenever streaming mode turns off and when the capture pipeline is torn down, so viewers never outlive frame delivery. |
+| `stop_all_streams()` | Stops every active stream via `stop_stream()`. Invoked by `VideoController` whenever streaming mode turns off and when the capture pipeline is torn down, so viewers never outlive frame delivery. During recording, the close is executed by the capture task at the next dispatch boundary so it cannot interleave with an in-flight `deliver_frame()`. |
 | `deliver_frame(data, len)` | Writes a multipart JPEG part (`Content-Type: image/jpeg`, `Content-Length`, frame bytes) to every active slot. |
 | `active_slot_count()` | Returns the number of active viewers. |
 
@@ -960,7 +960,7 @@ Streaming leverages the single capture loop owned by `VideoController`, where re
 - **streaming only** — capture loop on at `[video]` FPS; frames delivered to streams only.
 - **recording** — capture loop on; frames written to SD, **and** delivered to streams when streaming mode is active (`is_streaming()`).
 
-The `/stream` endpoint requires streaming mode to be explicitly active (an explicit `START_STREAM`) before a viewer can connect. Viewers therefore exist only while streaming mode is active, which means they are closed whenever streaming turns off (`STOP_STREAM`), not only when the capture pipeline tears down.
+The `/stream` endpoint requires streaming mode to be explicitly active (an explicit `START_STREAM`) before a viewer can connect. Viewers therefore exist only while streaming mode is active, which means they are closed whenever streaming turns off (`STOP_STREAM`), not only when the capture pipeline tears down. While recording keeps the capture loop running, the close is deferred to the next frame dispatch so it never races an in-flight delivery; it completes within one frame period.
 
 ### LoggingService
 
@@ -1353,7 +1353,7 @@ Every command returns a `CommandResult` enum value:
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` while the capture loop is running (either activity), `INTERNAL_ERROR` if capture or write fails. |
 | `0x13` | `START_STREAM` | None | None | Begins live preview: marks streaming active and starts the capture loop if not already running (reused during recording). No-op success if already active. |
-| `0x14` | `STOP_STREAM` | None | None | Clears streaming mode and closes all connected viewers immediately, even when recording continues; when no other consumer remains the capture pipeline is torn down as well. Idempotent no-op if not active. |
+| `0x14` | `STOP_STREAM` | None | None | Clears streaming mode; all connected viewers are closed (within one frame period when recording continues), and when no other consumer remains the capture pipeline is torn down as well. Idempotent no-op if not active. |
 | `0x15` | `LIST_STREAMS` | None | JSON string: `{"active_streams":uint8}` | Returns the number of currently connected stream viewers. |
 | `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
 | `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
@@ -1533,7 +1533,7 @@ Lifecycle rules:
 
 - `start_recording()` / `start_streaming()` subscribe their consumer and start the loop if it is not already running (reused, never duplicated).
 - `stop_recording()` unsubscribes immediately so status queries observe the stop right away and requests clip closure. When other consumers keep the loop running the clip is finalized by the next frame callback (bounded by one frame period); `start_recording()` is rejected until finalization completes (`clip close pending`). When it was the last subscriber the pipeline is torn down synchronously (bounded), whose final callback closes the clip and closes all connected stream viewers.
-- `stop_streaming()` unsubscribes and closes all connected stream viewers immediately, even when recording continues (viewers exist only while streaming mode is active); during recording the loop keeps serving the recording, otherwise the last-subscriber teardown runs.
+- `stop_streaming()` unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` within that window cancels the pending close since streaming mode is active again.
 - Clip rotation reopens a fresh clip while recording remains subscribed.
 - `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle.
 
@@ -1762,9 +1762,13 @@ end
 
 CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
 ORCH -> VC : stop_streaming()
+VC -> CS : stop() (only when no consumer remains)
+VC -> VC : queue deferred viewer close
+note over VC,SS: with recording active, the close runs in the
+capture task at the next frame dispatch (one frame
+period bound); full teardown closes viewers after the join
 VC -> SS : stop_all_streams() (viewers closed,
 even when recording continues)
-VC -> CS : stop() (only when no consumer remains)
 VC -> VC : streaming = false
 ORCH --> CLIENT : {"result":"ok"}
 

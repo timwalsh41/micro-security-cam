@@ -615,8 +615,9 @@ void test_stop_stream_closes_active_streams()
  * @brief STOP_STREAM closes viewers even while recording continues.
  *
  * Viewers exist only while streaming mode is active: turning streaming
- * off closes all connected streams immediately, while the recording
- * subscription persists and keeps writing clips to SD.
+ * off closes all connected streams within one frame period via the
+ * capture-task dispatch boundary (no scheduler stop/restart), while the
+ * recording subscription persists and keeps writing clips to SD.
  */
 void test_stop_stream_closes_viewers_while_recording()
 {
@@ -640,8 +641,15 @@ void test_stop_stream_closes_viewers_while_recording()
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
-    // Streaming off closes the viewer...
     TEST_ASSERT_FALSE(f.video.is_streaming());
+    // The close is deferred to the next dispatch boundary; the capture
+    // loop keeps running for the surviving recording.
+    TEST_ASSERT_TRUE(f.video.is_capture_active());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+
+    // Next frame dispatch executes the close...
+    f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
     TEST_ASSERT_EQUAL_INT(1, close_count);
     // ...while recording persists unchanged.
