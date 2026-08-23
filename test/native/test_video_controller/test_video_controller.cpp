@@ -1477,6 +1477,9 @@ struct GatedStopScheduler : public ICaptureScheduler
     std::atomic<bool> stop_entered{false};
     std::atomic<bool> release_stop{false};
 
+    /** Number of times stop() has been entered. */
+    int stop_call_count{0};
+
     bool start(uint32_t /*interval_ms*/,
                std::function<void()> frame_callback) override
     {
@@ -1491,6 +1494,7 @@ struct GatedStopScheduler : public ICaptureScheduler
 
     void stop() override
     {
+        stop_call_count++;
         if (!started.exchange(false))
         {
             return;
@@ -1629,6 +1633,93 @@ void test_start_racing_last_consumer_teardown_never_dead_registers()
 // ============================================================
 // Concurrent start contention
 // ============================================================
+
+/**
+ * @brief Teardown entry is single-flight across command transports.
+ *
+ * Reproduces the cross-transport interleaving where STOP_STREAM's
+ * teardown join is held open while a second transport runs a complete
+ * START_STREAM + STOP_STREAM pair into the dying loop. The second
+ * stop must not enter the scheduler a second time (the platform
+ * scheduler's stop() is not reentrant); instead it defers to the
+ * in-flight owner, whose post-join recheck observes the emptied
+ * registry and completes the teardown exactly once.
+ */
+void test_concurrent_teardown_is_single_flight()
+{
+    MockCameraHal camera_hal;
+    MockSdCardHal sd_hal;
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger(log_backend, time);
+    SdController sd_controller(time, sd_hal);
+    CameraController camera_ctrl(camera_hal);
+    GatedStopScheduler scheduler;
+    VideoController video(camera_ctrl, sd_controller, time, logger,
+                          scheduler);
+
+    camera_hal.init_result = hal::CameraInitResult::SUCCESS;
+    camera_ctrl.init();
+
+    ConfigData::VideoConfig config;
+    config.fps = TEST_FPS;
+    strcpy(config.resolution, "VGA");
+    config.clip_duration_s = TEST_CLIP_DURATION_S;
+    config.max_file_size_mb = 0;
+    config.jpeg_quality = 10;
+    video.init(config, TEST_WIDTH, TEST_HEIGHT);
+
+    TrackingSink sink;
+    video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(video.start_streaming());
+
+    std::atomic<bool> go{false};
+    std::thread stopper([&]()
+    {
+        while (!go.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        video.stop_streaming();
+    });
+
+    for (int i = 0; i < 64; i++)
+    {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+
+    // Wait until the first stopper owns the gated teardown join (its
+    // lifecycle mutex is released while blocked there).
+    constexpr long MAX_SPIN = 10000000L;
+    long spins = 0;
+    while (!scheduler.stop_entered.load(std::memory_order_acquire) &&
+           spins++ < MAX_SPIN)
+    {
+        std::this_thread::yield();
+    }
+
+    // Second transport runs a full start+stop pair into the dying loop
+    // while the first teardown still owns the join window.
+    TEST_ASSERT_TRUE(video.start_streaming());
+    video.stop_streaming();
+
+    // The second stop must never have driven a second scheduler stop.
+    TEST_ASSERT_EQUAL_INT(1, scheduler.stop_call_count);
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+
+    // Release the join: the owning teardown's post-join recheck sees an
+    // empty registry and completes the teardown exactly once.
+    scheduler.release_stop.store(true, std::memory_order_release);
+    stopper.join();
+
+    TEST_ASSERT_FALSE(video.is_streaming());
+    TEST_ASSERT_FALSE(video.is_recording());
+    TEST_ASSERT_FALSE(scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, scheduler.stop_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+}
 
 /**
  * @brief Concurrent start attempts can never silently lose or
@@ -1801,6 +1892,7 @@ int main()
     // Registry concurrency (dual-transport contention)
     RUN_TEST(test_concurrent_starts_never_lose_registration);
     RUN_TEST(test_start_racing_last_consumer_teardown_never_dead_registers);
+    RUN_TEST(test_concurrent_teardown_is_single_flight);
 
     return UNITY_END();
 }

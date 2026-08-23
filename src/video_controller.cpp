@@ -394,7 +394,13 @@ void VideoController::stop_streaming()
     // task; full teardown closes the viewers itself after the join.
     if (!maybe_teardown_if_idle(lock))
     {
-        m_close_viewers_pending.store(true, std::memory_order_release);
+        // Only defer when the loop survives for other consumers; a dead
+        // or already-torn-down loop has no dispatch boundary to drain
+        // the flag, and full teardown closes the viewers itself.
+        if (m_loop_active.load(std::memory_order_acquire))
+        {
+            m_close_viewers_pending.store(true, std::memory_order_release);
+        }
     }
 }
 
@@ -446,6 +452,16 @@ bool VideoController::ensure_loop_running()
 bool VideoController::teardown_capture_pipeline(
     std::unique_lock<std::mutex>& lock)
 {
+    // Single-flight entry: the platform scheduler's stop() is not
+    // reentrant-safe, so only one caller at a time may drive the join.
+    // A caller arriving while another teardown owns the join window
+    // skips its own stop; the owner's post-join recheck below observes
+    // the final registry state and completes or defers correctly.
+    if (m_teardown_in_progress.exchange(true, std::memory_order_acq_rel))
+    {
+        return false;
+    }
+
     // A viewer close queued by stop_streaming() is subsumed by the
     // synchronous close below; clear it first so the scheduler's final
     // callback does not run a duplicate close. If this teardown aborts
@@ -477,6 +493,7 @@ bool VideoController::teardown_capture_pipeline(
         {
             m_close_viewers_pending.store(true, std::memory_order_release);
         }
+        m_teardown_in_progress.store(false, std::memory_order_release);
         return false;
     }
 
@@ -488,6 +505,12 @@ bool VideoController::teardown_capture_pipeline(
     {
         m_stream_service->stop_all_streams();
     }
+
+    // Any deferred viewer close requested while the mutex was released
+    // during the join is subsumed by the synchronous close above.
+    m_close_viewers_pending.store(false, std::memory_order_release);
+
+    m_teardown_in_progress.store(false, std::memory_order_release);
     return true;
 }
 

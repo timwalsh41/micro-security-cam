@@ -350,7 +350,9 @@ class VideoController
          *
          * @param lock Caller-held lifecycle mutex lock; released around
          *             the bounded scheduler join inside.
-         * @return true if a teardown ran to completion.
+         * @return true if a teardown ran to completion; false when the
+         *         registry is not idle or another teardown already owns
+         *         the scheduler join (single-flight).
          */
         bool maybe_teardown_if_idle(std::unique_lock<std::mutex>& lock);
 
@@ -374,8 +376,15 @@ class VideoController
          * the last consumer unsubscribes, so viewers never outlive
          * frame delivery.
          *
+         * Teardown entry is single-flight: the platform scheduler's
+         * stop() is not reentrant, so a second caller arriving while
+         * another teardown owns the join window skips its own stop and
+         * reports false; the owner's post-join recheck observes the
+         * final registry state and completes or defers correctly.
+         *
          * @param lock Caller-held lifecycle mutex lock.
-         * @return true if the teardown completed.
+         * @return true if the teardown completed; false if it aborted,
+         *         or if another teardown already owns the join.
          */
         bool teardown_capture_pipeline(std::unique_lock<std::mutex>& lock);
 
@@ -527,6 +536,13 @@ class VideoController
          */
         mutable std::mutex m_lifecycle_mutex;
         std::atomic<bool> m_loop_active{false};        ///< Capture scheduler running
+        // Exchange-based single-flight claim guarding the scheduler
+        // join inside teardown_capture_pipeline(): the platform
+        // scheduler's stop() is not reentrant, so only one teardown at
+        // a time may drive it; losers skip their own stop and defer to
+        // the owner's post-join recheck. Command-task contexts only;
+        // always cleared on every teardown exit path.
+        std::atomic<bool> m_teardown_in_progress{false};
         hal::millis_t m_frame_interval_ms{100};
         std::atomic<uint32_t> m_frames_recorded{0};
         std::atomic<uint32_t> m_file_size{0};
