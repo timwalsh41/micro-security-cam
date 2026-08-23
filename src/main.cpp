@@ -29,9 +29,13 @@
 
 using hal::millis_t;
 
+void cs_signal(peripherals::SdSignal signal);
+
 namespace constants
 {
+    constexpr millis_t MAIN_LOOP_TIME_US = 250;
     constexpr millis_t LED_TICK_TIME_MS = 5;
+    constexpr millis_t LOG_HEARTBEAT_TIME_MS = 30000;
 }
 
 // --- HAL implementations ---
@@ -46,6 +50,32 @@ hal::TimerHalImpl timer_hal;
 // --- FreeRTOS mutex for shared GPIO 21 (LED / SD CS) ---
 SemaphoreHandle_t sd_active_mutex = nullptr;
 
+// --- Service-layer objects ---
+SdController sd_controller{real_time, sd_hal, cs_signal};
+LedStateMachine led_sm{real_time};
+CameraController camera_ctrl{camera_hal};
+CaptureSchedulerEsp32 capture_scheduler{timer_hal};
+VideoController video_controller{camera_ctrl, sd_controller, real_time, logger, capture_scheduler};
+PlatformInitializer platform_init;
+hal::WifiHalImpl wifi_hal_impl;
+hal::WebServerHalImpl web_server_hal_impl;
+WifiService wifi_service{wifi_hal_impl, real_time, logger};
+CommandHandler command_handler{logger};
+WebCommandTransport web_transport{web_server_hal_impl, command_handler};
+SerialCommandTransport serial_transport{serial_hal, real_time};
+WebServerService web_server_service{web_server_hal_impl, logger};
+ConfigService config_service{logger};
+StreamService stream_service{logger};
+SystemOrchestrator system_orchestrator{
+    video_controller, camera_ctrl, command_handler,
+    real_time, config_service, logger,
+    stream_service, web_server_hal_impl};
+
+
+// --- Global state variables ---
+millis_t last_log_heartbeat_time_ms = 0;
+
+// --- Free helper functions ---
 /**
  * @brief CS signal callback for SdController sync I/O.
  *
@@ -71,29 +101,6 @@ void cs_signal(peripherals::SdSignal signal)
         xSemaphoreGive(sd_active_mutex);
     }
 }
-
-// --- Service-layer objects ---
-SdController sd_controller{real_time, sd_hal, cs_signal};
-LedStateMachine led_sm{real_time};
-CameraController camera_ctrl{camera_hal};
-CaptureSchedulerEsp32 capture_scheduler{timer_hal};
-VideoController video_controller{camera_ctrl, sd_controller, real_time, logger, capture_scheduler};
-PlatformInitializer platform_init;
-hal::WifiHalImpl wifi_hal_impl;
-hal::WebServerHalImpl web_server_hal_impl;
-WifiService wifi_service{wifi_hal_impl, real_time, logger};
-CommandHandler command_handler{logger};
-WebCommandTransport web_transport{web_server_hal_impl, command_handler};
-SerialCommandTransport serial_transport{serial_hal, real_time};
-WebServerService web_server_service{web_server_hal_impl, logger};
-ConfigService config_service{logger};
-StreamService stream_service{logger};
-SystemOrchestrator system_orchestrator{
-    video_controller, camera_ctrl, command_handler,
-    real_time, config_service, logger,
-    stream_service, web_server_hal_impl};
-
-millis_t last_led_tick_time_ms = 0;
 
 /**
  * @brief Updates the LED pin based on LedStateMachine output.
@@ -225,9 +232,12 @@ void loop()
 
     // Periodic heartbeat log
     hal::millis_t now = real_time.now();
-    if (now % 30000 < constants::LED_TICK_TIME_MS)
+    if (real_time.elapsed_ms(last_log_heartbeat_time_ms, real_time.now()) >= constants::LOG_HEARTBEAT_TIME_MS)
     {
-        logger.info("MAIN", "Looping...");
-        real_time.delay_ms(2);
+        logger.info("MAIN", "Core temperature %.2f", temperatureRead());
+        last_log_heartbeat_time_ms = real_time.now();
+        last_log_heartbeat_time_ms -= last_log_heartbeat_time_ms % constants::LOG_HEARTBEAT_TIME_MS;
     }
+
+    real_time.delay_us(constants::MAIN_LOOP_TIME_US);
 }
