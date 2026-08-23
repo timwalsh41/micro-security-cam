@@ -48,9 +48,10 @@ class IStreamService
          * @brief Stops and closes all active streams.
          *
          * Writes the closing multipart boundary and closes each active
-         * stream so connected clients terminate cleanly. Used when the
-         * capture pipeline is torn down and no further frames will be
-         * delivered to viewers.
+         * stream so connected clients terminate cleanly. Invoked by
+         * `VideoController` whenever streaming mode turns off and when
+         * the capture pipeline is torn down, so viewers never outlive
+         * frame delivery.
          */
         virtual void stop_all_streams() = 0;
 };
@@ -122,8 +123,9 @@ class StreamService : public IStreamService
          * @brief Stops and closes all active streams.
          *
          * Iterates every slot and closes any active stream via
-         * stop_stream(). Used when the capture loop is being torn
-         * down (e.g. STOP_STREAM) so connected viewers are closed
+         * stop_stream(). Invoked by `VideoController` whenever
+         * streaming mode turns off (e.g. STOP_STREAM) and when the
+         * capture loop is torn down, so connected viewers are closed
          * and their writers freed rather than left occupying slots.
          */
         void stop_all_streams();

@@ -327,8 +327,14 @@ void VideoController::stop_streaming()
     detach_consumer(id);
     m_log.info(SUBSYSTEM, "Streaming stopped");
 
-    // Last consumer gone: tear down the loop and close all viewers.
-    maybe_teardown_if_idle();
+    // Viewers exist only while streaming mode is active: close them as
+    // soon as the StreamSink detaches, even when other consumers keep
+    // the capture loop running for recording. Full teardown closes the
+    // viewers itself.
+    if (!maybe_teardown_if_idle() && m_stream_service != nullptr)
+    {
+        m_stream_service->stop_all_streams();
+    }
 }
 
 // ============================================================

@@ -13,6 +13,14 @@
  * registering an IFrameConsumer implementation and receive every
  * captured JPEG frame while subscribed. on_frame() runs in the
  * capture task context and must not block indefinitely.
+ *
+ * on_frame() must never call unregister_frame_consumer(),
+ * stop_recording(), or stop_streaming() when the caller could be the
+ * last registered consumer: that tears down the capture scheduler from
+ * inside the capture task itself, which blocks on joining its own task
+ * until the bounded join times out and permanently wedges the
+ * scheduler. Calling start_recording() from within on_frame() is safe
+ * and is the sanctioned way for consumers to trigger recording.
  */
 class IFrameConsumer
 {

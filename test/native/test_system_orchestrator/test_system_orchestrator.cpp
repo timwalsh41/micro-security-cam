@@ -612,24 +612,27 @@ void test_stop_stream_closes_active_streams()
 }
 
 /**
- * @brief STOP_STREAM does not close streams while RECORDING.
+ * @brief STOP_STREAM closes viewers even while recording continues.
  *
- * stop_streaming() is a no-op during RECORDING (the capture loop keeps
- * delivering frames to viewers), so connected streams must stay open.
+ * Viewers exist only while streaming mode is active: turning streaming
+ * off closes all connected streams immediately, while the recording
+ * subscription persists and keeps writing clips to SD.
  */
-void test_stop_stream_keeps_streams_while_recording()
+void test_stop_stream_closes_viewers_while_recording()
 {
     TestFixture f;
     f.setup_fake_frame();
 
-    // Recording delivers frames to streams too; connect a viewer.
-    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
-    TEST_ASSERT_TRUE(f.video.is_recording());
+    // Streaming starts, a viewer connects, then recording begins on the
+    // shared capture loop.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
     auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
     int close_count = 0;
     w1->close_counter = &close_count;
     f.stream_service.start_stream(std::move(w1));
     TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    TEST_ASSERT_TRUE(f.video.is_recording());
 
     CommandResult result = dispatch_cmd(
         f.cmd_handler, CommandCode::STOP_STREAM);
@@ -637,10 +640,12 @@ void test_stop_stream_keeps_streams_while_recording()
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
-    // Still recording; the viewer's stream must remain open.
+    // Streaming off closes the viewer...
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
+    TEST_ASSERT_EQUAL_INT(1, close_count);
+    // ...while recording persists unchanged.
     TEST_ASSERT_TRUE(f.video.is_recording());
-    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
-    TEST_ASSERT_EQUAL_INT(0, close_count);
 }
 
 /**
@@ -736,7 +741,7 @@ int main()
     RUN_TEST(test_start_stream_delegates);
     RUN_TEST(test_stop_stream_delegates);
     RUN_TEST(test_stop_stream_closes_active_streams);
-    RUN_TEST(test_stop_stream_keeps_streams_while_recording);
+    RUN_TEST(test_stop_stream_closes_viewers_while_recording);
     RUN_TEST(test_list_streams_returns_count);
     RUN_TEST(test_take_photo_rejected_during_streaming_only);
     RUN_TEST(test_stream_route_registered);

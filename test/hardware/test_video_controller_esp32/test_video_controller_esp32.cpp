@@ -209,10 +209,12 @@ void test_recorded_clip_is_valid_avi()
     uint32_t t0 = f.time.unix_now();
     TEST_ASSERT_TRUE(f.video.start_recording());
     vTaskDelay(pdMS_TO_TICKS(RECORD_DURATION_MS));
+    const uint32_t recorded = f.video.frames_recorded();
     f.video.stop_recording();
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
-    TEST_ASSERT_GREATER_OR_EQUAL(3u, f.video.frames_recorded());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_GREATER_OR_EQUAL(3u, recorded);
 
     // Read the clip back
     char clip_path[64];
