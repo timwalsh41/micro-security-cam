@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <mutex>
 #include "camera_controller.h"
 #include "sd_controller.h"
 #include "avi_writer.h"
@@ -492,6 +493,26 @@ class VideoController
         // True while an unfinalized clip is open; owned exclusively by
         // the capture task (set by open_clip(), cleared by close_clip()).
         std::atomic<bool> m_clip_close_pending{false};
+        /**
+         * @brief Serializes lifecycle transitions between command
+         *        transports.
+         *
+         * Public mutators (start/stop of recording and streaming,
+         * consumer registration/unregistration, and the photo-capture
+         * gate check) hold this mutex across their mutation sections so
+         * transitions arriving concurrently from the web-transport and
+         * serial-transport tasks can never interleave: a start cannot
+         * bind into a loop that is being torn down, and a deferred
+         * viewer-close decision cannot be reordered behind a concurrent
+         * streaming restart. The frame pump path itself stays lock-free
+         * over the registry slots; consumers invoking start_recording()
+         * from on_frame() acquire it only for a short critical section
+         * since no holder ever blocks indefinitely on the capture task
+         * (the teardown join is bounded). Held across the bounded
+         * scheduler join inside teardown_capture_pipeline() when called
+         * from a stop path.
+         */
+        mutable std::mutex m_lifecycle_mutex;
         std::atomic<bool> m_loop_active{false};        ///< Capture scheduler running
         hal::millis_t m_frame_interval_ms{100};
         std::atomic<uint32_t> m_frames_recorded{0};

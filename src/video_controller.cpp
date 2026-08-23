@@ -50,6 +50,8 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 
 bool VideoController::start_recording()
 {
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     // Claim the recording activity up front so concurrent start
     // attempts arriving from different command tasks cannot both
     // proceed to mutate clip state and the registry.
@@ -107,6 +109,8 @@ bool VideoController::start_recording()
 
 void VideoController::stop_recording()
 {
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     int id = find_id(&m_record_sink);
     if (id < 0)
     {
@@ -225,6 +229,8 @@ void VideoController::detach_consumer(int id)
 
 int VideoController::register_frame_consumer(IFrameConsumer* consumer)
 {
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     if (consumer == nullptr || is_registered(consumer))
     {
         return -1;
@@ -249,6 +255,8 @@ int VideoController::register_frame_consumer(IFrameConsumer* consumer)
 
 void VideoController::unregister_frame_consumer(int id)
 {
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS) ||
         !m_slots[id].used.load(std::memory_order_relaxed))
     {
@@ -265,10 +273,16 @@ void VideoController::unregister_frame_consumer(int id)
 
 bool VideoController::capture_photo(const char* path)
 {
-    if (is_capture_active())
     {
-        m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
-        return false;
+        // Serialize the gate check with lifecycle transitions so it
+        // cannot pass while a concurrent start is mid-registration; the
+        // SD I/O below runs without the mutex.
+        std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+        if (is_capture_active())
+        {
+            m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
+            return false;
+        }
     }
 
     CameraCaptureResult result = m_camera.capture_frame();
@@ -316,6 +330,8 @@ void VideoController::set_stream_service(IStreamService* stream_service)
 
 bool VideoController::start_streaming()
 {
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     // Claim the streaming activity up front so concurrent start
     // attempts arriving from different command tasks cannot both
     // proceed to reserve slots.
@@ -357,6 +373,8 @@ bool VideoController::start_streaming()
 
 void VideoController::stop_streaming()
 {
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     int id = find_id(&m_stream_sink);
     if (id < 0)
     {

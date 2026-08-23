@@ -1426,6 +1426,175 @@ void test_capture_photo_gating_across_modes()
 }
 
 // ============================================================
+// Start racing a last-consumer teardown
+// ============================================================
+
+/**
+ * @brief Scheduler double whose stop() blocks on a gate.
+ *
+ * Emulates the bounded asynchronous join window of the platform
+ * scheduler (CaptureSchedulerEsp32::stop() waits for the capture task
+ * to exit) so tests can interleave a concurrent lifecycle command into
+ * the teardown. Like the real scheduler, the final callback runs once
+ * before stop() returns and the started state clears only afterwards.
+ */
+struct GatedStopScheduler : public ICaptureScheduler
+{
+    std::function<void()> callback;
+    std::atomic<bool> started{false};
+    std::atomic<bool> stop_entered{false};
+    std::atomic<bool> release_stop{false};
+
+    bool start(uint32_t /*interval_ms*/,
+               std::function<void()> frame_callback) override
+    {
+        bool expected = false;
+        if (!started.compare_exchange_strong(expected, true))
+        {
+            return false;
+        }
+        callback = frame_callback;
+        return true;
+    }
+
+    void stop() override
+    {
+        if (!started.exchange(false))
+        {
+            return;
+        }
+        stop_entered.store(true, std::memory_order_release);
+        while (!release_stop.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        // Final callback pass, mirroring the real scheduler's contract.
+        if (callback)
+        {
+            callback();
+        }
+    }
+
+    void on_frame_capture() override
+    {
+        if (started.load() && callback)
+        {
+            callback();
+        }
+    }
+
+    bool is_started() const
+    {
+        return started.load();
+    }
+};
+
+/**
+ * @brief A start racing a last-consumer teardown can never produce a
+ *        registered-but-not-running activity.
+ *
+ * Contends START_STREAM against a concurrent STOP_STREAM whose teardown
+ * join is held open by a gate, emulating the cross-transport interleaving
+ * where one transport tears the pipeline down while the other starts an
+ * activity into the dying loop. The invariant under test: whenever the
+ * controller reports streaming active afterwards, the capture loop must
+ * actually be running and frames must be delivered — a silent dead
+ * registration is a defect.
+ */
+void test_start_racing_last_consumer_teardown_never_dead_registers()
+{
+    constexpr int ROUNDS = 100;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        MockCameraHal camera_hal;
+        MockSdCardHal sd_hal;
+        MockLogBackend log_backend;
+        RealTimeService time;
+        LoggingService logger(log_backend, time);
+        SdController sd_controller(time, sd_hal);
+        CameraController camera_ctrl(camera_hal);
+        GatedStopScheduler scheduler;
+        VideoController video(camera_ctrl, sd_controller, time, logger,
+                              scheduler);
+
+        camera_hal.init_result = hal::CameraInitResult::SUCCESS;
+        camera_ctrl.init();
+
+        ConfigData::VideoConfig config;
+        config.fps = TEST_FPS;
+        strcpy(config.resolution, "VGA");
+        config.clip_duration_s = TEST_CLIP_DURATION_S;
+        config.max_file_size_mb = 0;
+        config.jpeg_quality = 10;
+        video.init(config, TEST_WIDTH, TEST_HEIGHT);
+
+        TrackingSink sink;
+        video.set_stream_service(&sink);
+
+        TEST_ASSERT_TRUE(video.start_streaming());
+
+        std::atomic<bool> go{false};
+        std::thread stopper([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            video.stop_streaming();
+        });
+        std::thread restarter([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            // Contending start from the second command transport.
+            (void)video.start_streaming();
+        });
+
+        for (int i = 0; i < 64; i++)
+        {
+            std::this_thread::yield();
+        }
+        go.store(true, std::memory_order_release);
+
+        // Wait until the stopper is inside the gated teardown join.
+        constexpr long MAX_SPIN = 10000000L;
+        long spins = 0;
+        while (!scheduler.stop_entered.load(std::memory_order_acquire) &&
+               spins++ < MAX_SPIN)
+        {
+            std::this_thread::yield();
+        }
+        scheduler.release_stop.store(true, std::memory_order_release);
+        stopper.join();
+        restarter.join();
+
+        // Core invariant: reported streaming state and actual loop state
+        // must agree — no registered-but-dead activity.
+        const bool streaming = video.is_streaming();
+        TEST_ASSERT_EQUAL_INT(streaming ? 1 : 0,
+                              scheduler.is_started() ? 1 : 0);
+
+        if (streaming)
+        {
+            memset(camera_hal.frame_buffer, 0xAB, FAKE_JPEG_SIZE);
+            camera_hal.capture_result = {camera_hal.frame_buffer,
+                                         FAKE_JPEG_SIZE};
+            sink.deliveries = 0;
+            scheduler.on_frame_capture();
+            TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+        }
+
+        // Wind down deterministically for the next round.
+        video.stop_streaming();
+        TEST_ASSERT_FALSE(video.is_streaming());
+        TEST_ASSERT_FALSE(scheduler.is_started());
+    }
+}
+
+// ============================================================
 // Concurrent start contention
 // ============================================================
 
@@ -1598,6 +1767,7 @@ int main()
 
     // Registry concurrency (dual-transport contention)
     RUN_TEST(test_concurrent_starts_never_lose_registration);
+    RUN_TEST(test_start_racing_last_consumer_teardown_never_dead_registers);
 
     return UNITY_END();
 }
