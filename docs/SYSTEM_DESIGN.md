@@ -333,6 +333,7 @@ package "Services" {
 
     interface IStreamService {
         +deliver_frame(data : const uint8_t*, len : size_t)
+        +stop_all_streams()
     }
 
     class StreamService {
@@ -496,6 +497,12 @@ package "Controllers" {
         STREAMING
         RECORDING
     }
+    note bottom of RecordingState
+      Derived view over the independent recording and streaming
+      activity flags; RECORDING takes precedence over STREAMING.
+      Callers needing per-activity truth use is_recording() /
+      is_streaming().
+    end note
 
     class CameraController {
         -m_hal : CameraHal&
@@ -514,7 +521,10 @@ package "Controllers" {
     }
 
     class VideoController {
-        -m_state : atomic<RecordingState>
+        -m_recording : atomic<bool>
+        -m_streaming : atomic<bool>
+        -m_stop_clip : atomic<bool>
+        -m_clip_close_pending : atomic<bool>
         -m_avi_writer : AviWriter
         -m_stream_service : IStreamService*
         -m_config : VideoConfig
@@ -528,7 +538,11 @@ package "Controllers" {
         +start_streaming() : bool
         +stop_streaming()
         +set_stream_service(stream_service)
+        +is_recording() : bool
+        +is_streaming() : bool
         +state() : RecordingState
+        -teardown_capture_pipeline()
+        -loop_running() : bool
         -capture_and_write_frame()
         -open_clip()
         -close_clip()
@@ -632,9 +646,9 @@ VideoController --> SdController_ext : sync writes
 VideoController --> LoggingService_ext : diagnostics
 VideoController --> TimeService_ext : clip duration
 VideoController --> ICaptureScheduler : frame pacing
-VideoController --> "0..1" IStreamService_ext : optional frame sink
+VideoController --> "0..1" IStreamService_ext : optional frame sink + viewer teardown
 VideoController --> StreamService_ext : set_stream_service() wiring
-VideoController ..> RecordingState : m_state
+VideoController ..> RecordingState : derived state()
 CaptureSchedulerEsp32 --> TimerHal_ext : periodic ISR
 
 @enduml
