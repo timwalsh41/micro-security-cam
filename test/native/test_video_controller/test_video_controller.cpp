@@ -1278,6 +1278,49 @@ void test_stop_streaming_during_recording_keeps_recording()
 }
 
 /**
+ * @brief The deferred viewer close survives persistent capture failure.
+ *
+ * After STOP_STREAM while recording keeps the loop alive, every
+ * capture-task activation may take the camera-failure path; the
+ * deferred viewer close must still run on the next activation
+ * regardless of whether any frame captures successfully.
+ */
+void test_deferred_viewer_close_survives_capture_failure()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+
+    f.video.stop_streaming();
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+
+    // Persistent camera failure from here on: recording keeps the loop
+    // running, so each activation takes the capture-failure branch.
+    f.camera_hal.capture_result = {nullptr, 0};
+    f.capture_one_frame();
+
+    // Viewer close ran inside the still-running capture loop despite
+    // the failed capture.
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(sink.loop_running_at_teardown);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
  * @brief A deferred viewer close does not leak into a later session:
  *        teardown clears the pending flag, so a fresh streaming session
  *        started afterwards keeps its new viewers connected.
@@ -1458,6 +1501,7 @@ int main()
     RUN_TEST(test_stop_recording_during_streaming_keeps_preview);
     RUN_TEST(test_restart_rejected_while_clip_close_pending);
     RUN_TEST(test_stop_streaming_during_recording_keeps_recording);
+    RUN_TEST(test_deferred_viewer_close_survives_capture_failure);
     RUN_TEST(test_deferred_viewer_close_does_not_leak_into_new_session);
     RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
     RUN_TEST(test_capture_photo_gating_across_modes);

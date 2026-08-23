@@ -55,10 +55,11 @@ bool VideoController::start_recording()
         return false;
     }
 
-    // Reject while a previously stopped clip has not been finalized by
-    // the capture task yet (asynchronous stop when other consumers such
-    // as streaming remain active). Opening a new clip before the old
-    // one is closed would corrupt both files.
+    // Reject while an unfinalized clip is still open: after an
+    // asynchronous stop (other consumers such as streaming kept the
+    // loop running) the capture task finalizes the clip on its next
+    // activation. Opening a new clip before the old one is closed
+    // would corrupt both files.
     if (m_clip_close_pending.load(std::memory_order_relaxed))
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
@@ -107,7 +108,6 @@ void VideoController::stop_recording()
     // callback (or the next frame callback when other consumers keep
     // the loop running) finalizes the clip.
     m_stop_clip = true;
-    m_clip_close_pending = true;
 
     detach_consumer(id);
 
@@ -463,8 +463,13 @@ void VideoController::open_clip()
     strncpy(m_clip_path, m_file_path, sizeof(m_clip_path) - 1);
     m_clip_path[sizeof(m_clip_path) - 1] = '\0';
 
-    // Open AVI writer (generates header in memory)
-    m_avi_writer.open(m_file_path, m_config.fps, m_width, m_height);
+    // Open AVI writer (generates header in memory). While a clip is
+    // open it awaits finalization, so latch the close-pending guard
+    // here; close_clip() clears it once finalization completes.
+    if (m_avi_writer.open(m_file_path, m_config.fps, m_width, m_height))
+    {
+        m_clip_close_pending = true;
+    }
 
     // Write placeholder header to SD at position 0
     AviBytes hdr = m_avi_writer.header();
@@ -507,6 +512,18 @@ void VideoController::close_clip()
     m_file_size = 0;
     m_stop_clip = false;
     m_avi_writer = AviWriter();  // Reset writer state
+
+    // No unfinalized clip remains.
+    m_clip_close_pending = false;
+}
+
+void VideoController::process_pending_viewer_close()
+{
+    if (m_close_viewers_pending.exchange(false, std::memory_order_relaxed) &&
+        m_stream_service != nullptr)
+    {
+        m_stream_service->stop_all_streams();
+    }
 }
 
 // ============================================================
@@ -535,8 +552,8 @@ void VideoController::capture_and_dispatch_frame()
         if (closing)
         {
             close_clip();
-            m_clip_close_pending = false;
         }
+        process_pending_viewer_close();
         return;
     }
 
@@ -558,16 +575,13 @@ void VideoController::capture_and_dispatch_frame()
 
     m_camera.release_frame();
 
+    handle_clip_closure();
+
     // Drain a viewer close deferred by stop_streaming() while other
     // consumers kept the loop alive: running here serializes the close
-    // with frame delivery inside the capture task.
-    if (m_close_viewers_pending.exchange(false, std::memory_order_relaxed) &&
-        m_stream_service != nullptr)
-    {
-        m_stream_service->stop_all_streams();
-    }
-
-    handle_clip_closure();
+    // with frame delivery inside the capture task, regardless of
+    // whether this frame captured successfully.
+    process_pending_viewer_close();
 }
 
 void VideoController::write_avi_frame(const uint8_t* data, size_t len)
@@ -608,7 +622,6 @@ void VideoController::handle_clip_closure()
     }
 
     close_clip();
-    m_clip_close_pending = false;
 
     if (is_recording())
     {

@@ -391,13 +391,23 @@ class VideoController
         void open_clip();
 
         /**
-         * @brief Closes the current clip and writes the final AVI to SD.
+         * @brief Closes the current clip if one is open and writes the
+         *        final AVI to SD.
          *
          * Appends the index, then seeks to position 0 to overwrite the
          * placeholder header with the patched header containing final
-         * sizes.
+         * sizes. Clears the clip-close-pending guard.
          */
         void close_clip();
+
+        /**
+         * @brief Drains a viewer close deferred by stop_streaming().
+         *
+         * Called from capture-task activation boundaries so the close
+         * cannot interleave with an in-flight frame delivery inside
+         * this task.
+         */
+        void process_pending_viewer_close();
 
         /**
          * @brief Creates a directory on the SD card.
@@ -457,7 +467,9 @@ class VideoController
         // State
         std::atomic<bool> m_stop_clip{false};
         std::atomic<bool> m_close_viewers_pending{false}; ///< Viewer close deferred to the next dispatch boundary
-        std::atomic<bool> m_clip_close_pending{false}; ///< Set until the capture task finalizes a stopped clip
+        // True while an unfinalized clip is open; owned exclusively by
+        // the capture task (set by open_clip(), cleared by close_clip()).
+        std::atomic<bool> m_clip_close_pending{false};
         bool m_loop_active{false};                     ///< Capture scheduler running
         hal::millis_t m_frame_interval_ms{100};
         std::atomic<uint32_t> m_frames_recorded{0};
