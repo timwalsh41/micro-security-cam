@@ -143,7 +143,7 @@ void test_get_status_returns_json()
         static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
 
-    // Verify JSON structure — the legacy "state" field is gone.
+    // Verify JSON structure — activity fields only, with no "state" field.
     const char* json = reinterpret_cast<const char*>(response);
     TEST_ASSERT_NOT_NULL(strstr(json, "\"recording\""));
     TEST_ASSERT_NOT_NULL(strstr(json, "\"streaming\""));
@@ -697,8 +697,8 @@ void test_stream_route_registered()
 /**
  * @brief /stream rejects viewers unless streaming mode is explicit.
  *
- * Recording alone no longer admits viewers: connections exist only
- * while streaming is active so teardown always closes them.
+ * Viewers connect only while streaming mode is active, so teardown
+ * always closes them.
  */
 void test_stream_route_rejects_without_streaming_mode()
 {

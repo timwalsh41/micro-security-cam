@@ -128,7 +128,7 @@ class StreamService : public IStreamService
          * capture loop is torn down, so connected viewers are closed
          * and their writers freed rather than left occupying slots.
          */
-        void stop_all_streams();
+        void stop_all_streams() override;
 
         /**
          * @brief Delivers a JPEG frame to all active streams.

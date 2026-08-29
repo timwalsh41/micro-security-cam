@@ -24,11 +24,10 @@ class IStreamService;
  * @brief Capture pipeline: frame pump plus recording session owner.
  *
  * The capture loop is the sole frame producer. Activities interested
- * in frames — SD recording and live streaming delivery today, motion
- * detection in a future phase — subscribe by registering an
- * IFrameConsumer; the loop runs while at least one consumer is
- * registered and is torn down (closing any connected stream viewers)
- * when the last one detaches.
+ * in frames — SD recording and live streaming delivery — subscribe by
+ * registering an IFrameConsumer; the loop runs while at least one
+ * consumer is registered and is torn down (closing any connected
+ * stream viewers) when the last one detaches.
  *
  * AVI Write Strategy: Per-Frame SD Writes
  * Each captured frame is formatted by AviWriter and immediately
@@ -251,7 +250,7 @@ class VideoController
         int register_frame_consumer(IFrameConsumer* consumer);
 
         /**
-         * @brief Unsubscribes a previously registered frame consumer.
+         * @brief Unsubscribes a registered frame consumer.
          *
          * When the last consumer unsubscribes, the capture pipeline is
          * torn down (bounded) and all connected stream viewers are

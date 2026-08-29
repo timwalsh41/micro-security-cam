@@ -1689,7 +1689,7 @@ note right: READ_WRITE preserves\nexisting content; only\nthe header bytes are\n
 SD --> SDC
 deactivate SDC
 VC -> VC : recording = false
-(clip close pending cleared)
+note right: clip-close-pending cleared
 deactivate VC
 TASK -> TASK : vTaskDelete()
 deactivate TASK
@@ -1769,11 +1769,12 @@ CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
 ORCH -> VC : stop_streaming()
 VC -> CS : stop() (only when no consumer remains)
 VC -> VC : queue deferred viewer close
-note over VC,SS: with recording active, the close runs in the
-capture task at the next frame dispatch (one frame
-period bound); full teardown closes viewers after the join
-VC -> SS : stop_all_streams() (viewers closed,
-even when recording continues)
+note over VC,SS
+  with recording active, the close runs in the
+  capture task at the next frame dispatch (one frame
+  period bound); full teardown closes viewers after the join
+end note
+VC -> SS : stop_all_streams()\n(viewers closed,\neven when recording continues)
 VC -> VC : streaming = false
 ORCH --> CLIENT : {"result":"ok"}
 

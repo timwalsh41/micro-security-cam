@@ -51,7 +51,16 @@ class MockLogBackend : public hal::LogBackend
         }
 
     private:
-        /** Serializes capture when logs are written from multiple tasks. */
+        /**
+         * @brief Serializes capture when logs are written from multiple
+         *        tasks.
+         *
+         * Mirrors the production boundary: SerialHalImpl::write()
+         * serializes each complete log line under a FreeRTOS mutex, so
+         * SerialLogBackend itself holds no lock; this mutex protects the
+         * mock's own capture state when native concurrency tests drive
+         * logging from more than one thread.
+         */
         std::mutex m_mutex;
 };
 

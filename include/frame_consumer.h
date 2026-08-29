@@ -9,7 +9,7 @@
  * @brief Frame-consumer interface for the capture pipeline.
  *
  * The capture loop is the sole frame producer. Interested activities
- * (recording, streaming, future motion detection) subscribe by
+ * (recording, streaming) subscribe by
  * registering an IFrameConsumer implementation and receive every
  * captured JPEG frame while subscribed. on_frame() runs in the
  * capture task context and must not block indefinitely.

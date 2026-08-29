@@ -993,13 +993,13 @@ void test_streaming_delivers_frame_without_sd_write()
 }
 
 // ============================================================
-// Consumer registry (phase-6 readiness)
+// Consumer registry
 // ============================================================
 
 /**
  * @brief Test double frame consumer with an optional hook to start a
- *        recording from within on_frame() — simulating how a future
- *        motion-detection consumer would trigger recording.
+ *        recording from within on_frame() — the sanctioned path for
+ *        consumers to trigger recording from the frame callback.
  */
 struct FakeFrameConsumer : public IFrameConsumer
 {
@@ -1121,7 +1121,7 @@ void test_failed_registration_leaves_no_reserved_slot()
 
 /**
  * @brief A consumer can start recording from within on_frame() —
- *        the phase-6 motion-trigger story with no special casing.
+ *        the sanctioned extension path with no special casing.
  */
 void test_consumer_can_trigger_recording_from_on_frame()
 {
@@ -1883,7 +1883,7 @@ int main()
     RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
     RUN_TEST(test_capture_photo_gating_across_modes);
 
-    // Consumer registry (phase-6 readiness)
+    // Consumer registry
     RUN_TEST(test_register_consumer_lifecycle);
     RUN_TEST(test_register_rejects_full_and_duplicate);
     RUN_TEST(test_failed_registration_leaves_no_reserved_slot);
