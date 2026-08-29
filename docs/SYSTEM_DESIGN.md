@@ -14,7 +14,7 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                  Application  (main.cpp)                    │
 │  setup() / loop() — wires components, runs the              │
-│  photo capture cycle, video recording state machine,        │
+│  photo capture cycle, video capture pipeline,               │
 │  and system orchestration tick                              │
 └─────────────────────────────────────────────────────────────┘
                          │
@@ -2059,7 +2059,7 @@ activate ORCH
 
 ' Delegate to VideoController
 ORCH -> ORCH : m_video.start_recording()
-note right: Transitions\nVideoController\nstate to RECORDING
+note right: Opens a clip, starts the\ncapture loop if needed, and\nclaims a RecordSink slot
 
 ORCH --> CMDH : return SUCCESS
 deactivate ORCH
