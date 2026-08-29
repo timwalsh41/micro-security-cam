@@ -1525,9 +1525,11 @@ VideoController --> StreamSink : owns
 
 Built-in consumers:
 
-- **RecordSink** — subscribed by `start_recording()`, which opens a clip first. Formats each frame as an AVI chunk and writes it to SD; requests clip closure via the rotation limit or explicit stop.
-- **StreamSink** — subscribed by `start_streaming()`; forwards every frame to the `IStreamService` for delivery to connected viewers.
-- **Future consumers** — a phase-6 motion-detection consumer registers through the same public `register_frame_consumer()` API and may call `start_recording()` from its frame callback; no controller special-casing is required.
+- **RecordSink** — recording's built-in sink, owned by `VideoController`. `start_recording()` claims a registry slot for it internally via `claim_slot()` after opening the clip — it is never registered through the public API. Formats each frame as an AVI chunk and writes it to SD; requests clip closure via the rotation limit or explicit stop.
+- **StreamSink** — streaming's built-in sink, owned by `VideoController`. `start_streaming()` claims a slot for it internally via `claim_slot()`; forwards every frame to the `IStreamService` for delivery to connected viewers.
+- **External consumers** — registered through the public `register_frame_consumer()` / `unregister_frame_consumer()` API. The production firmware registers none today; the API is the extension point for additional consumers such as the planned phase-6 motion-detection consumer, which may call `start_recording()` from its frame callback (no controller special-casing required). Only native tests exercise it at present.
+
+This split matters when reading the code: `start_recording()` and `start_streaming()` claim slots for their built-in sinks themselves (see `claim_slot()` in `src/video_controller.cpp`), so a search for production calls to `register_frame_consumer()` finds none — that is by design, not a missing call site. The public registration API exists solely for external, out-of-tree consumers.
 
 Lifecycle rules:
 
@@ -1564,6 +1566,9 @@ participant "CaptureScheduler\nEsp32" as CS
 participant "TimerHalImpl\n(ISR)" as TMR
 participant "Capture Task\n(CPU0)" as TASK
 participant "VideoController" as VC
+participant "RecordSink\n(claimed slot)" as RS
+participant "StreamSink\n(claimed slot)" as ST
+participant "StreamService" as SS
 participant "CameraController" as CAM
 participant "AviWriter" as AVI
 participant "SdController" as SDC
@@ -1581,13 +1586,16 @@ activate SDC
 SDC -> SD : open(WRITE) → write(224 B) → close()
 SD --> SDC
 deactivate SDC
+VC -> VC : ensure_loop_running()
+note right: skipped when another consumer\n(e.g. streaming) already keeps\nthe loop running
 VC -> CS : start(interval_ms, callback)
 activate CS
 CS -> CS : init timer ISR
 CS -> TASK : xTaskCreatePinnedToCore()
 CS -> TMR : start()
 deactivate CS
-VC -> VC : recording = true
+VC -> VC : claim_slot(id, RecordSink)
+note right: is_recording() is the\nregistry subscription
 VC --> MAIN : return true
 deactivate VC
 
@@ -1608,16 +1616,29 @@ CAM --> VC : SUCCESS
 VC -> CAM : get_frame()
 CAM --> VC : JPEG data
 
-VC -> AVI : write_frame(jpeg_data, len)
+VC -> VC : iterate registered slots
+note right: frame dispatch over the\nconsumer registry
+
+VC -> RS : on_frame(jpeg, len)
+activate RS
+RS -> AVI : write_frame(jpeg_data, len)
 note right: Wraps JPEG as 0x00dc\nAVI chunk with padding
 
-AVI --> VC : last_frame_chunk()
+AVI --> RS : last_frame_chunk()
 
-VC -> SDC : write_sync(path, chunk, APPEND)
+RS -> SDC : write_sync(path, chunk, APPEND)
 activate SDC
 SDC -> SD : open(APPEND) → write(chunk) → close()
 SD --> SDC
 deactivate SDC
+deactivate RS
+
+alt streaming also subscribed
+    VC -> ST : on_frame(jpeg, len)
+    activate ST
+    ST -> SS : deliver_frame(jpeg, len)
+    deactivate ST
+end
 
 VC -> CAM : release_frame()
 VC -> VC : frames_recorded++\nfile_size += chunk.len
@@ -1655,12 +1676,13 @@ end
 
 MAIN -> VC : stop_recording()
 activate VC
-VC -> VC : m_recording = false
 VC -> VC : m_stop_clip = true
-alt streaming mode active
+VC -> VC : detach_consumer(RecordSink)
+note right: is_recording() false right away;\nrecord claim released
+alt other consumers keep the loop running
     VC -> VC : loop keeps running;
-    note right: clip is finalized by the\nnext frame callback\n(one frame period bound);\nstart_recording() rejected\nuntil then
-else no other activity
+    note right: clip is finalized by the\nnext frame callback\n(one frame period bound);\nstart_recording() rejected\nuntil then (clip close pending)
+else last subscriber: teardown
     VC -> CS : stop()
     activate CS
     CS -> TMR : stop()
@@ -1669,7 +1691,8 @@ else no other activity
     note right: stop() blocks until the\ntask has run its final\ncallback and exited
     CS --> VC : return
     deactivate CS
-    VC -> SS : stop_all_streams() (viewers closed)
+    VC -> SS : stop_all_streams()
+    note right: viewers closed after the join
 end
 deactivate VC
 
@@ -1689,7 +1712,7 @@ SDC -> SD : open(READ_WRITE) → seek(0) → write(hdr) → close()
 note right: READ_WRITE preserves\nexisting content; only\nthe header bytes are\nreplaced
 SD --> SDC
 deactivate SDC
-VC -> VC : recording = false
+VC -> VC : clip finalized
 note right: clip-close-pending cleared
 deactivate VC
 TASK -> TASK : vTaskDelete()
@@ -1711,6 +1734,7 @@ title Live MJPEG Streaming Flow
 participant "Client\n(browser)" as CLIENT
 participant "SystemOrchestrator" as ORCH
 participant "VideoController" as VC
+participant "StreamSink\n(claimed slot)" as ST
 participant "CaptureScheduler\nEsp32" as CS
 participant "Capture Task\n(CPU0)" as TASK
 participant "CameraController" as CAM
@@ -1723,9 +1747,12 @@ participant "AsyncTCP\n(client)" as TCP
 CLIENT -> ORCH : START_STREAM (cmd=stream_start)
 ORCH -> VC : start_streaming()
 activate VC
+VC -> VC : ensure_loop_running()
+note right: starts the loop only when\nno consumer is served yet\n(reused when recording is active)
 VC -> CS : start(interval_ms, callback)
 note right: capture loop on,\nno clip opened
-VC -> VC : streaming = true
+VC -> VC : claim_slot(id, StreamSink)
+note right: is_streaming() is the\nregistry subscription
 VC --> ORCH : true
 deactivate VC
 ORCH --> CLIENT : {"result":"ok"}
@@ -1752,13 +1779,18 @@ TASK -> VC : capture_and_dispatch_frame()
 activate VC
 VC -> CAM : capture_frame()
 CAM --> VC : JPEG frame
-VC -> SS : deliver_frame(jpeg, len)
+VC -> VC : iterate registered slots
+note right: frame dispatch over the\nconsumer registry
+VC -> ST : on_frame(jpeg, len)
+activate ST
+ST -> SS : deliver_frame(jpeg, len)
 activate SS
 SS -> WRITER : write(--boundary + Content-Type: image/jpeg)
 SS -> WRITER : write(Content-Length: N)
 SS -> WRITER : write(JPEG bytes)
 WRITER -> TCP : client->write(...)
 deactivate SS
+deactivate ST
 VC -> CAM : release_frame()
 deactivate VC
 
@@ -1768,15 +1800,20 @@ end
 
 CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
 ORCH -> VC : stop_streaming()
-VC -> CS : stop() (only when no consumer remains)
-VC -> VC : queue deferred viewer close
-note over VC,SS
-  with recording active, the close runs in the
-  capture task at the next frame dispatch (one frame
-  period bound); full teardown closes viewers after the join
-end note
-VC -> SS : stop_all_streams()\n(viewers closed,\neven when recording continues)
-VC -> VC : streaming = false
+VC -> VC : detach_consumer(StreamSink)
+alt recording keeps the loop running
+    VC -> VC : queue deferred viewer close
+    note over VC,SS
+      the capture task closes the viewers at the
+      next frame dispatch (one frame period bound):
+      process_pending_viewer_close() -> stop_all_streams();
+      a START_STREAM within the window cancels the close
+    end note
+else last subscriber: teardown
+    VC -> CS : stop() (only when no consumer remains)
+    VC -> SS : stop_all_streams()
+    note right: viewers closed after the join
+end
 ORCH --> CLIENT : {"result":"ok"}
 
 @enduml

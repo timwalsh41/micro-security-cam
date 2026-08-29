@@ -14,6 +14,11 @@
  * captured JPEG frame while subscribed. on_frame() runs in the
  * capture task context and must not block indefinitely.
  *
+ * Recording and streaming each subscribe as built-in sinks owned by
+ * VideoController, claimed internally by start_recording() /
+ * start_streaming() via claim_slot(); register_frame_consumer() is
+ * the public API for additional external consumers only.
+ *
  * on_frame() must never call unregister_frame_consumer(),
  * stop_recording(), or stop_streaming() when the caller could be the
  * last registered consumer: that tears down the capture scheduler from

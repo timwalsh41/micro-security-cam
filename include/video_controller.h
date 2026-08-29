@@ -243,6 +243,11 @@ class VideoController
          * Starts the capture loop if it is not already running. The
          * same consumer pointer may not be registered twice.
          *
+         * Recording and streaming subscribe as built-in sinks owned
+         * by the controller and claimed internally by
+         * start_recording() / start_streaming(); this method is the
+         * public API for additional external consumers only.
+         *
          * @param consumer Consumer to subscribe; must outlive the
          *                 registration.
          * @return Registration id (>= 0), or -1 if the registry is full
