@@ -7,6 +7,8 @@
 #include "mock_sd_card_hal.h"
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
+#include <atomic>
+#include <thread>
 #include <cstring>
 
 // ============================================================
@@ -87,6 +89,31 @@ struct TestFixture
     }
 };
 
+/**
+ * @brief Stream-sink test double with delivery and teardown tracking.
+ */
+struct TrackingSink : public IStreamService
+{
+    int deliveries{0};
+    int teardown_calls{0};
+    bool loop_running_at_teardown{false};
+    const MockCaptureScheduler* scheduler_ref{nullptr};
+
+    void deliver_frame(const uint8_t* /*data*/, size_t /*len*/) override
+    {
+        deliveries++;
+    }
+
+    void stop_all_streams() override
+    {
+        teardown_calls++;
+        if (scheduler_ref != nullptr)
+        {
+            loop_running_at_teardown = scheduler_ref->is_started();
+        }
+    }
+};
+
 // ============================================================
 // Default state
 // ============================================================
@@ -99,7 +126,8 @@ void test_initial_state_is_idle()
     TestFixture f;
     f.setup_fake_frame();
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 }
 
 /**
@@ -149,7 +177,7 @@ void test_start_recording_transitions_to_recording()
     set_mock_millis(1000);
 
     TEST_ASSERT_TRUE(f.video.start_recording());
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_recording());
     TEST_ASSERT_TRUE(f.video.is_recording());
 }
 
@@ -185,7 +213,8 @@ void test_stop_recording_transitions_to_idle()
     // one final callback which observes m_stop_clip and transitions to IDLE
     f.video.stop_recording();
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_FALSE(f.video.is_recording());
 }
 
@@ -199,7 +228,8 @@ void test_stop_recording_noop_when_idle()
 
     // Should not crash or change state
     f.video.stop_recording();
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 }
 
 // ============================================================
@@ -377,12 +407,13 @@ void test_explicit_stop_after_rotation_goes_to_idle()
     }
 
     // Auto-rotated to new clip
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_recording());
 
     // Now explicitly stop — synchronously closes the clip
     f.video.stop_recording();
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_FALSE(f.video.is_recording());
 }
 
@@ -478,7 +509,8 @@ void test_rapid_start_stop()
     // Stop immediately — synchronously closes the clip
     f.video.stop_recording();
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // Reset after close
 }
 
@@ -595,7 +627,8 @@ void test_clip_close_with_sd_write_failure()
     f.video.stop_recording();
 
     // Should still transition to IDLE without crash
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_FALSE(f.video.is_recording());
 }
 
@@ -629,7 +662,7 @@ void test_frame_capture_failure_during_recording()
 
     // Frame count should NOT have incremented
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_recording());
 
     // Restore capture and try again — should succeed
     f.setup_fake_frame();
@@ -664,11 +697,13 @@ void test_stale_callback_after_stop_ignored()
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
     f.video.stop_recording();
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 
     // Late callback: must not capture or corrupt state
     f.capture_one_frame();
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());
 }
 
@@ -690,16 +725,18 @@ void test_restart_after_stop()
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
     f.video.stop_recording();
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 
     // Second session: the scheduler must accept a fresh start
     TEST_ASSERT_TRUE(f.video.start_recording());
-    TEST_ASSERT_EQUAL(RecordingState::RECORDING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_recording());
     f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
     f.video.stop_recording();
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 
     // Collision avoidance: same timestamp → two distinct files on the SD
     TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
@@ -721,7 +758,8 @@ void test_start_recording_fails_when_scheduler_busy()
     f.capture_scheduler.start_result = false;
 
     TEST_ASSERT_FALSE(f.video.start_recording());
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_EQUAL_INT(1, f.capture_scheduler.start_call_count);
 }
@@ -747,7 +785,8 @@ void test_clip_file_intact_after_close()
     }
 
     f.video.stop_recording();
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 
     // Exactly one file should exist in the store
     TEST_ASSERT_EQUAL_UINT32(1, f.sd_hal.files.size());
@@ -798,8 +837,7 @@ void test_rapid_captures_stability()
 
     // Should complete without crash
     // Final state depends on clip rotation, just verify no assertion failure
-    TEST_ASSERT_TRUE(f.video.state() == RecordingState::IDLE ||
-                     f.video.state() == RecordingState::RECORDING);
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 }
 
 // ============================================================
@@ -895,7 +933,8 @@ void test_start_streaming_transitions_to_streaming()
     set_mock_millis(1000);
 
     TEST_ASSERT_TRUE(f.video.start_streaming());
-    TEST_ASSERT_EQUAL(RecordingState::STREAMING, f.video.state());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_FALSE(f.video.is_recording());
 }
 
@@ -911,7 +950,8 @@ void test_stop_streaming_transitions_to_idle()
     f.video.start_streaming();
     f.video.stop_streaming();
 
-    TEST_ASSERT_EQUAL(RecordingState::IDLE, f.video.state());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
 }
 
 /**
@@ -923,13 +963,18 @@ void test_streaming_delivers_frame_without_sd_write()
     f.setup_fake_frame();
     set_mock_millis(1000);
 
-    // Wire a minimal sink that records deliveries.
+    // Wire a minimal sink that records deliveries and teardown calls.
     struct Sink : public IStreamService
     {
         int deliveries{0};
+        int teardown_calls{0};
         void deliver_frame(const uint8_t* /*data*/, size_t /*len*/) override
         {
             deliveries++;
+        }
+        void stop_all_streams() override
+        {
+            teardown_calls++;
         }
     } sink;
 
@@ -945,6 +990,814 @@ void test_streaming_delivers_frame_without_sd_write()
                              static_cast<unsigned int>(f.sd_hal.files.size()));
 
     f.video.stop_streaming();
+}
+
+// ============================================================
+// Consumer registry
+// ============================================================
+
+/**
+ * @brief Test double frame consumer with an optional hook to start a
+ *        recording from within on_frame() — the sanctioned path for
+ *        consumers to trigger recording from the frame callback.
+ */
+struct FakeFrameConsumer : public IFrameConsumer
+{
+    int frames{0};
+    VideoController* trigger_recording_on_first_frame{nullptr};
+
+    void on_frame(const uint8_t* /*data*/, size_t /*len*/) override
+    {
+        frames++;
+        if (trigger_recording_on_first_frame != nullptr)
+        {
+            trigger_recording_on_first_frame->start_recording();
+            trigger_recording_on_first_frame = nullptr;
+        }
+    }
+};
+
+/**
+ * @brief Registering a consumer starts the loop; unregistering the last
+ *        consumer tears the pipeline down and closes viewers.
+ */
+void test_register_consumer_lifecycle()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    FakeFrameConsumer consumer;
+    int id = f.video.register_frame_consumer(&consumer);
+    TEST_ASSERT_TRUE(id >= 0);
+    TEST_ASSERT_TRUE(f.video.is_capture_active());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, consumer.frames);
+
+    // Last consumer gone: loop stops, viewers closed.
+    f.video.unregister_frame_consumer(id);
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_FALSE(sink.loop_running_at_teardown);
+}
+
+/**
+ * @brief Registration beyond MAX_FRAME_CONSUMERS is rejected; duplicate
+ *        registration of the same pointer is rejected.
+ */
+void test_register_rejects_full_and_duplicate()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    FakeFrameConsumer c1;
+    FakeFrameConsumer c2;
+    FakeFrameConsumer c3;
+
+    int id1 = f.video.register_frame_consumer(&c1);
+    int id2 = f.video.register_frame_consumer(&c2);
+    int id3 = f.video.register_frame_consumer(&c3);
+    TEST_ASSERT_TRUE(id1 >= 0);
+    TEST_ASSERT_TRUE(id2 >= 0);
+    TEST_ASSERT_TRUE(id3 >= 0);
+
+    FakeFrameConsumer c4;
+    TEST_ASSERT_EQUAL_INT(-1, f.video.register_frame_consumer(&c4));
+    TEST_ASSERT_EQUAL_INT(-1, f.video.register_frame_consumer(nullptr));
+    TEST_ASSERT_EQUAL_INT(-1, f.video.register_frame_consumer(&c2));
+
+    // Recording/streaming share the same registry capacity.
+    TEST_ASSERT_FALSE(f.video.start_recording());
+    TEST_ASSERT_FALSE(f.video.start_streaming());
+
+    // Freeing one slot makes room again.
+    f.video.unregister_frame_consumer(id3);
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+
+    f.video.stop_streaming();
+    f.video.unregister_frame_consumer(id1);
+    f.video.unregister_frame_consumer(id2);
+}
+
+/**
+ * @brief A rejected registration leaves no reserved slot behind.
+ *
+ * When the capture loop cannot start (scheduler busy), the registry
+ * slot reserved by the failed registration must be released: no
+ * phantom consumer may keep is_capture_active() true or permanently
+ * consume registry capacity.
+ */
+void test_failed_registration_leaves_no_reserved_slot()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.capture_scheduler.start_result = false;
+
+    FakeFrameConsumer consumer;
+    TEST_ASSERT_EQUAL_INT(-1, f.video.register_frame_consumer(&consumer));
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+
+    // The registry has room again once the scheduler recovers.
+    f.capture_scheduler.start_result = true;
+    int id = f.video.register_frame_consumer(&consumer);
+    TEST_ASSERT_TRUE(id >= 0);
+    TEST_ASSERT_TRUE(f.video.is_capture_active());
+
+    f.video.unregister_frame_consumer(id);
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+}
+
+/**
+ * @brief A consumer can start recording from within on_frame() —
+ *        the sanctioned extension path with no special casing.
+ */
+void test_consumer_can_trigger_recording_from_on_frame()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    FakeFrameConsumer monitor;
+    monitor.trigger_recording_on_first_frame = &f.video;
+
+    int id = f.video.register_frame_consumer(&monitor);
+    TEST_ASSERT_TRUE(id >= 0);
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    // First frame: monitor sees it and starts recording mid-dispatch;
+    // the recording sink joins the same dispatch and records this frame.
+    f.capture_one_frame();
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    // Subsequent frames are written to SD by the recording session.
+    f.capture_one_frame();
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(3, f.video.frames_recorded());
+    TEST_ASSERT_GREATER_OR_EQUAL(3, f.sd_hal.write_call_count);
+
+    // Wind down: stop recording, then detach the monitor.
+    f.video.stop_recording();
+    f.capture_one_frame();  // finalization callback closes the clip
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    f.video.unregister_frame_consumer(id);
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+}
+
+// ============================================================
+// Streaming / multi-mode activity tests
+// ============================================================
+
+/**
+ * @brief Derived state: recording takes precedence over streaming.
+ */
+void test_state_reports_recording_when_both_active()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.start_recording());
+
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.video.is_recording());
+}
+
+/**
+ * @brief stop_recording() during REC_AND_PREVIEW keeps preview alive.
+ *
+ * The capture loop must keep running (no scheduler stop), the clip must
+ * be finalized on the next frame callback, and viewers keep receiving
+ * frames — this is the core stream-hang regression at controller level.
+ */
+void test_stop_recording_during_streaming_keeps_preview()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+
+    f.video.stop_recording();
+
+    // Recording ended synchronously; preview continues untouched.
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+
+    // Next frame callback finalizes the clip and keeps delivering.
+    auto total_bytes = [&f]()
+    {
+        size_t total = 0;
+        for (auto& entry : f.sd_hal.files)
+        {
+            total += entry.second.size();
+        }
+        return total;
+    };
+    size_t bytes_before = total_bytes();
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(0, f.video.frames_recorded());  // clip closed
+    TEST_ASSERT_TRUE(total_bytes() > bytes_before);           // index+header flushed
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);
+    // The capture loop must still be running for the surviving preview.
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief Rapid restart is rejected while a stopped clip awaits closure.
+ *
+ * With streaming keeping the loop alive, stop_recording() finalizes the
+ * clip asynchronously. start_recording() must be rejected until the
+ * finalization callback has run, then succeed.
+ */
+void test_restart_rejected_while_clip_close_pending()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+
+    f.video.stop_recording();
+
+    // Clip not yet finalized — restart must be rejected.
+    TEST_ASSERT_FALSE(f.video.start_recording());
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    // Finalization callback runs → restart succeeds.
+    f.capture_one_frame();
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    // Wind down: stopping recording while streaming leaves finalization
+    // pending; stopping streaming last tears the pipeline down, whose
+    // scheduler stop runs the pending clip closure.
+    f.video.stop_recording();
+    f.video.stop_streaming();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+}
+
+/**
+ * @brief stop_streaming() during REC_AND_PREVIEW keeps recording alive
+ *        and closes all viewers via the deferred dispatch-boundary
+ *        path (viewers exist only while streaming mode is active).
+ */
+void test_stop_streaming_during_recording_keeps_recording()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+
+    f.video.stop_streaming();
+
+    // Recording continues on the same capture loop.
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+    // Viewer close is deferred to the next dispatch boundary — it has
+    // not run yet and must not have stopped the scheduler.
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    uint32_t writes_before = f.sd_hal.write_call_count;
+    f.capture_one_frame();
+    // Deferred viewer close ran inside the still-running capture loop.
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(sink.loop_running_at_teardown);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+    // Recording persisted through STOP_STREAM and the frame was written.
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
+    TEST_ASSERT_TRUE(f.sd_hal.write_call_count > writes_before);  // AVI write happened
+
+    f.video.stop_recording();
+}
+
+/**
+ * @brief The deferred viewer close survives persistent capture failure.
+ *
+ * After STOP_STREAM while recording keeps the loop alive, every
+ * capture-task activation may take the camera-failure path; the
+ * deferred viewer close must still run on the next activation
+ * regardless of whether any frame captures successfully.
+ */
+void test_deferred_viewer_close_survives_capture_failure()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+
+    f.video.stop_streaming();
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+
+    // Persistent camera failure from here on: recording keeps the loop
+    // running, so each activation takes the capture-failure branch.
+    f.camera_hal.capture_result = {nullptr, 0};
+    f.capture_one_frame();
+
+    // Viewer close ran inside the still-running capture loop despite
+    // the failed capture.
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(sink.loop_running_at_teardown);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(0, f.capture_scheduler.stop_call_count);
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief A deferred viewer close does not leak into a later session:
+ *        teardown clears the pending flag, so a fresh streaming session
+ *        started afterwards keeps its new viewers connected.
+ */
+void test_deferred_viewer_close_does_not_leak_into_new_session()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    // Record + stream, then stop streaming while recording continues:
+    // the viewer close is deferred to the capture task boundary.
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+    f.video.stop_streaming();
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+
+    // Recording stops first: full teardown closes the viewers itself
+    // and consumes the pending close.
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_FALSE(sink.loop_running_at_teardown);
+
+    // A brand-new preview session must keep its viewers connected.
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);  // initial frame + new-session frame
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    f.video.stop_streaming();
+}
+
+/**
+ * @brief Last-activity-off teardown stops the loop then closes viewers.
+ */
+void test_final_teardown_stops_loop_then_closes_viewers()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    sink.scheduler_ref = &f.capture_scheduler;
+    f.video.set_stream_service(&sink);
+
+    f.video.start_streaming();
+    f.capture_one_frame();
+
+    f.video.stop_streaming();
+
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    // Viewers are closed only after the scheduler has been stopped.
+    TEST_ASSERT_FALSE(sink.loop_running_at_teardown);
+
+    // Stale callbacks after full teardown are ignored.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+}
+
+/**
+ * @brief capture_photo is rejected while any activity keeps the loop
+ *        running, and allowed once fully idle.
+ */
+void test_capture_photo_gating_across_modes()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    // Preview-only: rejected
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+
+    // Recording + preview: rejected
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+
+    // Recording only: rejected
+    f.video.stop_streaming();
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+
+    // Fully idle: allowed
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+}
+
+// ============================================================
+// Start racing a last-consumer teardown
+// ============================================================
+
+/**
+ * @brief Scheduler double whose stop() blocks on a gate.
+ *
+ * Emulates the bounded asynchronous join window of the platform
+ * scheduler (CaptureSchedulerEsp32::stop() waits for the capture task
+ * to exit) so tests can interleave a concurrent lifecycle command into
+ * the teardown. Like the real scheduler, the final callback runs once
+ * before stop() returns and the started state clears only afterwards.
+ */
+struct GatedStopScheduler : public ICaptureScheduler
+{
+    std::function<void()> callback;
+    std::atomic<bool> started{false};
+    std::atomic<bool> stop_entered{false};
+    std::atomic<bool> release_stop{false};
+
+    /** Number of times stop() has been entered. */
+    int stop_call_count{0};
+
+    bool start(uint32_t /*interval_ms*/,
+               std::function<void()> frame_callback) override
+    {
+        bool expected = false;
+        if (!started.compare_exchange_strong(expected, true))
+        {
+            return false;
+        }
+        callback = frame_callback;
+        return true;
+    }
+
+    void stop() override
+    {
+        stop_call_count++;
+        if (!started.exchange(false))
+        {
+            return;
+        }
+        stop_entered.store(true, std::memory_order_release);
+        while (!release_stop.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        // Final callback pass, mirroring the real scheduler's contract.
+        if (callback)
+        {
+            callback();
+        }
+    }
+
+    void on_frame_capture() override
+    {
+        if (started.load() && callback)
+        {
+            callback();
+        }
+    }
+
+    bool is_started() const
+    {
+        return started.load();
+    }
+};
+
+/**
+ * @brief A start racing a last-consumer teardown can never produce a
+ *        registered-but-not-running activity.
+ *
+ * Contends START_STREAM against a concurrent STOP_STREAM whose teardown
+ * join is held open by a gate, emulating the cross-transport interleaving
+ * where one transport tears the pipeline down while the other starts an
+ * activity into the dying loop. The invariant under test: whenever the
+ * controller reports streaming active afterwards, the capture loop must
+ * actually be running and frames must be delivered — a silent dead
+ * registration is a defect.
+ */
+void test_start_racing_last_consumer_teardown_never_dead_registers()
+{
+    constexpr int ROUNDS = 100;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        MockCameraHal camera_hal;
+        MockSdCardHal sd_hal;
+        MockLogBackend log_backend;
+        RealTimeService time;
+        LoggingService logger(log_backend, time);
+        SdController sd_controller(time, sd_hal);
+        CameraController camera_ctrl(camera_hal);
+        GatedStopScheduler scheduler;
+        VideoController video(camera_ctrl, sd_controller, time, logger,
+                              scheduler);
+
+        camera_hal.init_result = hal::CameraInitResult::SUCCESS;
+        camera_ctrl.init();
+
+        ConfigData::VideoConfig config;
+        config.fps = TEST_FPS;
+        strcpy(config.resolution, "VGA");
+        config.clip_duration_s = TEST_CLIP_DURATION_S;
+        config.max_file_size_mb = 0;
+        config.jpeg_quality = 10;
+        video.init(config, TEST_WIDTH, TEST_HEIGHT);
+
+        TrackingSink sink;
+        video.set_stream_service(&sink);
+
+        TEST_ASSERT_TRUE(video.start_streaming());
+
+        std::atomic<bool> go{false};
+        std::thread stopper([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            video.stop_streaming();
+        });
+        std::thread restarter([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            // Contending start from the second command transport.
+            (void)video.start_streaming();
+        });
+
+        for (int i = 0; i < 64; i++)
+        {
+            std::this_thread::yield();
+        }
+        go.store(true, std::memory_order_release);
+
+        // Wait until the stopper is inside the gated teardown join.
+        constexpr long MAX_SPIN = 10000000L;
+        long spins = 0;
+        while (!scheduler.stop_entered.load(std::memory_order_acquire) &&
+               spins++ < MAX_SPIN)
+        {
+            std::this_thread::yield();
+        }
+        scheduler.release_stop.store(true, std::memory_order_release);
+        stopper.join();
+        restarter.join();
+
+        // Core invariant: reported streaming state and actual loop state
+        // must agree — no registered-but-dead activity.
+        const bool streaming = video.is_streaming();
+        TEST_ASSERT_EQUAL_INT(streaming ? 1 : 0,
+                              scheduler.is_started() ? 1 : 0);
+
+        if (streaming)
+        {
+            memset(camera_hal.frame_buffer, 0xAB, FAKE_JPEG_SIZE);
+            camera_hal.capture_result = {camera_hal.frame_buffer,
+                                         FAKE_JPEG_SIZE};
+            sink.deliveries = 0;
+            scheduler.on_frame_capture();
+            TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+        }
+
+        // Wind down deterministically for the next round.
+        video.stop_streaming();
+        TEST_ASSERT_FALSE(video.is_streaming());
+        TEST_ASSERT_FALSE(scheduler.is_started());
+    }
+}
+
+// ============================================================
+// Concurrent start contention
+// ============================================================
+
+/**
+ * @brief Teardown entry is single-flight across command transports.
+ *
+ * Reproduces the cross-transport interleaving where STOP_STREAM's
+ * teardown join is held open while a second transport runs a complete
+ * START_STREAM + STOP_STREAM pair into the dying loop. The second
+ * stop must not enter the scheduler a second time (the platform
+ * scheduler's stop() is not reentrant); instead it defers to the
+ * in-flight owner, whose post-join recheck observes the emptied
+ * registry and completes the teardown exactly once.
+ */
+void test_concurrent_teardown_is_single_flight()
+{
+    MockCameraHal camera_hal;
+    MockSdCardHal sd_hal;
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger(log_backend, time);
+    SdController sd_controller(time, sd_hal);
+    CameraController camera_ctrl(camera_hal);
+    GatedStopScheduler scheduler;
+    VideoController video(camera_ctrl, sd_controller, time, logger,
+                          scheduler);
+
+    camera_hal.init_result = hal::CameraInitResult::SUCCESS;
+    camera_ctrl.init();
+
+    ConfigData::VideoConfig config;
+    config.fps = TEST_FPS;
+    strcpy(config.resolution, "VGA");
+    config.clip_duration_s = TEST_CLIP_DURATION_S;
+    config.max_file_size_mb = 0;
+    config.jpeg_quality = 10;
+    video.init(config, TEST_WIDTH, TEST_HEIGHT);
+
+    TrackingSink sink;
+    video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(video.start_streaming());
+
+    std::atomic<bool> go{false};
+    std::thread stopper([&]()
+    {
+        while (!go.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        video.stop_streaming();
+    });
+
+    for (int i = 0; i < 64; i++)
+    {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+
+    // Wait until the first stopper owns the gated teardown join (its
+    // lifecycle mutex is released while blocked there).
+    constexpr long MAX_SPIN = 10000000L;
+    long spins = 0;
+    while (!scheduler.stop_entered.load(std::memory_order_acquire) &&
+           spins++ < MAX_SPIN)
+    {
+        std::this_thread::yield();
+    }
+
+    // Second transport runs a full start+stop pair into the dying loop
+    // while the first teardown still owns the join window.
+    TEST_ASSERT_TRUE(video.start_streaming());
+    video.stop_streaming();
+
+    // The second stop must never have driven a second scheduler stop.
+    TEST_ASSERT_EQUAL_INT(1, scheduler.stop_call_count);
+    TEST_ASSERT_EQUAL_INT(0, sink.teardown_calls);
+
+    // Release the join: the owning teardown's post-join recheck sees an
+    // empty registry and completes the teardown exactly once.
+    scheduler.release_stop.store(true, std::memory_order_release);
+    stopper.join();
+
+    TEST_ASSERT_FALSE(video.is_streaming());
+    TEST_ASSERT_FALSE(video.is_recording());
+    TEST_ASSERT_FALSE(scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, scheduler.stop_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+}
+
+/**
+ * @brief Concurrent start attempts can never silently lose or
+ *        duplicate a registration.
+ *
+ * Contends START_RECORDING (main thread, standing in for the serial
+ * transport) against several concurrent START_STREAM attempts (worker
+ * threads, standing in for the web transport) and asserts the registry
+ * invariants: every command that reports success leaves its activity
+ * observable via the status queries, each frame trigger is delivered
+ * exactly once to the stream sink, and recording accumulates exactly
+ * one frame per trigger (duplicate sink registration would double
+ * these observables).
+ */
+void test_concurrent_starts_never_lose_registration()
+{
+    constexpr int ROUNDS = 150;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        TestFixture f;
+        TrackingSink sink;
+        f.video.set_stream_service(&sink);
+        f.setup_fake_frame();
+
+        std::atomic<bool> go{false};
+        std::atomic<int> stream_started{0};
+        std::atomic<int> record_started{0};
+
+        auto stream_contender = [&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            if (f.video.start_streaming())
+            {
+                stream_started.fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+
+        std::thread s1(stream_contender);
+        std::thread s2(stream_contender);
+        std::thread s3(stream_contender);
+
+        // Give the contenders time to reach the barrier before opening it.
+        for (int i = 0; i < 64; i++)
+        {
+            std::this_thread::yield();
+        }
+        go.store(true, std::memory_order_release);
+
+        // Main thread contends as the second command transport.
+        if (f.video.start_recording())
+        {
+            record_started.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        s1.join();
+        s2.join();
+        s3.join();
+
+        // Every successful start leaves its activity observable.
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(record_started.load() > 0),
+                              static_cast<int>(f.video.is_recording()));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(stream_started.load() > 0),
+                              static_cast<int>(f.video.is_streaming()));
+
+        // Exactly one registration per successful activity.
+        const uint32_t frames_before = f.video.frames_recorded();
+        f.capture_one_frame();
+
+        TEST_ASSERT_EQUAL_INT(f.video.is_streaming() ? 1 : 0,
+                              sink.deliveries);
+        TEST_ASSERT_EQUAL_UINT32(
+            frames_before + (f.video.is_recording() ? 1u : 0u),
+            f.video.frames_recorded());
+    }
 }
 
 // ============================================================
@@ -1019,6 +1872,27 @@ int main()
     RUN_TEST(test_start_streaming_transitions_to_streaming);
     RUN_TEST(test_stop_streaming_transitions_to_idle);
     RUN_TEST(test_streaming_delivers_frame_without_sd_write);
+
+    // Independent recording/streaming activities
+    RUN_TEST(test_state_reports_recording_when_both_active);
+    RUN_TEST(test_stop_recording_during_streaming_keeps_preview);
+    RUN_TEST(test_restart_rejected_while_clip_close_pending);
+    RUN_TEST(test_stop_streaming_during_recording_keeps_recording);
+    RUN_TEST(test_deferred_viewer_close_survives_capture_failure);
+    RUN_TEST(test_deferred_viewer_close_does_not_leak_into_new_session);
+    RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
+    RUN_TEST(test_capture_photo_gating_across_modes);
+
+    // Consumer registry
+    RUN_TEST(test_register_consumer_lifecycle);
+    RUN_TEST(test_register_rejects_full_and_duplicate);
+    RUN_TEST(test_failed_registration_leaves_no_reserved_slot);
+    RUN_TEST(test_consumer_can_trigger_recording_from_on_frame);
+
+    // Registry concurrency (dual-transport contention)
+    RUN_TEST(test_concurrent_starts_never_lose_registration);
+    RUN_TEST(test_start_racing_last_consumer_teardown_never_dead_registers);
+    RUN_TEST(test_concurrent_teardown_is_single_flight);
 
     return UNITY_END();
 }

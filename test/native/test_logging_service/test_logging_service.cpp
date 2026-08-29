@@ -252,7 +252,7 @@ void test_multiple_calls_accumulate()
 
 void setUp()
 {
-    mock_backend = MockLogBackend();
+    mock_backend.reset();
     set_mock_millis(0);
 }
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -105,8 +106,9 @@ class MockSdCardHal : public hal::SdCardHal
         /** The length from the most recent read() call. */
         size_t last_read_len{0};
 
-        /** The path argument from the most recent create_dir() call. */
-        const char* last_create_dir_path{nullptr};
+        /** The path argument from the most recent create_dir() call.
+         *  Copied, since callers may pass a stack-local buffer. */
+        char last_create_dir_path[128]{};
 
         /** The position argument from the most recent seek() call. */
         uint32_t last_seek_pos{0};
@@ -244,7 +246,11 @@ class MockSdCardHal : public hal::SdCardHal
         bool create_dir(const char* path) override
         {
             create_dir_call_count++;
-            last_create_dir_path = path;
+            if (path != nullptr)
+            {
+                strncpy(last_create_dir_path, path,
+                        sizeof(last_create_dir_path) - 1);
+            }
             return create_dir_result;
         }
 

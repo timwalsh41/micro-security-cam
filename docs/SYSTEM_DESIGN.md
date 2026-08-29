@@ -14,7 +14,7 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                  Application  (main.cpp)                    │
 │  setup() / loop() — wires components, runs the              │
-│  photo capture cycle, video recording state machine,        │
+│  photo capture cycle, video capture pipeline,               │
 │  and system orchestration tick                              │
 └─────────────────────────────────────────────────────────────┘
                          │
@@ -59,7 +59,7 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 | Task | Created By | Layer | Core | Stack (bytes) | Priority | Scope / Responsibility |
 |------|-----------|-------|------|---------------|----------|------------------------|
 | `loopTask` | Arduino framework | Arduino framework | 1 | framework-managed | framework-managed | Runs `setup()` then `loop()`. `loop()` ticks the `CommandHandler` (polls serial/web transports), the `SystemOrchestrator`, and the `LedStateMachine`, and emits the periodic heartbeat log. |
-| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_write_frame()` to capture a frame and write it to SD. Exits (and signals an exit semaphore) when `stop()` is requested. |
+| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_dispatch_frame()` to capture a frame and dispatch it to registered consumers. Exits (and signals an exit semaphore) when `stop()` is requested. |
 | `async_tcp` | `AsyncTCP` library | Arduino framework | 1 | library-managed | library-managed | AsyncTCP event loop task that services TCP connections for the `ESPAsyncWebServer`. |
 | `wifi` | ESP-IDF | ESP-IDF framework | 0 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF WiFi driver task handling the WiFi MAC/PHY event loop. |
 | `ipc0` / `ipc1` | ESP-IDF | ESP-IDF framework | 0 / 1 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF inter-processor call tasks used for cross-core function calls (e.g. cache flush, flash operations). |
@@ -333,6 +333,7 @@ package "Services" {
 
     interface IStreamService {
         +deliver_frame(data : const uint8_t*, len : size_t)
+        +stop_all_streams()
     }
 
     class StreamService {
@@ -491,12 +492,6 @@ package "Command dispatch framework" {
 
 package "Controllers" {
 
-    enum RecordingState {
-        IDLE
-        STREAMING
-        RECORDING
-    }
-
     class CameraController {
         -m_hal : CameraHal&
         -m_config : CameraConfig
@@ -514,7 +509,11 @@ package "Controllers" {
     }
 
     class VideoController {
-        -m_state : atomic<RecordingState>
+        -m_slots : ConsumerSlot[3]
+        -m_record_sink : RecordSink
+        -m_stream_sink : StreamSink
+        -m_stop_clip : atomic<bool>
+        -m_clip_close_pending : atomic<bool>
         -m_avi_writer : AviWriter
         -m_stream_service : IStreamService*
         -m_config : VideoConfig
@@ -528,8 +527,16 @@ package "Controllers" {
         +start_streaming() : bool
         +stop_streaming()
         +set_stream_service(stream_service)
-        +state() : RecordingState
-        -capture_and_write_frame()
+        +register_frame_consumer(consumer) : int
+        +unregister_frame_consumer(id)
+        +is_recording() : bool
+        +is_streaming() : bool
+        +is_capture_active() : bool
+        -capture_and_dispatch_frame()
+        -write_avi_frame(data, len)
+        -handle_clip_closure()
+        -teardown_capture_pipeline()
+        -ensure_loop_running() : bool
         -open_clip()
         -close_clip()
     }
@@ -632,9 +639,9 @@ VideoController --> SdController_ext : sync writes
 VideoController --> LoggingService_ext : diagnostics
 VideoController --> TimeService_ext : clip duration
 VideoController --> ICaptureScheduler : frame pacing
-VideoController --> "0..1" IStreamService_ext : optional frame sink
+VideoController --> "0..1" IStreamService_ext : optional frame sink + viewer teardown
 VideoController --> StreamService_ext : set_stream_service() wiring
-VideoController ..> RecordingState : m_state
+VideoController o-right-> "0..3" IFrameConsumer : consumer registry
 CaptureSchedulerEsp32 --> TimerHal_ext : periodic ISR
 
 @enduml
@@ -927,7 +934,7 @@ Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-re
 
 #### Interfaces
 
-- `IStreamService` — minimal frame-sink interface consumed by `VideoController`. Declares only `deliver_frame(data, len)`, mirroring the `ICaptureScheduler` abstraction pattern so `VideoController` stays decoupled and natively testable.
+- `IStreamService` — minimal frame-sink interface consumed by `VideoController`. Declares `deliver_frame(data, len)` and `stop_all_streams()`, mirroring the `ICaptureScheduler` abstraction pattern so `VideoController` stays decoupled and natively testable.
 - `hal::StreamWriter` — abstract write sink (`write()`, `close()`, `on_disconnect()`). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native).
 
 #### API
@@ -937,6 +944,7 @@ Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-re
 | `init(max_streams)` | Sets the maximum concurrent stream slots (clamped to `MAX_STREAMS = 8`). |
 | `start_stream(writer)` | Takes ownership of the writer (`std::unique_ptr<hal::StreamWriter>`), registers its disconnect callback, writes the HTTP 200 + multipart preamble, and returns the slot index (`-1` if full). |
 | `stop_stream(slot)` | Writes the closing boundary, closes and deletes the writer, and frees the slot. |
+| `stop_all_streams()` | Stops every active stream via `stop_stream()`. Invoked by `VideoController` whenever streaming mode turns off and when the capture pipeline is torn down, so viewers never outlive frame delivery. During recording, the close is executed by the capture task at the next dispatch boundary so it cannot interleave with an in-flight `deliver_frame()`. |
 | `deliver_frame(data, len)` | Writes a multipart JPEG part (`Content-Type: image/jpeg`, `Content-Length`, frame bytes) to every active slot. |
 | `active_slot_count()` | Returns the number of active viewers. |
 
@@ -946,13 +954,13 @@ Each slot owns its writer via `std::unique_ptr`, so the writer is deleted exactl
 
 #### Streaming Model
 
-Streaming leverages the single capture loop owned by `VideoController`, which exposes a three-state model (`IDLE` / `STREAMING` / `RECORDING`); see the [VideoController State Machine](#state-machine) for the canonical state diagram.
+Streaming leverages the single capture loop owned by `VideoController`, where recording and streaming are independent frame-consumer subscriptions over one producer; see the [Consumer Registry](#consumer-registry-activity-model) section for the canonical model.
 
-- **`IDLE`** — capture loop off; no frames produced.
-- **`STREAMING`** — capture loop on at `[video]` FPS; frames delivered to streams only.
-- **`RECORDING`** — capture loop on; frames written to SD **and** delivered to streams.
+- **capture loop off (IDLE)** — no frames produced.
+- **streaming only** — capture loop on at `[video]` FPS; frames delivered to streams only.
+- **recording** — capture loop on; frames written to SD, **and** delivered to streams when streaming mode is active (`is_streaming()`).
 
-The `/stream` endpoint requires streaming to already be active (an explicit `START_STREAM`, or recording in progress) before a viewer can connect.
+The `/stream` endpoint requires streaming mode to be explicitly active (an explicit `START_STREAM`) before a viewer can connect. Viewers therefore exist only while streaming mode is active, which means they are closed whenever streaming turns off (`STOP_STREAM`), not only when the capture pipeline tears down. While recording keeps the capture loop running, the close is deferred to the next frame dispatch so it never races an in-flight delivery; it completes within one frame period.
 
 ### LoggingService
 
@@ -1340,12 +1348,12 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"state":int,"frames":uint32,"file_size":uint32}` | Returns current recording state, state machine value, frame count, and accumulated file size. No side effects. |
-| `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Returns `INVALID_STATE` if already recording, `INTERNAL_ERROR` if recording fails to start. |
-| `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session synchronously: flags the clip for closure, stops the capture scheduler, and waits (bounded) for the capture task to run its final frame callback, which closes the clip and transitions to IDLE. On return the state is `IDLE`. |
-| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` if recording, `INTERNAL_ERROR` if capture or write fails. |
-| `0x13` | `START_STREAM` | None | None | Begins live preview: transitions `VideoController` to `STREAMING` (capture loop on, frames to streams only). No-op success if already `STREAMING` or `RECORDING`. |
-| `0x14` | `STOP_STREAM` | None | None | Stops live preview: transitions `STREAMING` → `IDLE`. No-op if not streaming (does not stop recording). |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"frames":uint32,"file_size":uint32}` | Returns current recording and streaming subscription state, frame count, and accumulated file size. No side effects. |
+| `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
+| `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
+| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` while the capture loop is running (either activity), `INTERNAL_ERROR` if capture or write fails. |
+| `0x13` | `START_STREAM` | None | None | Begins live preview: marks streaming active and starts the capture loop if not already running (reused during recording). No-op success if already active. |
+| `0x14` | `STOP_STREAM` | None | None | Clears streaming mode; all connected viewers are closed (within one frame period when recording continues), and when no other consumer remains the capture pipeline is torn down as well. Idempotent no-op if not active. |
 | `0x15` | `LIST_STREAMS` | None | JSON string: `{"active_streams":uint8}` | Returns the number of currently connected stream viewers. |
 | `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
 | `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
@@ -1463,38 +1471,79 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 - `SdController &` — for SD file I/O via synchronous API (write, seek, create directory).
 - `TimeService &` — for clip duration tracking (elapsed time checks).
 - `LoggingService &` — for diagnostic output.
-- `ICaptureScheduler &` — for platform-agnostic periodic frame capture scheduling. The scheduler invokes `capture_and_write_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
+- `ICaptureScheduler &` — for platform-agnostic capture scheduling. The scheduler invokes `capture_and_dispatch_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
 - `AviWriter` — owned; formats AVI byte streams in memory.
 
-### State Machine
+### Consumer Registry (Activity Model)
+
+The capture loop is the sole frame **producer**; activities interested in
+frames are **subscribers**. `VideoController` hosts a fixed-size registry
+of `IFrameConsumer` implementations (`include/frame_consumer.h`); the loop
+runs while at least one consumer is registered and is torn down — closing
+all connected stream viewers — when the last one detaches. There is no
+enumerated mode: which activities are live is exactly "which consumers are
+registered". Recording and streaming are independent subscribers sharing
+the single loop; `is_recording()` / `is_streaming()` report each
+subscription directly, and `is_capture_active()` reports whether the loop
+is running for any consumer.
 
 ```plantuml
 @startuml
-title VideoController State Machine
+title VideoController Producer / Subscriber Model
 
-state IDLE
-state STREAMING
-state RECORDING
+interface ICaptureScheduler
+interface IFrameConsumer
 
-IDLE --> STREAMING : start_streaming()
-IDLE --> RECORDING : start_recording()
-STREAMING --> RECORDING : start_recording()\n(reuses running scheduler)
-STREAMING --> IDLE : stop_streaming()
-RECORDING --> IDLE : stop_recording()\n(synchronous)
-RECORDING --> RECORDING : clip limit reached\n(auto-rotate new clip)
+class VideoController {
+  registry : ConsumerSlot[3]
+  +register_frame_consumer(c) : int
+  +unregister_frame_consumer(id)
+  +is_recording() / is_streaming() / is_capture_active()
+  -capture_and_dispatch_frame()
+}
 
+class RecordSink {
+  AVI format + SD write
+}
+class StreamSink {
+  IStreamService::deliver_frame()
+}
+
+ICaptureScheduler ..> VideoController : frame trigger
+circle "frame pump" as PUMP
+VideoController ..> PUMP
+PUMP --> IFrameConsumer : on_frame(data, len)
+IFrameConsumer <|.. RecordSink
+IFrameConsumer <|.. StreamSink
+note bottom of IFrameConsumer
+  future subscribers (e.g. phase-6 motion detection)
+end note
+VideoController --> RecordSink : owns
+VideoController --> StreamSink : owns
 @enduml
 ```
 
-- **IDLE** — Not recording. Awaits `start_recording()`, `start_streaming()`, or `capture_photo()`.
-- **STREAMING** — Live preview: the capture loop runs at the configured FPS and delivers frames to connected stream clients only (no AVI/SD writes).
-- **RECORDING** — Actively capturing and writing frames at the configured FPS. Clip auto-rotates when duration or file size limit is reached. Frames are also delivered to stream clients.
+Built-in consumers:
 
-`stop_streaming()` is ignored while `RECORDING` (recording keeps the capture loop alive), and `stop_recording()` is ignored while `STREAMING` (streaming keeps the capture loop alive). Because recording and streaming share the single capture loop, stopping the loop from either state ends both activities and returns to `IDLE`.
+- **RecordSink** — recording's built-in sink, owned by `VideoController`. `start_recording()` claims a registry slot for it internally via `claim_slot()` after opening the clip — it is never registered through the public API. Formats each frame as an AVI chunk and writes it to SD; requests clip closure via the rotation limit or explicit stop.
+- **StreamSink** — streaming's built-in sink, owned by `VideoController`. `start_streaming()` claims a slot for it internally via `claim_slot()`; forwards every frame to the `IStreamService` for delivery to connected viewers.
+- **External consumers** — registered through the public `register_frame_consumer()` / `unregister_frame_consumer()` API. The production firmware registers none today; the API is the extension point for additional consumers such as the planned phase-6 motion-detection consumer, which may call `start_recording()` from its frame callback (no controller special-casing required). Only native tests exercise it at present.
 
-`stop_recording()` is **synchronous**: it flags the current clip for closure, stops the capture scheduler, and blocks (bounded) until the capture task runs its final frame callback, which closes the clip and returns the state to `IDLE`. On successful return the state is always `IDLE`, so `GET_STATUS` reports `recording:false` immediately and a subsequent `start_recording()` succeeds right away.
+This split matters when reading the code: `start_recording()` and `start_streaming()` claim slots for their built-in sinks themselves (see `claim_slot()` in `src/video_controller.cpp`), so a search for production calls to `register_frame_consumer()` finds none — that is by design, not a missing call site. The public registration API exists solely for external, out-of-tree consumers.
 
-`start_streaming()`/`stop_streaming()` manage the preview state: `start_streaming()` starts the capture scheduler without opening a clip, and `stop_streaming()` stops it and returns to `IDLE`. `start_recording()` when already `STREAMING` reuses the running scheduler (it does not start a second task).
+Lifecycle rules:
+
+- `start_recording()` / `start_streaming()` subscribe their consumer and start the loop if it is not already running (reused, never duplicated).
+- `stop_recording()` unsubscribes immediately so status queries observe the stop right away and requests clip closure. When other consumers keep the loop running the clip is finalized by the next frame callback (bounded by one frame period); `start_recording()` is rejected until finalization completes (`clip close pending`). When it was the last subscriber the pipeline is torn down synchronously (bounded), whose final callback closes the clip and closes all connected stream viewers.
+- `stop_streaming()` unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` within that window cancels the pending close since streaming mode is active again.
+- Clip rotation reopens a fresh clip while recording remains subscribed.
+- `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle.
+- Start/stop commands may arrive from multiple task contexts (the web transport dispatches in the AsyncTCP task, serial commands in the main-loop task). All lifecycle mutation sections — activity starts/stops, consumer registration/unregistration, and the `capture_photo()` gate check — are mutually exclusive under a single lifecycle mutex, so concurrent commands can fail cleanly with an error response but can never interleave: registrations cannot be silently lost or duplicated, a start cannot bind into a loop that is being torn down, and a deferred viewer-close decision cannot be reordered behind a concurrent streaming restart. The frame pump stays lock-free over the registry slots; consumers invoking `start_recording()` from their frame callback only ever block on short critical sections. Stop paths release the lifecycle mutex around the bounded scheduler join inside the teardown: after the join they recheck the registry, honoring a concurrent registration by restarting the loop and deferring the teardown to a later stop (under pathological start/stop churn a teardown attempt may therefore be deferred, but it can never complete under a live registry). This keeps the capture task from ever blocking behind a joining stop path.
+
+Known limitations:
+
+- Clip open/close state (`clip open`, finalization, rotation reopen) is currently mutated from both command-task contexts and the capture task without mutual exclusion. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the capture task's rotation window can in principle abandon a clip with an unpatched AVI header; hardening this lifecycle (single-owner clip operations in the capture task) is scheduled as a dedicated follow-up.
+- `StreamService` has no internal synchronization across task contexts: viewer close runs `stop_all_streams()` from two contexts — the deferred close via `process_pending_viewer_close()` inside the capture task's frame dispatch, and the teardown-path close inside `teardown_capture_pipeline()` in the command-task context of the stop/unregister caller — while `start_stream()` binding and `free_slot()` (viewer disconnect) run in the AsyncTCP task. These are unsynchronized, so a timed viewer connect/stop interleaving can leave a viewer hanging on a silent multipart response or cause a use-after-free on a stream writer (reliability/remote-crash class). `deliver_frame()` vs `free_slot()` shares the same family. The fix is planned as part of the upcoming `VideoController`/`StreamService` synchronization refactor.
 
 ### Capture Scheduling
 
@@ -1517,6 +1566,9 @@ participant "CaptureScheduler\nEsp32" as CS
 participant "TimerHalImpl\n(ISR)" as TMR
 participant "Capture Task\n(CPU0)" as TASK
 participant "VideoController" as VC
+participant "RecordSink\n(claimed slot)" as RS
+participant "StreamSink\n(claimed slot)" as ST
+participant "StreamService" as SS
 participant "CameraController" as CAM
 participant "AviWriter" as AVI
 participant "SdController" as SDC
@@ -1534,13 +1586,16 @@ activate SDC
 SDC -> SD : open(WRITE) → write(224 B) → close()
 SD --> SDC
 deactivate SDC
+VC -> VC : ensure_loop_running()
+note right: skipped when another consumer\n(e.g. streaming) already keeps\nthe loop running
 VC -> CS : start(interval_ms, callback)
 activate CS
 CS -> CS : init timer ISR
 CS -> TASK : xTaskCreatePinnedToCore()
 CS -> TMR : start()
 deactivate CS
-VC -> VC : state = RECORDING
+VC -> VC : claim_slot(id, RecordSink)
+note right: is_recording() is the\nregistry subscription
 VC --> MAIN : return true
 deactivate VC
 
@@ -1552,7 +1607,7 @@ TMR -> CS : on_frame_capture()
 CS -> TASK : vTaskNotifyGiveFromISR()
 activate TASK
 
-TASK -> VC : capture_and_write_frame()
+TASK -> VC : capture_and_dispatch_frame()
 activate VC
 
 VC -> CAM : capture_frame()
@@ -1561,16 +1616,29 @@ CAM --> VC : SUCCESS
 VC -> CAM : get_frame()
 CAM --> VC : JPEG data
 
-VC -> AVI : write_frame(jpeg_data, len)
+VC -> VC : iterate registered slots
+note right: frame dispatch over the\nconsumer registry
+
+VC -> RS : on_frame(jpeg, len)
+activate RS
+RS -> AVI : write_frame(jpeg_data, len)
 note right: Wraps JPEG as 0x00dc\nAVI chunk with padding
 
-AVI --> VC : last_frame_chunk()
+AVI --> RS : last_frame_chunk()
 
-VC -> SDC : write_sync(path, chunk, APPEND)
+RS -> SDC : write_sync(path, chunk, APPEND)
 activate SDC
 SDC -> SD : open(APPEND) → write(chunk) → close()
 SD --> SDC
 deactivate SDC
+deactivate RS
+
+alt streaming also subscribed
+    VC -> ST : on_frame(jpeg, len)
+    activate ST
+    ST -> SS : deliver_frame(jpeg, len)
+    deactivate ST
+end
 
 VC -> CAM : release_frame()
 VC -> VC : frames_recorded++\nfile_size += chunk.len
@@ -1604,23 +1672,32 @@ deactivate TASK
 
 end
 
-== Explicit Stop (synchronous) ==
+== Explicit Stop ==
 
 MAIN -> VC : stop_recording()
 activate VC
 VC -> VC : m_stop_clip = true
-VC -> CS : stop()
-activate CS
-CS -> TMR : stop()
-CS -> TASK : xTaskNotifyGive()
-CS -> TASK : join (bounded wait on exit semaphore)
-note right: stop() blocks until the\ntask has run its final\ncallback and exited
-CS --> VC : return
-deactivate CS
+VC -> VC : detach_consumer(RecordSink)
+note right: is_recording() false right away;\nrecord claim released
+alt other consumers keep the loop running
+    VC -> VC : loop keeps running;
+    note right: clip is finalized by the\nnext frame callback\n(one frame period bound);\nstart_recording() rejected\nuntil then (clip close pending)
+else last subscriber: teardown
+    VC -> CS : stop()
+    activate CS
+    CS -> TMR : stop()
+    CS -> TASK : xTaskNotifyGive()
+    CS -> TASK : join (bounded wait on exit semaphore)
+    note right: stop() blocks until the\ntask has run its final\ncallback and exited
+    CS --> VC : return
+    deactivate CS
+    VC -> SS : stop_all_streams()
+    note right: viewers closed after the join
+end
 deactivate VC
 
 activate TASK
-TASK -> VC : capture_and_write_frame()
+TASK -> VC : capture_and_dispatch_frame()
 activate VC
 VC -> VC : close_clip()
 note right: Appends index,\nthen seeks to offset 0\nto overwrite header
@@ -1635,7 +1712,8 @@ SDC -> SD : open(READ_WRITE) → seek(0) → write(hdr) → close()
 note right: READ_WRITE preserves\nexisting content; only\nthe header bytes are\nreplaced
 SD --> SDC
 deactivate SDC
-VC -> VC : state = IDLE
+VC -> VC : clip finalized
+note right: clip-close-pending cleared
 deactivate VC
 TASK -> TASK : vTaskDelete()
 deactivate TASK
@@ -1656,6 +1734,7 @@ title Live MJPEG Streaming Flow
 participant "Client\n(browser)" as CLIENT
 participant "SystemOrchestrator" as ORCH
 participant "VideoController" as VC
+participant "StreamSink\n(claimed slot)" as ST
 participant "CaptureScheduler\nEsp32" as CS
 participant "Capture Task\n(CPU0)" as TASK
 participant "CameraController" as CAM
@@ -1668,9 +1747,12 @@ participant "AsyncTCP\n(client)" as TCP
 CLIENT -> ORCH : START_STREAM (cmd=stream_start)
 ORCH -> VC : start_streaming()
 activate VC
+VC -> VC : ensure_loop_running()
+note right: starts the loop only when\nno consumer is served yet\n(reused when recording is active)
 VC -> CS : start(interval_ms, callback)
 note right: capture loop on,\nno clip opened
-VC -> VC : state = STREAMING
+VC -> VC : claim_slot(id, StreamSink)
+note right: is_streaming() is the\nregistry subscription
 VC --> ORCH : true
 deactivate VC
 ORCH --> CLIENT : {"result":"ok"}
@@ -1679,7 +1761,7 @@ ORCH --> CLIENT : {"result":"ok"}
 
 CLIENT -> ORCH : GET /stream
 ORCH -> ORCH : check_basic_auth()
-ORCH -> ORCH : state == STREAMING? (yes)
+ORCH -> ORCH : is_streaming()? (yes)
 ORCH -> VC : (request.create_stream_writer())
 ORCH -> WRITER : new AsyncWebStreamWriter(client)
 ORCH -> SS : start_stream(writer)
@@ -1693,17 +1775,22 @@ deactivate SS
 
 loop at configured FPS interval
 
-TASK -> VC : capture_and_write_frame()
+TASK -> VC : capture_and_dispatch_frame()
 activate VC
 VC -> CAM : capture_frame()
 CAM --> VC : JPEG frame
-VC -> SS : deliver_frame(jpeg, len)
+VC -> VC : iterate registered slots
+note right: frame dispatch over the\nconsumer registry
+VC -> ST : on_frame(jpeg, len)
+activate ST
+ST -> SS : deliver_frame(jpeg, len)
 activate SS
 SS -> WRITER : write(--boundary + Content-Type: image/jpeg)
 SS -> WRITER : write(Content-Length: N)
 SS -> WRITER : write(JPEG bytes)
 WRITER -> TCP : client->write(...)
 deactivate SS
+deactivate ST
 VC -> CAM : release_frame()
 deactivate VC
 
@@ -1713,8 +1800,20 @@ end
 
 CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
 ORCH -> VC : stop_streaming()
-VC -> CS : stop()
-VC -> VC : state = IDLE
+VC -> VC : detach_consumer(StreamSink)
+alt recording keeps the loop running
+    VC -> VC : queue deferred viewer close
+    note over VC,SS
+      the capture task closes the viewers at the
+      next frame dispatch (one frame period bound):
+      process_pending_viewer_close() -> stop_all_streams();
+      a START_STREAM within the window cancels the close
+    end note
+else last subscriber: teardown
+    VC -> CS : stop() (only when no consumer remains)
+    VC -> SS : stop_all_streams()
+    note right: viewers closed after the join
+end
 ORCH --> CLIENT : {"result":"ok"}
 
 @enduml
@@ -1960,7 +2059,7 @@ activate ORCH
 
 ' Delegate to VideoController
 ORCH -> ORCH : m_video.start_recording()
-note right: Transitions\nVideoController\nstate to RECORDING
+note right: Opens a clip, starts the\ncapture loop if needed, and\nclaims a RecordSink slot
 
 ORCH --> CMDH : return SUCCESS
 deactivate ORCH
