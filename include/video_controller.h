@@ -232,7 +232,8 @@ class VideoController
 
         /**
          * @brief Maximum number of simultaneously subscribed frame
-         *        consumers (recording + streaming + headroom for motion).
+         *        consumers (recording + streaming + headroom for
+         *        additional consumers).
          */
         static constexpr size_t MAX_FRAME_CONSUMERS = 3;
 
