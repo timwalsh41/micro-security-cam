@@ -21,14 +21,17 @@
  * an explicit contract instead of being mutated from two task contexts
  * under an unwritten locking discipline.
  *
- * Locking contract: all methods run in the owning controller's executor
- * context (the capture task) — task affinity makes clip
+ * Locking contract: all methods run under the owning controller's
+ * executor token — the capture task holds it for each frame activation,
+ * and the command-side serve path (which also executes requests) claims
+ * it under m_command_mutex. The token, not task affinity, makes clip
  * open/finalize/rotation-reopen mutually exclusive against command-task
  * lifecycle mutations by construction, since commands can only change
- * the registry at executor activation boundaries. The close/rotation
- * request flag and the counters stay atomic: the close request is also
- * set by stop paths, and the counters are read cross-task for status
- * queries.
+ * the registry at executor activation boundaries (the serve path itself
+ * runs with t_executor_context false; only the capture task's
+ * activation sets it). The close/rotation request flag and the counters stay
+ * atomic: the close request is also set by stop paths, and the counters
+ * are read cross-task for status queries.
  *
  * AVI write strategy: per-frame SD writes. Each frame is formatted by
  * AviWriter and immediately written to SD. At clip close the index is
@@ -200,10 +203,11 @@ class AviClipSession
 
         // Close/rotation request flag: written lock-free by the frame
         // pump (rotation limits) and stop paths, consumed by the closure
-        // handler under the lifecycle mutex.
+        // handler in the owning task's executor context.
         std::atomic<bool> m_close_requested{false};
-        // True while an unfinalized clip is open; only touched under the
-        // lifecycle mutex (set by open(), cleared by close()).
+        // True while an unfinalized clip is open; only touched in the
+        // owning task's executor context (set by open(), cleared by
+        // close()).
         bool m_close_pending{false};
         // Per-clip counters: written by the frame pump, read for status
         // queries from any task context.

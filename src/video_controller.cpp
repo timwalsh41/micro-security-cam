@@ -5,6 +5,11 @@
 #include <cstdio>
 #include <thread>
 
+// Out-of-line definition for the static constexpr member declared in
+// the header; required for odr-uses such as binding to
+// std::chrono::milliseconds' const& parameter.
+constexpr uint32_t VideoController::REQUEST_COMPLETION_TIMEOUT_MS;
+
 namespace
 {
 /**
@@ -99,13 +104,23 @@ bool VideoController::start_recording()
 
 void VideoController::stop_recording()
 {
-    if (!is_registered(&m_record_sink))
+    std::shared_ptr<CommandCompletion> completion;
     {
-        return;
-    }
+        std::lock_guard<std::mutex> lock(m_command_mutex);
 
-    std::shared_ptr<CommandCompletion> completion = post_request(
-        PipelineRequestType::STOP_RECORDING, nullptr, -1);
+        // Post the stop whenever the capture loop runs, even though the
+        // sink is not bound yet: a queued-but-unexecuted start keeps the
+        // loop active, and posting keeps start/stop totally ordered
+        // through the executor (the executor no-ops a stop that finds
+        // nothing bound). With the loop down no start can be pending,
+        // so the stop is a no-op.
+        if (!m_loop_active.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+        completion = post_request_locked(
+            PipelineRequestType::STOP_RECORDING, nullptr, -1);
+    }
     if (!completion)
     {
         return;
@@ -259,12 +274,13 @@ void VideoController::unregister_frame_consumer(int id)
         return;
     }
 
-    if (!m_executor_active.load(std::memory_order_relaxed))
+    if (!t_executor_context)
     {
         bool ok = false;
         wait_for_completion(completion, &ok, nullptr);
         finish_command();
     }
+    // Executor context: fire-and-forget (see start_recording()).
 }
 
 // ============================================================
@@ -280,7 +296,8 @@ bool VideoController::capture_photo(const char* path)
         // capture while activities run — is deferred; this keeps the
         // idle-only capture semantics.)
         std::lock_guard<std::mutex> lock(m_command_mutex);
-        if (is_capture_active())
+        if (is_capture_active() ||
+            m_loop_active.load(std::memory_order_relaxed))
         {
             m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
             return false;
@@ -296,7 +313,8 @@ bool VideoController::capture_photo(const char* path)
 
     hal::CameraFrame frame = m_camera.get_frame();
 
-    // Ensure the parent directory exists before writing (mirrors open_clip()).
+    // Ensure the parent directory exists before writing (mirrors
+    // AviClipSession::open()).
     // The first photo of a new day would otherwise fail to open the file.
     char dir_path[64];
     if (PathUtils::extract_parent_dir(path, dir_path, sizeof(dir_path)))
@@ -358,13 +376,19 @@ bool VideoController::start_streaming()
 
 void VideoController::stop_streaming()
 {
-    if (!is_registered(&m_stream_sink))
+    std::shared_ptr<CommandCompletion> completion;
     {
-        return;
-    }
+        std::lock_guard<std::mutex> lock(m_command_mutex);
 
-    std::shared_ptr<CommandCompletion> completion = post_request(
-        PipelineRequestType::STOP_STREAMING, nullptr, -1);
+        // Post the stop whenever the capture loop runs (see
+        // stop_recording() for the ordering rationale).
+        if (!m_loop_active.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+        completion = post_request_locked(
+            PipelineRequestType::STOP_STREAMING, nullptr, -1);
+    }
     if (!completion)
     {
         return;
@@ -457,12 +481,35 @@ void VideoController::finish_command()
     m_loop_active = false;
     m_join_in_progress = false;
 
-    if (consumer_count() > 0)
+    if (consumer_count() > 0 ||
+        m_queued.load(std::memory_order_acquire) > 0)
     {
         // A concurrent command registered consumers while the mutex was
         // released (its request was consumed by the join's final
-        // callback): honor it by restoring the loop and deferring this
-        // teardown to a later drain.
+        // callback), or another command was posted during the join
+        // window and is still queued: honor it by restoring the loop
+        // and deferring this teardown to a later drain.
+        //
+        // Registry-empty-but-queued subcase: the existing viewers
+        // belong to the ended session — close them now (the deferred
+        // close is consumed exactly once, and the queued work
+        // re-establishes its own state at its next boundary). Re-arm
+        // m_pipeline_drained so the queued work's own command
+        // completion re-decides the teardown at the next
+        // finish_command().
+        if (consumer_count() == 0 &&
+            m_queued.load(std::memory_order_acquire) > 0)
+        {
+            if (m_close_viewers_pending.load(std::memory_order_acquire))
+            {
+                m_close_viewers_pending.store(false, std::memory_order_release);
+                if (m_stream_service != nullptr)
+                {
+                    m_stream_service->stop_all_streams();
+                }
+            }
+            m_pipeline_drained.store(true, std::memory_order_release);
+        }
         if (!ensure_loop_running())
         {
             m_log.warn(SUBSYSTEM, "Teardown aborted: loop restart failed");
@@ -471,10 +518,21 @@ void VideoController::finish_command()
     }
 
     // Close all connected viewers: with the loop gone they would
-    // otherwise hang forever on a silent multipart response.
-    if (m_stream_service != nullptr)
+    // otherwise hang forever on a silent multipart response. Every
+    // drain arms the deferred close, consumed exactly once: if the
+    // executor's final join activation already closed the viewers, the
+    // flag is clear and this close is skipped. Reads/clears are
+    // mutually exclusive with the serve path (also under
+    // m_command_mutex) and ordered against the executor's writers
+    // (process_pending_viewer_close, executor_start_streaming's stale
+    // clear, execute_request's drain arm) by the atomic contract.
+    if (m_close_viewers_pending.load(std::memory_order_acquire))
     {
-        m_stream_service->stop_all_streams();
+        m_close_viewers_pending.store(false, std::memory_order_release);
+        if (m_stream_service != nullptr)
+        {
+            m_stream_service->stop_all_streams();
+        }
     }
 }
 
@@ -486,9 +544,10 @@ void VideoController::process_pending_viewer_close()
 {
     // Executor-only flag: the close runs at the dispatch boundary so it
     // cannot interleave with an in-flight deliver_frame() in this task.
-    if (m_close_viewers_pending && m_stream_service != nullptr)
+    if (m_close_viewers_pending.load(std::memory_order_acquire) &&
+        m_stream_service != nullptr)
     {
-        m_close_viewers_pending = false;
+        m_close_viewers_pending.store(false, std::memory_order_release);
         m_stream_service->stop_all_streams();
     }
 }
@@ -529,9 +588,12 @@ void VideoController::capture_and_dispatch_frame()
 
     // Guard against stale callbacks (e.g. a task notification that was
     // already queued after teardown): never capture unless a consumer is
-    // subscribed or a stopped clip still awaits its final closure.
+    // subscribed or a stopped clip still awaits its final closure. The
+    // idle pass still drains a viewer close deferred by a fire-and-forget
+    // stop so connected viewers never hang on a silent response.
     if (consumer_count() == 0 && !closing)
     {
+        process_pending_viewer_close();
         t_executor_context = false;
         m_executor_active.store(false, std::memory_order_release);
         return;
@@ -644,6 +706,18 @@ std::shared_ptr<VideoController::CommandCompletion> VideoController::post_reques
     PipelineRequestType type, IFrameConsumer* consumer, int slot_id)
 {
     std::lock_guard<std::mutex> lock(m_command_mutex);
+    return post_request_locked(type, consumer, slot_id);
+}
+
+std::shared_ptr<VideoController::CommandCompletion>
+VideoController::post_request_locked(
+    PipelineRequestType type, IFrameConsumer* consumer, int slot_id)
+{
+    // The ring handoff runs under m_queue_mutex so the executor's
+    // claim-and-snapshot of a claimed batch can never interleave with a
+    // poster overwriting a slot (possible when the ring was full and a
+    // poster's tail had wrapped onto the batch head).
+    std::lock_guard<std::mutex> queue_lock(m_queue_mutex);
 
     if (m_queued.load(std::memory_order_relaxed) >=
         static_cast<int>(MAX_PENDING_REQUESTS))
@@ -707,6 +781,14 @@ bool VideoController::wait_for_completion(
             return false;
         }
 
+        // Hold m_command_mutex across the token claim and the serve so
+        // this critical section is mutually exclusive with
+        // finish_command()'s post-join section (which holds the same
+        // mutex). The capture task's activation never takes
+        // m_command_mutex, so the executor token spin is still bounded
+        // by this bounded serve work and the capture task cannot block
+        // behind the mutex.
+        std::lock_guard<std::mutex> serve_lock(m_command_mutex);
         bool expected = false;
         if (m_executor_active.compare_exchange_strong(expected, true,
                                                        std::memory_order_acq_rel))
@@ -716,6 +798,9 @@ bool VideoController::wait_for_completion(
         }
         else
         {
+            // Token held by an in-flight capture-task activation: yield
+            // and retry on the next iteration (the mutex is released
+            // when serve_lock goes out of scope here).
             std::this_thread::yield();
         }
     }
@@ -730,46 +815,68 @@ bool VideoController::wait_for_completion(
 
 int VideoController::process_requests()
 {
-    // Claim the whole queued batch atomically. Posters run under
-    // m_command_mutex and publish slot content before bumping the count,
-    // so the acquire side of the exchange orders all published requests
-    // before consumption. m_queue_head is executor-only.
-    int n = m_queued.exchange(0, std::memory_order_acq_rel);
-    if (n <= 0)
+    // Claim the whole queued batch and snapshot it into local storage
+    // under m_queue_mutex: posters taking the same mutex can then never
+    // overwrite a slot this batch has claimed but not yet read, and the
+    // executor works on its own copies from here on. m_queue_head is
+    // executor-only.
+    PipelineRequest batch[MAX_PENDING_REQUESTS];
+    int n = 0;
     {
-        return 0;
-    }
-
-    // Snapshot the claimed batch's completion boxes up front: the
-    // executor then works on local copies, and a returning command task
-    // can never overlap the executor while the rest of its batch is
-    // still running.
-    std::shared_ptr<CommandCompletion> completions[MAX_PENDING_REQUESTS];
-    for (int i = 0; i < n; i++)
-    {
-        const int slot = (m_queue_head + i) % static_cast<int>(MAX_PENDING_REQUESTS);
-        completions[i] = m_requests[slot].completion;
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        n = m_queued.exchange(0, std::memory_order_acq_rel);
+        if (n <= 0)
+        {
+            return 0;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            const int slot =
+                (m_queue_head + i) % static_cast<int>(MAX_PENDING_REQUESTS);
+            batch[i] = m_requests[slot];
+        }
+        m_queue_head =
+            (m_queue_head + n) % static_cast<int>(MAX_PENDING_REQUESTS);
     }
 
     bool detached = false;
     for (int i = 0; i < n; i++)
     {
-        PipelineRequest& req = m_requests[m_queue_head];
-        m_queue_head = (m_queue_head + 1) % static_cast<int>(MAX_PENDING_REQUESTS);
-        execute_request(req, &detached);
+        execute_request(batch[i], &detached);
+    }
+
+    // Batch-level drain arming: the executor alone detects the
+    // transition to a drained registry (a no-op stop on an already-empty
+    // registry does not re-signal); a waiting command task consumes this
+    // signal exactly once and drives the bounded join, whose synchronous
+    // close handles the viewers. A fire-and-forget request (from
+    // on_frame()) or one whose waiter has timed out has no command task
+    // guaranteed to consume the signal: the drained signal stays armed
+    // for the next command task of any kind, and the deferred viewer
+    // close is armed unconditionally so the executor closes connected
+    // viewers itself at the next activation boundary and they never hang
+    // in the meantime (the close is consumed exactly once, so a drain
+    // never closes the viewers twice).
+    //
+    // The decision runs against the final registry state of the batch:
+    // a sequence like UNREGISTER_CONSUMER(A) followed by
+    // REGISTER_CONSUMER(B) re-fills the registry, so a per-request
+    // arming after UNREGISTER would spuriously stop_all_streams()
+    // connected viewers despite B still subscribing.
+    if (detached && consumer_count() == 0)
+    {
+        m_close_viewers_pending.store(true, std::memory_order_release);
+        m_pipeline_drained.store(true, std::memory_order_release);
     }
 
     // Signal completions only after the whole batch executed.
     for (int i = 0; i < n; i++)
     {
-        const int slot =
-            (m_queue_head - n + i + static_cast<int>(MAX_PENDING_REQUESTS)) %
-            static_cast<int>(MAX_PENDING_REQUESTS);
-        if (completions[i])
+        if (batch[i].completion)
         {
-            completions[i]->ok = m_requests[slot].result_ok;
-            completions[i]->id = m_requests[slot].result_id;
-            completions[i]->done.store(true, std::memory_order_release);
+            batch[i].completion->ok = batch[i].result_ok;
+            batch[i].completion->id = batch[i].result_id;
+            batch[i].completion->done.store(true, std::memory_order_release);
         }
     }
     return n;
@@ -801,25 +908,13 @@ void VideoController::execute_request(PipelineRequest& req, bool* detached)
             ok = id >= 0;
             break;
         case PipelineRequestType::UNREGISTER_CONSUMER:
-            executor_unregister(req.consumer, req.slot_id);
-            *detached = true;
+            *detached = executor_unregister(req.consumer, req.slot_id) || *detached;
             ok = true;
             break;
     }
 
     req.result_ok = ok;
     req.result_id = id;
-
-    // The executor alone detects the transition to a drained registry
-    // (a no-op stop on an already-empty registry does not re-signal);
-    // a command task consumes this signal exactly once and drives the
-    // bounded join. A viewer close deferred by a stop command is
-    // subsumed by the teardown's synchronous close after the join.
-    if (*detached && consumer_count() == 0)
-    {
-        m_close_viewers_pending = false;
-        m_pipeline_drained.store(true, std::memory_order_release);
-    }
 }
 
 bool VideoController::executor_start_recording()
@@ -895,7 +990,7 @@ bool VideoController::executor_start_streaming()
 
     // A deferred viewer close from a stop/restart within one frame
     // period is obsolete: streaming mode is active again.
-    m_close_viewers_pending = false;
+    m_close_viewers_pending.store(false, std::memory_order_release);
 
     m_log.info(SUBSYSTEM, "Streaming started");
     return true;
@@ -921,7 +1016,7 @@ bool VideoController::executor_stop_streaming()
     // join.
     if (consumer_count() > 0)
     {
-        m_close_viewers_pending = true;
+        m_close_viewers_pending.store(true, std::memory_order_release);
     }
     return true;
 }
@@ -944,20 +1039,21 @@ int VideoController::executor_register(IFrameConsumer* consumer)
     return id;
 }
 
-void VideoController::executor_unregister(IFrameConsumer* expected, int slot_id)
+bool VideoController::executor_unregister(IFrameConsumer* expected, int slot_id)
 {
     if (slot_id < 0 || slot_id >= static_cast<int>(MAX_FRAME_CONSUMERS))
     {
-        return;
+        return false;
     }
     // Re-validate exactly: only detach if the slot still binds the
     // consumer the command validated against (a stale snapshot must
     // never detach a rebound slot).
     if (m_slots[slot_id].consumer.load(std::memory_order_acquire) != expected)
     {
-        return;
+        return false;
     }
     detach_consumer(slot_id);
+    return true;
 }
 
 // ============================================================

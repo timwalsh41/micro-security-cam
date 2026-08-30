@@ -211,8 +211,9 @@ void test_stop_recording_transitions_to_idle()
     f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
 
-    // stop_recording() synchronously closes the clip: the scheduler runs
-    // one final callback which observes m_stop_clip and transitions to IDLE
+    // stop_recording() executes through the executor: the sink detaches and
+    // the clip close is requested; the scheduler runs one final callback
+    // which finalizes the clip before exiting
     f.video.stop_recording();
 
     TEST_ASSERT_FALSE(f.video.is_recording());
@@ -1007,6 +1008,10 @@ struct FakeFrameConsumer : public IFrameConsumer
 {
     int frames{0};
     VideoController* trigger_recording_on_first_frame{nullptr};
+    VideoController* trigger_streaming_on_first_frame{nullptr};
+    VideoController* trigger_stop_streaming_on_frame{nullptr};
+    VideoController* self_unregister_on_frame{nullptr};
+    int self_unregister_id{-1};
 
     void on_frame(const uint8_t* /*data*/, size_t /*len*/) override
     {
@@ -1015,6 +1020,23 @@ struct FakeFrameConsumer : public IFrameConsumer
         {
             trigger_recording_on_first_frame->start_recording();
             trigger_recording_on_first_frame = nullptr;
+        }
+        if (trigger_streaming_on_first_frame != nullptr)
+        {
+            trigger_streaming_on_first_frame->start_streaming();
+            trigger_streaming_on_first_frame = nullptr;
+        }
+        if (trigger_stop_streaming_on_frame != nullptr)
+        {
+            trigger_stop_streaming_on_frame->stop_streaming();
+            trigger_stop_streaming_on_frame = nullptr;
+        }
+        if (self_unregister_on_frame != nullptr && self_unregister_id >= 0)
+        {
+            self_unregister_on_frame->unregister_frame_consumer(
+                self_unregister_id);
+            self_unregister_id = -1;
+            self_unregister_on_frame = nullptr;
         }
     }
 };
@@ -1164,9 +1186,105 @@ void test_consumer_can_trigger_recording_from_on_frame()
     TEST_ASSERT_FALSE(f.video.is_capture_active());
 }
 
-// ============================================================
-// Streaming / multi-mode activity tests
-// ============================================================
+/**
+ * @brief stop_streaming() cancels a queued-but-unexecuted start.
+ *
+ * While the capture loop is running, a stop must be posted even though
+ * the streaming sink is not bound yet (the start request issued from
+ * within on_frame() is still pending): the executor executes start and
+ * stop in queue order, so the stop reliably wins instead of being
+ * silently dropped against a start that has not run yet.
+ */
+void test_stop_streaming_cancels_pending_start()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    FakeFrameConsumer monitor;
+    monitor.trigger_streaming_on_first_frame = &f.video;
+
+    int id = f.video.register_frame_consumer(&monitor);
+    TEST_ASSERT_TRUE(id >= 0);
+
+    // The monitor issues start_streaming() from within on_frame() — a
+    // fire-and-forget request: the loop runs but the sink is not bound.
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    // The stop must be posted against the pending start, not dropped.
+    f.video.stop_streaming();
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+
+    // The queued batch executes start then stop (FIFO): streaming ends
+    // up off while the monitor keeps the loop alive.
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    f.video.unregister_frame_consumer(id);
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief A fire-and-forget stop that drains the registry still closes
+ *        viewers, and the next command reaps the parked loop.
+ *
+ * A lifecycle command issued from within on_frame() is never waited
+ * on, so no command task consumes the executor-reported drain right
+ * away. The executor must close connected viewers itself at the next
+ * activation boundary, leave the drained signal armed, and the next
+ * command of any kind must then drive the bounded scheduler join.
+ */
+void test_fire_and_forget_drain_closes_viewers_and_reaps_loop()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    FakeFrameConsumer monitor;
+    monitor.trigger_streaming_on_first_frame = &f.video;
+
+    int id = f.video.register_frame_consumer(&monitor);
+    TEST_ASSERT_TRUE(id >= 0);
+    f.capture_one_frame();   // monitor posts fire-and-forget START_STREAMING
+    f.capture_one_frame();   // service pass executes the start
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    // Monitor stops streaming and unregisters itself from within
+    // on_frame() — both fire-and-forget.
+    monitor.trigger_stop_streaming_on_frame = &f.video;
+    monitor.self_unregister_on_frame = &f.video;
+    monitor.self_unregister_id = id;
+    f.capture_one_frame();
+
+    // Service pass executes the batch: sink detached, monitor detached,
+    // registry drains with no waiting command task.
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.video.is_capture_active());
+
+    // The executor closes the viewers at the next (idle) activation
+    // boundary; the loop stays parked for the command-side teardown.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    // The next command consumes the armed drain: the bounded join runs
+    // and the loop restarts for the freshly bound streaming sink.
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+
+    f.video.stop_streaming();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
 
 /**
  * @brief Derived state: recording takes precedence over streaming.
@@ -1699,8 +1817,8 @@ void test_concurrent_teardown_is_single_flight()
     }
     go.store(true, std::memory_order_release);
 
-    // Wait until the first stopper owns the gated teardown join (its
-    // lifecycle mutex is released while blocked there).
+    // Wait until the first stopper owns the gated teardown join (the
+    // joiner's m_command_mutex is released while blocked there).
     constexpr long MAX_SPIN = 10000000L;
     long spins = 0;
     while (!scheduler.stop_entered.load(std::memory_order_acquire) &&
@@ -1800,30 +1918,137 @@ void test_concurrent_starts_never_lose_registration()
         // Exactly one registration per successful activity.
         const uint32_t frames_before = f.video.frames_recorded();
         f.capture_one_frame();
-        if (sink.deliveries != (f.video.is_streaming() ? 1 : 0))
-        {
-            FILE* dbg = fopen("/tmp/dbg.txt", "a");
-            if (dbg)
-            {
-                fprintf(dbg, "deliv=%d stream=%d rec=%d frames=%u before=%u trig=%d capt=%d started=%d stops=%d\n",
-                        sink.deliveries,
-                        f.video.is_streaming() ? 1 : 0,
-                        f.video.is_recording() ? 1 : 0,
-                        (unsigned)f.video.frames_recorded(),
-                        (unsigned)frames_before,
-                        f.capture_scheduler.trigger_count,
-                        f.camera_hal.capture_call_count,
-                        f.capture_scheduler.is_started() ? 1 : 0,
-                        f.capture_scheduler.stop_call_count);
-                fclose(dbg);
-            }
-        }
 
         TEST_ASSERT_EQUAL_INT(f.video.is_streaming() ? 1 : 0,
                               sink.deliveries);
         TEST_ASSERT_EQUAL_UINT32(
             frames_before + (f.video.is_recording() ? 1u : 0u),
             f.video.frames_recorded());
+    }
+}
+
+/**
+ * @brief A START_STREAMING queued during a stop's join window cannot
+ *        leave the controller wedged (scheduler stopped + sink bound +
+ *        loop dead).
+ *
+ * Reproduces the cross-transport interleaving where a stop's bounded
+ * scheduler join is held open while a second transport posts a
+ * START_STREAMING into the dying loop. The post-join recheck in
+ * finish_command() must observe the queued-but-unexecuted work and
+ * restart the loop before declaring the teardown done. Otherwise the
+ * controller reports streaming active and the sink is bound, but no
+ * code path ever restarts the scheduler — streaming hangs until
+ * reboot. The invariant under test: is_streaming() == true implies
+ * the scheduler is started AND frames flow to the sink; is_streaming()
+ * == false implies the scheduler is stopped. Stress-repeated to keep
+ * the regression honest under jitter.
+ */
+void test_start_queued_during_stop_join_never_wedges_streaming()
+{
+    constexpr int ROUNDS = 100;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        MockCameraHal camera_hal;
+        MockSdCardHal sd_hal;
+        MockLogBackend log_backend;
+        RealTimeService time;
+        LoggingService logger(log_backend, time);
+        SdController sd_controller(time, sd_hal);
+        CameraController camera_ctrl(camera_hal);
+        GatedStopScheduler scheduler;
+        VideoController video(camera_ctrl, sd_controller, time, logger,
+                              scheduler);
+
+        camera_hal.init_result = hal::CameraInitResult::SUCCESS;
+        camera_ctrl.init();
+
+        ConfigData::VideoConfig config;
+        config.fps = TEST_FPS;
+        strcpy(config.resolution, "VGA");
+        config.clip_duration_s = TEST_CLIP_DURATION_S;
+        config.max_file_size_mb = 0;
+        config.jpeg_quality = 10;
+        video.init(config, TEST_WIDTH, TEST_HEIGHT);
+
+        TrackingSink sink;
+        video.set_stream_service(&sink);
+
+        TEST_ASSERT_TRUE(video.start_streaming());
+
+        std::atomic<bool> go{false};
+        std::thread stopper([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            video.stop_streaming();
+        });
+        std::thread restarter([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            // Queued during the stopper's gated join window: m_loop_active
+            // is still true at post time, the request enters the queue,
+            // and the wait_for_completion serve path runs under
+            // m_command_mutex so it is totally ordered with the post-join
+            // recheck.
+            (void)video.start_streaming();
+        });
+
+        for (int i = 0; i < 64; i++)
+        {
+            std::this_thread::yield();
+        }
+        go.store(true, std::memory_order_release);
+
+        // Wait until the stopper owns the gated teardown join, then
+        // give the restarter a window to post its START_STREAMING
+        // while the join is still in flight.
+        constexpr long MAX_SPIN = 10000000L;
+        long spins = 0;
+        while (!scheduler.stop_entered.load(std::memory_order_acquire) &&
+               spins++ < MAX_SPIN)
+        {
+            std::this_thread::yield();
+        }
+        // Hold the gate for a brief moment so the restarter's post lands
+        // inside the join window.
+        for (int i = 0; i < 256; i++)
+        {
+            std::this_thread::yield();
+        }
+        scheduler.release_stop.store(true, std::memory_order_release);
+        stopper.join();
+        restarter.join();
+
+        // Core invariant: is_streaming ↔ scheduler started. A wedged
+        // state (sink bound, scheduler stopped, is_streaming true) would
+        // violate this.
+        const bool streaming = video.is_streaming();
+        TEST_ASSERT_EQUAL_INT(streaming ? 1 : 0,
+                              scheduler.is_started() ? 1 : 0);
+
+        // If streaming claims to be active, frames must flow to the
+        // sink — the scheduler really is running.
+        if (streaming)
+        {
+            memset(camera_hal.frame_buffer, 0xAB, FAKE_JPEG_SIZE);
+            camera_hal.capture_result = {camera_hal.frame_buffer,
+                                         FAKE_JPEG_SIZE};
+            sink.deliveries = 0;
+            scheduler.on_frame_capture();
+            TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+        }
+
+        // Wind down deterministically for the next round.
+        video.stop_streaming();
+        TEST_ASSERT_FALSE(video.is_streaming());
+        TEST_ASSERT_FALSE(scheduler.is_started());
     }
 }
 
@@ -1937,9 +2162,10 @@ void test_rotation_finalizes_and_reopens_header()
 
 /**
  * @brief A STOP landing inside the rotation window cannot interleave:
- *        the capture task holds the lifecycle mutex for its close/reopen
- *        section, the stop serializes behind it, and the reopened clip
- *        is finalized. No torn clip is possible.
+ *        the capture task owns the executor token for its close/reopen
+ *        section, so the posted stop's request executes only after the
+ *        rotation completes, and the reopened clip is finalized. No torn
+ *        clip is possible.
  */
 void test_stop_during_rotation_finalizes()
 {
@@ -1949,7 +2175,7 @@ void test_stop_during_rotation_finalizes()
 
     // Arm the park gate before start_recording: the initial clip open
     // is create_dir call #1, the rotation's reopen is call #2, where the
-    // capture thread parks mid-rotation (holding the lifecycle mutex).
+    // capture task (the executor) parks mid-rotation.
     f.sd_hal.gate_create_dir_at_count = 2;
     TEST_ASSERT_TRUE(f.video.start_recording());
 
@@ -1972,39 +2198,20 @@ void test_stop_during_rotation_finalizes()
         f.video.stop_recording();
     });
 
-    // Wait until the capture thread is parked mid-rotation (holding the
-    // lifecycle mutex), then issue the stop so it serializes behind it.
+    // Wait until the capture task is parked mid-rotation (it owns the
+    // executor token), then issue the stop so its request serializes
+    // behind the rotation.
     wait_for_gate_hits(f.sd_hal, 2);
     stop_issued.store(true, std::memory_order_release);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    // Watchdog release: the parked capture task holds the mutex the
-    // stopper needs, so the release must come from this thread.
+    // Watchdog release: the parked capture task owns the executor token
+    // the stop's request waits behind, so the release must come from
+    // this thread.
     f.sd_hal.gate_create_dir_release = true;
 
     driver.join();
     stopper.join();
-    {
-        FILE* dbg = fopen("/tmp/dbg3.txt", "a");
-        if (dbg) { fprintf(dbg, "TEST2-DONE rec=%d started=%d trig=%d\n",
-            f.video.is_recording() ? 1 : 0,
-            f.capture_scheduler.is_started() ? 1 : 0,
-            f.capture_scheduler.trigger_count); fclose(dbg); }
-    }
-    {
-        FILE* dbg = fopen("/tmp/dbg.txt", "a");
-        if (dbg)
-        {
-            fprintf(dbg, "rec=%d started=%d hits=%d files=%u frames=%u trig=%d\n",
-                    f.video.is_recording() ? 1 : 0,
-                    f.capture_scheduler.is_started() ? 1 : 0,
-                    f.sd_hal.gate_create_dir_hits.load(),
-                    (unsigned)f.sd_hal.files.size(),
-                    (unsigned)f.video.frames_recorded(),
-                    f.capture_scheduler.trigger_count);
-            fclose(dbg);
-        }
-    }
 
     TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
@@ -2106,7 +2313,9 @@ void test_start_during_rotation_rejected_or_clean()
 
     std::thread restarter([&]()
     {
-        // Blocks on the lifecycle mutex held by the parked rotation.
+        // Waits behind the parked rotation: the capture task owns the
+        // executor token, so the posted start executes only after the
+        // rotation completes.
         (void)f.video.start_recording();
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -2298,6 +2507,80 @@ void test_concurrent_rotation_stop_start_stress()
     }
 }
 
+/**
+ * @brief A drain from a command whose waiter timed out still closes
+ *        viewers, and the next command reaps the parked loop.
+ *
+ * A lifecycle command whose waiter times out (the capture task wedged
+ * past REQUEST_COMPLETION_TIMEOUT_MS) never consumes the
+ * executor-reported drain: finish_command() runs while the request is
+ * still queued, so it finds no drain armed. The executor must
+ * therefore arm the deferred viewer close for every drain and close
+ * connected viewers itself at a later boundary, while the drained
+ * signal stays armed for the next command task of any kind to drive
+ * the bounded join.
+ */
+void test_timed_out_waiter_drain_closes_viewers_and_reaps_loop()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    // Park the capture task mid-rotation: the initial clip open is
+    // create_dir call #1, the rotation's reopen is call #2, where the
+    // capture thread parks while holding the executor token.
+    f.sd_hal.gate_create_dir_at_count = 2;
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+
+    std::thread driver([&]()
+    {
+        // Fire exactly one clip's worth of frames: the last activation
+        // enters the rotation and parks on the gate.
+        for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+        {
+            f.capture_one_frame();
+        }
+    });
+
+    // Once the capture thread is parked, issue both stops: the
+    // executor cannot serve them, so each waiter times out and its
+    // finish_command() runs while the requests are still queued.
+    wait_for_gate_hits(f.sd_hal, 2);
+    f.video.stop_streaming();
+    f.video.stop_recording();
+
+    // Watchdog release: the parked capture task holds the executor
+    // token, so the release must come from this thread.
+    f.sd_hal.gate_create_dir_release = true;
+    driver.join();
+
+    // The next activation serves the queued stops: both consumers
+    // detach and the registry drains with no waiting command task
+    // left to consume the drain.
+    f.capture_one_frame();
+
+    // The closing-latch activation finalizes the clip and closes the
+    // viewers even though both waiters timed out; the loop stays
+    // parked for the command-side teardown.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    // The next command consumes the armed drain: the bounded join runs
+    // and the loop restarts for the freshly bound streaming sink.
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_INT(1, sink.teardown_calls);
+
+    f.video.stop_streaming();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
 // ============================================================
 // Test runner
 // ============================================================
@@ -2386,11 +2669,14 @@ int main()
     RUN_TEST(test_register_rejects_full_and_duplicate);
     RUN_TEST(test_failed_registration_leaves_no_reserved_slot);
     RUN_TEST(test_consumer_can_trigger_recording_from_on_frame);
+    RUN_TEST(test_stop_streaming_cancels_pending_start);
+    RUN_TEST(test_fire_and_forget_drain_closes_viewers_and_reaps_loop);
 
     // Registry concurrency (dual-transport contention)
     RUN_TEST(test_concurrent_starts_never_lose_registration);
     RUN_TEST(test_start_racing_last_consumer_teardown_never_dead_registers);
     RUN_TEST(test_concurrent_teardown_is_single_flight);
+    RUN_TEST(test_start_queued_during_stop_join_never_wedges_streaming);
 
     // Clip-rotation hardening (cross-task serialization)
     RUN_TEST(test_rotation_finalizes_and_reopens_header);
@@ -2399,6 +2685,7 @@ int main()
     RUN_TEST(test_start_during_rotation_rejected_or_clean);
     RUN_TEST(test_stop_flag_vs_rotation_flag_ordering);
     RUN_TEST(test_concurrent_rotation_stop_start_stress);
+    RUN_TEST(test_timed_out_waiter_drain_closes_viewers_and_reaps_loop);
 
     return UNITY_END();
 }

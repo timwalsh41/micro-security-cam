@@ -121,7 +121,7 @@ void CaptureSchedulerEsp32::capture_task_entry(void* pvParameters)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         // Run the frame callback first — this lets VideoController process
-        // any pending clip closure (m_stop_clip) before we check the stop flag.
+        // any pending clip closure before we check the stop flag.
         if (self->m_callback)
         {
             self->m_callback();

@@ -1,5 +1,11 @@
 [
     {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_avi_clip_session/test_avi_clip_session.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
+        "file": "test/native/test_avi_clip_session/test_avi_clip_session.cpp",
+        "output": ""
+    },
+    {
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_avi_writer/test_avi_writer.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
         "file": "test/native/test_avi_writer/test_avi_writer.cpp",
@@ -57,6 +63,12 @@
         "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_serial_command_transport/test_serial_command_transport.cpp",
         "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
         "file": "test/native/test_serial_command_transport/test_serial_command_transport.cpp",
+        "output": ""
+    },
+    {
+        "command": "/usr/bin/g++ -o /dev/null -c -DUNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -Iinclude -Itest -Itest/mocks/native_mocks -I.pio/libdeps/native/Unity/src -I.pio/build/native/unity_config test/native/test_stream_frame_channel/test_stream_frame_channel.cpp",
+        "directory": "/Users/tim/Code/Arduino/esp32_security_camera/ESP32_security_camera",
+        "file": "test/native/test_stream_frame_channel/test_stream_frame_channel.cpp",
         "output": ""
     },
     {

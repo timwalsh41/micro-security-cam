@@ -91,12 +91,24 @@ void StreamService::stop_stream(uint8_t slot)
 
 void StreamService::stop_all_streams()
 {
-    for (uint8_t i = 0; i < m_max_streams; i++)
+    // Snapshot the active slots under the mutex so the scan cannot race
+    // concurrent slot mutations; stop_stream() revalidates each slot
+    // under the mutex before reclaiming it.
+    uint8_t active[MAX_STREAMS];
+    uint8_t count = 0;
     {
-        if (m_slots[i].active)
+        std::lock_guard<std::mutex> lock(m_slot_mutex);
+        for (uint8_t i = 0; i < m_max_streams; i++)
         {
-            stop_stream(i);
+            if (m_slots[i].active)
+            {
+                active[count++] = i;
+            }
         }
+    }
+    for (uint8_t i = 0; i < count; i++)
+    {
+        stop_stream(active[i]);
     }
 }
 
@@ -166,24 +178,26 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
         }
     }
 
+    // Assemble the complete part (header + JPEG + footer) once per
+    // frame: every viewer receives identical bytes and push_part()
+    // copies anyway.
+    m_part_scratch.clear();
+    m_part_scratch.reserve(n + len + strlen(PART_FOOTER));
+    m_part_scratch.insert(m_part_scratch.end(),
+                          reinterpret_cast<uint8_t*>(header),
+                          reinterpret_cast<uint8_t*>(header) + n);
+    m_part_scratch.insert(m_part_scratch.end(), data, data + len);
+    m_part_scratch.insert(m_part_scratch.end(),
+                          reinterpret_cast<const uint8_t*>(PART_FOOTER),
+                          reinterpret_cast<const uint8_t*>(PART_FOOTER) +
+                              strlen(PART_FOOTER));
+
     for (auto& channel : channels)
     {
-        // Assemble the complete part (header + JPEG + footer) once per
-        // frame and push it into the viewer's channel. A viewer still
+        // Push the part into the viewer's channel. A viewer still
         // draining its previous part drops this frame — the transport
         // pulls at the client's speed, so the part can never be
         // truncated mid-frame.
-        m_part_scratch.clear();
-        m_part_scratch.reserve(n + len + strlen(PART_FOOTER));
-        m_part_scratch.insert(m_part_scratch.end(),
-                              reinterpret_cast<uint8_t*>(header),
-                              reinterpret_cast<uint8_t*>(header) + n);
-        m_part_scratch.insert(m_part_scratch.end(), data, data + len);
-        m_part_scratch.insert(m_part_scratch.end(),
-                              reinterpret_cast<const uint8_t*>(PART_FOOTER),
-                              reinterpret_cast<const uint8_t*>(PART_FOOTER) +
-                                  strlen(PART_FOOTER));
-
         channel->push_part(m_part_scratch.data(), m_part_scratch.size());
     }
 }
