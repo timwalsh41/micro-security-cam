@@ -85,6 +85,8 @@ title HAL - Interfaces & ESP32 Implementations
 
 hide empty members
 skinparam classAttributeIconSize 0
+top to bottom direction
+skinparam packageLayout 1
 
 package "HAL interfaces" as HAL_IF {
 
@@ -196,6 +198,10 @@ package "ESP32 implementations" as HAL_IMPL {
         -m_request : AsyncWebServerRequest*
     }
 
+    class AsyncWebServerResponse {
+        ESPAsyncWebServer base response
+    }
+
     class AsyncJpegStreamResponse {
         -m_channel : shared_ptr<StreamFrameChannel>
         +_fillBuffer(buf, maxLen) : size_t
@@ -230,9 +236,47 @@ package "HAL value types" {
 }
 
 ' Inheritance arrows point up (-up-|>) so interfaces sit above their
-' implementations, and a hidden package-to-package edge forces the
-' "ESP32 implementations" package to stack below "HAL interfaces".
-HAL_IF -down[hidden]- HAL_IMPL
+' implementations. `top to bottom direction` plus `skinparam packageLayout 1`
+' (declared at the top of the diagram) stack each package internally so
+' interfaces sit in the top row and impls in the bottom row of HAL_IF/HAL_IMPL
+' respectively. Per-pair `together { }` blocks at global scope force each
+' interface/impl pair to share a column. AsyncWebServerResponse is declared
+' explicitly inside HAL_IMPL so the inheritance arrow stays in-package.
+'
+' The four cross-package dependency relationships below are drawn as plain
+' `-` lines (no arrowhead, no directional positional hint). PlantUML's
+' directed arrows (`-->`, `..>`, `.down.>`) impose a positional layout
+' constraint that forces source-above-target, which broke the column
+' alignment (see stage 4c of docs/diag/HAL_layout_diag.md — the original
+' `RequestRef .down.> StreamFrameChannel` arrow was the culprit). The plain
+' lines document the relationships without disrupting the layout.
+together {
+    HAL_IF.CameraHal   -[hidden]down- HAL_IMPL.CameraHalImpl
+}
+together {
+    HAL_IF.SdCardHal   -[hidden]down- HAL_IMPL.SdCardHalImpl
+}
+together {
+    HAL_IF.SerialHal   -[hidden]down- HAL_IMPL.SerialHalImpl
+}
+together {
+    HAL_IF.TimerHal    -[hidden]down- HAL_IMPL.TimerHalImpl
+}
+together {
+    HAL_IF.WifiHal     -[hidden]down- HAL_IMPL.WifiHalImpl
+}
+together {
+    HAL_IF.WebServerHal -[hidden]down- HAL_IMPL.WebServerHalImpl
+}
+together {
+    HAL_IF.RequestRef  -[hidden]down- HAL_IMPL.AsyncRequestRef
+}
+together {
+    HAL_IF.StreamFrameChannel -[hidden]down- HAL_IMPL.AsyncJpegStreamResponse
+}
+together {
+    HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.SerialLogBackend
+}
 
 CameraHalImpl -up-|> CameraHal
 SdCardHalImpl -up-|> SdCardHal
@@ -244,10 +288,10 @@ AsyncRequestRef .up.|> RequestRef
 AsyncJpegStreamResponse -up-|> AsyncWebServerResponse
 SerialLogBackend -up-|> LogBackend
 
-SerialLogBackend -up-> SerialHal : writes log lines
-WebServerHalImpl .right.> AsyncRequestRef : creates per request
-RequestRef .down.> StreamFrameChannel : send_stream_response()
-AsyncJpegStreamResponse .down.> StreamFrameChannel : pulls parts
+SerialLogBackend - SerialHal : writes log lines
+WebServerHalImpl - AsyncRequestRef : creates per request
+RequestRef - StreamFrameChannel : send_stream_response()
+AsyncJpegStreamResponse - StreamFrameChannel : pulls parts
 
 @enduml
 ```
@@ -1495,7 +1539,7 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 - `TimeService &` — for clip duration tracking (elapsed time checks).
 - `LoggingService &` — for diagnostic output.
 - `ICaptureScheduler &` — for platform-agnostic capture scheduling. The scheduler invokes `capture_and_dispatch_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
-- `AviClipSession` — owned; the clip/AVI session owner (writer, clip paths, per-clip counters, close/rotation request). All clip operations except the lock-free `append_frame()` pump path run under the lifecycle mutex.
+- `AviClipSession` — owned; the clip/AVI session owner (writer, clip paths, per-clip counters, close/rotation request). All clip operations except the lock-free `append_frame()` pump path run under the owning controller's executor token (locking contract in `include/avi_clip_session.h`).
 
 ### Consumer Registry (Activity Model)
 
@@ -1548,25 +1592,21 @@ VideoController --> StreamSink : owns
 
 Built-in consumers:
 
-- **RecordSink** — recording's built-in sink, owned by `VideoController`. `start_recording()` claims a registry slot for it internally via `claim_slot()` after opening the clip — it is never registered through the public API. Forwards each frame to `AviClipSession::append_frame()` (the lock-free pump path), which formats the AVI chunk, writes it to SD, and requests clip closure at rotation limits.
-- **StreamSink** — streaming's built-in sink, owned by `VideoController`. `start_streaming()` claims a slot for it internally via `claim_slot()`; forwards every frame to the `IStreamService` for delivery to connected viewers.
+- **RecordSink** — recording's built-in sink, owned by `VideoController`. When the executor executes a start request, it binds a registry slot for the sink internally via `acquire_free_slot()` + `bind_slot()` after opening the clip — it is never registered through the public API. Forwards each frame to `AviClipSession::append_frame()` (the lock-free pump path), which formats the AVI chunk, writes it to SD, and requests clip closure at rotation limits.
+- **StreamSink** — streaming's built-in sink, owned by `VideoController`. When the executor executes a start request, it binds a slot for the sink internally via `acquire_free_slot()` + `bind_slot()`; it forwards every frame to the `IStreamService` for delivery to connected viewers.
 - **External consumers** — registered through the public `register_frame_consumer()` / `unregister_frame_consumer()` API. The production firmware registers none today; the API is the extension point for additional consumers such as the planned phase-6 motion-detection consumer, which may call `start_recording()` from its frame callback (no controller special-casing required). Only native tests exercise it at present.
 
-This split matters when reading the code: `start_recording()` and `start_streaming()` claim slots for their built-in sinks themselves (see `claim_slot()` in `src/video_controller.cpp`), so a search for production calls to `register_frame_consumer()` finds none — that is by design, not a missing call site. The public registration API exists solely for external, out-of-tree consumers.
+This split matters when reading the code: the executor binds slots for the built-in sinks itself when it executes the start requests (see `acquire_free_slot()` / `bind_slot()` in `src/video_controller.cpp`), so a search for production calls to `register_frame_consumer()` finds none — that is by design, not a missing call site. The public registration API exists solely for external, out-of-tree consumers.
 
 Lifecycle rules:
 
-- `start_recording()` / `start_streaming()` subscribe their consumer and start the loop if it is not already running (reused, never duplicated).
-- `stop_recording()` unsubscribes immediately so status queries observe the stop right away and requests clip closure. When other consumers keep the loop running the clip is finalized by the next frame callback (bounded by one frame period); `start_recording()` is rejected until finalization completes (`clip close pending`). When it was the last subscriber the pipeline is torn down synchronously (bounded), whose final callback closes the clip and closes all connected stream viewers.
-- `stop_streaming()` unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` within that window cancels the pending close since streaming mode is active again.
+- `start_recording()` / `start_streaming()` post their start request; the executor subscribes the consumer and starts the loop if it is not already running (reused, never duplicated).
+- `stop_recording()` posts `STOP_RECORDING`; the executor detaches the sink and requests clip closure at the next activation boundary, so status queries observe the stop within that bound. When other consumers keep the loop running the clip is finalized by the next frame callback (bounded by one frame period); `start_recording()` is rejected until finalization completes (`clip close pending`). When it was the last subscriber the pipeline is torn down on the command side (bounded), whose final callback closes the clip and closes all connected stream viewers.
+- `stop_streaming()` posts `STOP_STREAMING`; the executor unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` executed within that window cancels the pending close since streaming mode is active again.
 - Clip rotation reopens a fresh clip while recording remains subscribed.
-- Clip lifecycle serialization: all `AviClipSession::open()` / `close()` calls run in the capture task (the executor), so clip open, finalization, and rotation reopen are mutually exclusive against command-side lifecycle changes by task affinity — commands can only change the registry at executor activation boundaries. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the capture task's rotation window can therefore not interleave with the rotation: the stop's detach is ordered against the capture task's close/reopen decision, and the start observes either an unfinalized clip (`clip close pending`) or a fully closed one — never a mid-rotation torn state. Every clip on the SD card is finalized with a patched AVI header or is the live clip of a running session; an abandoned placeholder-header clip cannot be produced by any start/stop interleaving.
+- Clip lifecycle serialization: all `AviClipSession::open()` / `close()` calls run under the owning controller's executor token — held by the capture task at each activation and by the command-side serve path while it executes requests — so clip open, finalization, and rotation reopen are mutually exclusive against command-side lifecycle changes by construction: commands can only change the registry at executor-token boundaries. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the rotation window can therefore not interleave with the rotation: the stop's detach is ordered against the close/reopen decision, and the start observes either an unfinalized clip (`clip close pending`) or a fully closed one — never a mid-rotation torn state. Every clip on the SD card is finalized with a patched AVI header or is the live clip of a running session; an abandoned placeholder-header clip cannot be produced by any start/stop interleaving.
 - `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle.
-- Executor model: start/stop commands may arrive from multiple task contexts (the web transport dispatches in the AsyncTCP task, serial commands in the main-loop task), but they never mutate pipeline state directly. Each command is posted into a small bounded request queue and executed by the capture task — the single executor — at the start of the next frame activation, so commands take effect atomically at activation boundaries: a start binds for the next activation, registrations cannot be silently lost or duplicated, and clip open/finalize/reopen (all executor-side, by task affinity) is totally ordered against command-side lifecycle changes. A command issued from within `on_frame()` is fire-and-forget: it is queued and consumed at a dispatch boundary of the same or the next activation. Commands wait (bounded) for executor completion with the command mutex released; while the capture task is between activations, a waiting task may claim the executor token (try-acquire, never blocking the capture task) and serve the queued batch itself. When a command leaves the registry empty, the executor signals the drain and the command task drives the bounded scheduler join once (with the mutex released), then closes all connected stream viewers; a join recheck honors a concurrent registration by restarting the loop.
-
-Known limitations:
-
-- `StreamService` has no internal synchronization across task contexts: viewer close runs `stop_all_streams()` from two contexts — the deferred close via `process_pending_viewer_close()` inside the capture task's frame dispatch, and the teardown-path close inside `teardown_capture_pipeline()` in the command-task context of the stop/unregister caller — while `start_stream()` binding and `on_stream_ended()` (viewer disconnect) run in the AsyncTCP task. These are unsynchronized, so a timed viewer connect/stop interleaving can leave a viewer hanging on a silent multipart response or cause a use-after-free on a stream channel (reliability/remote-crash class). `deliver_frame()` vs `on_stream_ended()` shares the same family. The fix is planned as part of the upcoming `VideoController`/`StreamService` synchronization refactor.
+- Executor model: start/stop commands may arrive from multiple task contexts (the web transport dispatches in the AsyncTCP task, serial commands in the main-loop task), but they never mutate pipeline state directly. Each command is posted into a small bounded request queue and executed by the capture task — the single executor — at the start of the next frame activation, so commands take effect atomically at activation boundaries: a start binds for the next activation, registrations cannot be silently lost or duplicated, and clip open/finalize/reopen (all executor-side, under the executor token) is totally ordered against command-side lifecycle changes. A command issued from within `on_frame()` is fire-and-forget: it is queued and consumed at a dispatch boundary of the same or the next activation. Commands wait (bounded) for executor completion with the command mutex released across the wait; while the capture task is between activations, a waiting task may claim the executor token (try-acquire, never blocking the capture task) and serve the queued batch itself under `m_command_mutex`, mutually exclusive with the post-join teardown section of `finish_command()`. When a command leaves the registry empty, the executor signals the drain and the command task drives the bounded scheduler join once (with the mutex released), then closes all connected stream viewers; a join recheck honors a concurrent registration — or queued-but-unexecuted work — by restarting the loop (in the registry-empty-but-queued subcase the ended session's viewers are closed first and the drain is re-armed so the queued work's own command completion re-decides the teardown).
 
 ### Capture Scheduling
 
@@ -1589,10 +1629,11 @@ participant "CaptureScheduler\nEsp32" as CS
 participant "TimerHalImpl\n(ISR)" as TMR
 participant "Capture Task\n(CPU0)" as TASK
 participant "VideoController" as VC
-participant "RecordSink\n(claimed slot)" as RS
-participant "StreamSink\n(claimed slot)" as ST
+participant "RecordSink\n(bound slot)" as RS
+participant "StreamSink\n(bound slot)" as ST
 participant "StreamService" as SS
 participant "CameraController" as CAM
+participant "AviClipSession" as ACS
 participant "AviWriter" as AVI
 participant "SdController" as SDC
 database "SD Card" as SD
@@ -1601,7 +1642,9 @@ database "SD Card" as SD
 
 MAIN -> VC : start_recording()
 activate VC
-VC -> VC : open_clip()
+VC -> VC : post START_RECORDING
+note right: executed by the executor (capture task\nor a waiting command task's serve path) at\nan activation boundary — the steps below\nrun under the executor token
+VC -> ACS : open()
 VC -> AVI : open(path, fps, w, h)
 note right: Generates 224-byte\nAVI header template
 VC -> SDC : write_sync(path, header, WRITE)
@@ -1617,7 +1660,7 @@ CS -> CS : init timer ISR
 CS -> TASK : xTaskCreatePinnedToCore()
 CS -> TMR : start()
 deactivate CS
-VC -> VC : claim_slot(id, RecordSink)
+VC -> VC : acquire_free_slot() +\nbind_slot(id, RecordSink)
 note right: is_recording() is the\nregistry subscription
 VC --> MAIN : return true
 deactivate VC
@@ -1644,16 +1687,19 @@ note right: frame dispatch over the\nconsumer registry
 
 VC -> RS : on_frame(jpeg, len)
 activate RS
-RS -> AVI : write_frame(jpeg_data, len)
+RS -> ACS : append_frame(jpeg_data, len)
+activate ACS
+ACS -> AVI : write_frame(jpeg_data, len)
 note right: Wraps JPEG as 0x00dc\nAVI chunk with padding
 
-AVI --> RS : last_frame_chunk()
+AVI --> ACS : last_frame_chunk()
 
-RS -> SDC : write_sync(path, chunk, APPEND)
+ACS -> SDC : write_sync(path, chunk, APPEND)
 activate SDC
 SDC -> SD : open(APPEND) → write(chunk) → close()
 SD --> SDC
 deactivate SDC
+deactivate ACS
 deactivate RS
 
 alt streaming also subscribed
@@ -1664,26 +1710,26 @@ alt streaming also subscribed
 end
 
 VC -> CAM : release_frame()
-VC -> VC : frames_recorded++\nfile_size += chunk.len
+ACS -> ACS : frames_recorded++\nfile_size += chunk.len
 
-VC -> VC : check clip limits\n(duration, file size)
+ACS -> ACS : check clip limits\n(duration, file size)
 
 alt clip limit reached (auto-rotate)
-    VC -> VC : close_clip()
+    VC -> ACS : close()
     note right: Appends index,\nthen seeks to offset 0\nto overwrite header
-    VC -> SDC : write_sync(path, index, APPEND)
+    ACS -> SDC : write_sync(path, index, APPEND)
     activate SDC
     SDC -> SD : open(APPEND) → write(idx1) → close()
     SD --> SDC
     deactivate SDC
-    VC -> SDC : write_at_sync(path, 0, patched_hdr)
+    ACS -> SDC : write_at_sync(path, 0, patched_hdr)
     activate SDC
     SDC -> SD : open → seek(0) → write(hdr) → close()
     SD --> SDC
     deactivate SDC
-    VC -> VC : open_clip()
+    VC -> ACS : open()
     note right: New file, new\nplaceholder header
-    VC -> SDC : write_sync(path, header, WRITE)
+    ACS -> SDC : write_sync(path, header, WRITE)
     activate SDC
     SDC -> SD : open(WRITE) → write(224 B) → close()
     SD --> SDC
@@ -1699,9 +1745,9 @@ end
 
 MAIN -> VC : stop_recording()
 activate VC
-VC -> VC : m_stop_clip = true
-VC -> VC : detach_consumer(RecordSink)
-note right: is_recording() false right away;\nrecord claim released
+VC -> VC : post STOP_RECORDING
+VC -> VC : executor: request_close() +\ndetach_consumer(RecordSink)
+note right: is_recording() false once the\nrequest executes (bounded by\none frame period); start_recording()\nrejected until then (clip close pending)
 alt other consumers keep the loop running
     VC -> VC : loop keeps running;
     note right: clip is finalized by the\nnext frame callback\n(one frame period bound);\nstart_recording() rejected\nuntil then (clip close pending)
@@ -1722,14 +1768,14 @@ deactivate VC
 activate TASK
 TASK -> VC : capture_and_dispatch_frame()
 activate VC
-VC -> VC : close_clip()
+VC -> ACS : close()
 note right: Appends index,\nthen seeks to offset 0\nto overwrite header
-VC -> SDC : write_sync(path, index, APPEND)
+ACS -> SDC : write_sync(path, index, APPEND)
 activate SDC
 SDC -> SD : open(APPEND) → write(idx1) → close()
 SD --> SDC
 deactivate SDC
-VC -> SDC : write_at_sync(path, 0, patched_hdr)
+ACS -> SDC : write_at_sync(path, 0, patched_hdr)
 activate SDC
 SDC -> SD : open(READ_WRITE) → seek(0) → write(hdr) → close()
 note right: READ_WRITE preserves\nexisting content; only\nthe header bytes are\nreplaced
@@ -1744,7 +1790,7 @@ deactivate TASK
 @enduml
 ```
 
-**Clip close blocks frame capture.** While `close_clip()` runs — appending the index and overwriting the placeholder header — no new frames are captured. The next frame is processed after the clip is fully written and (for auto-rotation) the new clip is opened.
+**Clip close blocks frame capture.** While the clip close runs (`AviClipSession::close()`) — appending the index and overwriting the placeholder header — no new frames are captured. The next frame is processed after the clip is fully written and (for auto-rotation) the new clip is opened.
 
 ### Streaming Sequence Diagram
 
@@ -1757,7 +1803,7 @@ title Live MJPEG Streaming Flow
 participant "Client\n(browser)" as CLIENT
 participant "SystemOrchestrator" as ORCH
 participant "VideoController" as VC
-participant "StreamSink\n(claimed slot)" as ST
+participant "StreamSink\n(bound slot)" as ST
 participant "CaptureScheduler\nEsp32" as CS
 participant "Capture Task\n(CPU0)" as TASK
 participant "CameraController" as CAM
@@ -1771,11 +1817,13 @@ participant "AsyncTCP\n(client)" as TCP
 CLIENT -> ORCH : START_STREAM (cmd=stream_start)
 ORCH -> VC : start_streaming()
 activate VC
+VC -> VC : post START_STREAMING
+note right: executed by the executor (capture task\nor a waiting command task's serve path) at\nan activation boundary — the steps below\nrun under the executor token
 VC -> VC : ensure_loop_running()
 note right: starts the loop only when\nno consumer is served yet\n(reused when recording is active)
 VC -> CS : start(interval_ms, callback)
 note right: capture loop on,\nno clip opened
-VC -> VC : claim_slot(id, StreamSink)
+VC -> VC : acquire_free_slot() +\nbind_slot(id, StreamSink)
 note right: is_streaming() is the\nregistry subscription
 VC --> ORCH : true
 deactivate VC
@@ -1828,6 +1876,8 @@ end
 
 CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
 ORCH -> VC : stop_streaming()
+VC -> VC : post STOP_STREAMING
+note right: executor detaches the sink at the next\nactivation boundary (or via the serve path)\n— steps below run under the executor token
 VC -> VC : detach_consumer(StreamSink)
 alt recording keeps the loop running
     VC -> VC : queue deferred viewer close
@@ -1879,9 +1929,9 @@ When a clip reaches `clip_duration_s` or `max_file_size_mb`, the clip is closed 
 ```
 /YYYYMMDD/YYYYMMDD_HHMMSS_photo.jpg
 ```
-Returns the file path on success. Returns `INVALID_STATE` if currently recording. The caller (e.g. `SystemOrchestrator::handle_take_photo()`) builds the base path from the Unix timestamp via `TimeFormatter` and resolves collisions via `VideoController::make_unique_path()` before calling `capture_photo()`.
+Returns the file path on success. Returns `INVALID_STATE` while the capture loop is running (recording or streaming). The caller (e.g. `SystemOrchestrator::handle_take_photo()`) builds the base path from the Unix timestamp via `TimeFormatter` and resolves collisions via `VideoController::make_unique_path()` before calling `capture_photo()`.
 
-Before writing, `capture_photo()` extracts the parent directory from the path via `PathUtils::extract_parent_dir()` and creates it on the SD card (mirroring `open_clip()`). This ensures the first photo of a new day succeeds even when its `/YYYYMMDD` directory does not yet exist.
+Before writing, `capture_photo()` extracts the parent directory from the path via `PathUtils::extract_parent_dir()` and creates it on the SD card (mirroring `AviClipSession::open()`). This ensures the first photo of a new day succeeds even when its `/YYYYMMDD` directory does not yet exist.
 
 ### Init Signature
 
@@ -2087,7 +2137,7 @@ activate ORCH
 
 ' Delegate to VideoController
 ORCH -> ORCH : m_video.start_recording()
-note right: Opens a clip, starts the\ncapture loop if needed, and\nclaims a RecordSink slot
+note right: Posts START_RECORDING; the\nexecutor opens the clip, starts\nthe capture loop if needed, and\nbinds a RecordSink slot
 
 ORCH --> CMDH : return SUCCESS
 deactivate ORCH

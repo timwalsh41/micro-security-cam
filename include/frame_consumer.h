@@ -15,9 +15,9 @@
  * capture task context and must not block indefinitely.
  *
  * Recording and streaming each subscribe as built-in sinks owned by
- * VideoController, claimed internally by start_recording() /
- * start_streaming() via claim_slot(); register_frame_consumer() is
- * the public API for additional external consumers only.
+ * VideoController, bound by the executor when it executes the start
+ * requests; register_frame_consumer() is the public API for
+ * additional external consumers only.
  *
  * Lifecycle commands issued from within on_frame() (start_recording(),
  * stop_recording(), stop_streaming(), register/unregister) are safe:
@@ -28,7 +28,11 @@
  * activation. The one restriction that remains: a command issued from
  * on_frame() returns an acknowledgment, not the executed result (a
  * registration returns no usable id), and waiting on executor-owned
- * state from inside on_frame() is impossible by construction.
+ * state from inside on_frame() is impossible by construction. When a
+ * fire-and-forget command detaches the last consumer, the teardown
+ * join is deferred to the next command task of any kind; connected
+ * stream viewers are closed by the executor at the next activation
+ * boundary so they never hang in the meantime.
  */
 class IFrameConsumer
 {

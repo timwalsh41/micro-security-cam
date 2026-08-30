@@ -429,6 +429,9 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
     // Streaming mode must be explicitly started before a viewer can
     // connect. Viewers exist only while streaming is active, which
     // guarantees they are closed when the capture pipeline tears down.
+    // This gate is advisory only: a stop_streaming() can complete in
+    // the window between it and the slot bind below, so the bind is
+    // always followed by a revalidation (bind-then-revalidate).
     if (!m_video.is_streaming())
     {
         request.send(409, "application/json",
@@ -449,6 +452,21 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
         // connection.
         request.send(503, "application/json",
                      "{\"error\":\"no free stream slots\"}");
+        return;
+    }
+
+    // Revalidate the bind: if a stop completed in the gate-to-bind
+    // window the sink is already gone, and no future teardown boundary
+    // will close this slot (the stop already ran its viewer close).
+    // Free the slot and reject the viewer instead of leaving it hung
+    // on a silent multipart response. A teardown completing after this
+    // recheck is harmless: its own stop_all_streams() snapshot then
+    // necessarily includes this bound slot and closes it.
+    if (!m_video.is_streaming())
+    {
+        m_streams.stop_stream(static_cast<uint8_t>(slot));
+        request.send(503, "application/json",
+                     "{\"error\":\"streaming not started\"}");
         return;
     }
 
