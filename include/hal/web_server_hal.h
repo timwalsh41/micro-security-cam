@@ -4,8 +4,9 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <memory>
 
-#include "hal/stream_writer.h"
+#include "stream_frame_channel.h"
 
 /**
  * @file web_server_hal.h
@@ -30,6 +31,15 @@ enum class HttpMethod : uint8_t
     GET = 0,
     POST = 1,
 };
+
+/**
+ * @brief Callback invoked when a streaming response has ended.
+ *
+ * Fired exactly once when the transport destroys the response object —
+ * on client disconnect or after the response completes — so the owner
+ * can reclaim the viewer slot. Runs in the transport's task context.
+ */
+using StreamEndCallback = std::function<void()>;
 
 /**
  * @class RequestRef
@@ -92,13 +102,32 @@ class RequestRef
                           const uint8_t* data, size_t len) = 0;
 
         /**
-         * @brief Creates a stream writer for this connection.
+         * @brief Attaches a live multipart streaming response to this
+         *        request.
          *
-         * Returns nullptr if streaming is not supported.
+         * The response sends the HTTP multipart headers itself, then
+         * pulls pre-formatted multipart parts from @p channel as the
+         * client acknowledges data (framework flow control), so frame
+         * bytes are never truncated by a send-buffer limit. The stream
+         * continues until the channel is closed and drained or the
+         * client disconnects.
          *
-         * @return Pointer to a StreamWriter, or nullptr.
+         * Ownership of @p channel is shared: the response holds a
+         * reference until it is destroyed. When the transport destroys
+         * the response (disconnect or completion), @p on_end fires so
+         * the owner can reclaim the viewer slot; the request/response
+         * lifecycle itself stays entirely inside the transport, which
+         * keeps per-viewer transport objects leak-free.
+         *
+         * @param channel  Per-viewer frame channel.
+         * @param boundary Multipart boundary token (without dashes).
+         * @param on_end   Callback fired when the response ends.
+         * @return true if the response was attached.
          */
-        virtual StreamWriter* create_stream_writer() = 0;
+        virtual bool send_stream_response(
+            std::shared_ptr<StreamFrameChannel> channel,
+            const char* boundary,
+            StreamEndCallback on_end) = 0;
 };
 
 /**

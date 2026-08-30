@@ -2,7 +2,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <utility>
 
 StreamService::StreamService(LoggingService& log)
     : m_log(log)
@@ -20,11 +19,11 @@ void StreamService::init(uint8_t max_streams)
                static_cast<unsigned int>(m_max_streams));
 }
 
-int StreamService::start_stream(std::unique_ptr<hal::StreamWriter> writer)
+int StreamService::start_stream(std::shared_ptr<StreamFrameChannel> channel)
 {
-    if (!writer)
+    if (!channel)
     {
-        m_log.warn(SUBSYSTEM, "start_stream rejected: null writer");
+        m_log.warn(SUBSYSTEM, "start_stream rejected: null channel");
         return -1;
     }
 
@@ -33,20 +32,16 @@ int StreamService::start_stream(std::unique_ptr<hal::StreamWriter> writer)
     {
         if (!m_slots[i].active)
         {
-            // Bind the disconnect callback so the slot is freed when the
-            // client drops. The callback runs in the transport's context
-            // and only frees this slot via free_slot().
-            writer->on_disconnect([this, i]()
-            {
-                free_slot(i);
-            });
+            // Seed the multipart opening boundary as the first bytes the
+            // transport response will pull.
+            channel->push_part(
+                reinterpret_cast<const uint8_t*>(OPENING_BOUNDARY),
+                strlen(OPENING_BOUNDARY));
 
-            // Send the HTTP response headers + first boundary marker.
-            writer->write(reinterpret_cast<const uint8_t*>(PREAMBLE),
-                          strlen(PREAMBLE));
-
-            // Transfer ownership into the slot.
-            m_slots[i].writer = std::move(writer);
+            // Bind the channel into the slot. The transport response
+            // attached to the viewer's request shares ownership and
+            // pulls the bytes under framework flow control.
+            m_slots[i].channel = channel;
             m_slots[i].active = true;
 
             m_log.info(SUBSYSTEM, "Stream started on slot %u",
@@ -55,7 +50,6 @@ int StreamService::start_stream(std::unique_ptr<hal::StreamWriter> writer)
         }
     }
 
-    // No free slot: the unique_ptr deletes the writer on return.
     m_log.warn(SUBSYSTEM, "start_stream rejected: no free slot (max %u)",
                static_cast<unsigned int>(m_max_streams));
     return -1;
@@ -68,21 +62,26 @@ void StreamService::stop_stream(uint8_t slot)
         return;
     }
 
-    // Take ownership out of the slot and deactivate it first so the
-    // synchronous disconnect callback fired by close() below sees an
-    // inactive slot and does not re-enter free_slot() on this writer.
-    std::unique_ptr<hal::StreamWriter> writer = std::move(m_slots[slot].writer);
+    // Reclaim the slot first so it is immediately reusable, then end
+    // the stream: the closing token is pushed best effort (dropped when
+    // a frame part is still pending) and the channel is marked closed.
+    // The transport response drains the pending bytes, completes the
+    // multipart stream, and its end callback later finds no matching
+    // slot (idempotent).
+    std::shared_ptr<StreamFrameChannel> channel = m_slots[slot].channel;
+    m_slots[slot].channel.reset();
     m_slots[slot].active = false;
 
-    // Terminate the multipart stream and close the connection.
-    static constexpr const char* CLOSING = "--" STREAM_BOUNDARY_TOKEN "--\r\n";
-    writer->write(reinterpret_cast<const uint8_t*>(CLOSING), strlen(CLOSING));
-    writer->close();
+    if (channel)
+    {
+        channel->push_part(
+            reinterpret_cast<const uint8_t*>(CLOSING_BOUNDARY),
+            strlen(CLOSING_BOUNDARY));
+        channel->close();
+    }
 
     m_log.info(SUBSYSTEM, "Stream stopped on slot %u",
                static_cast<unsigned int>(slot));
-
-    // writer is deleted here when the unique_ptr goes out of scope.
 }
 
 void StreamService::stop_all_streams()
@@ -96,26 +95,46 @@ void StreamService::stop_all_streams()
     }
 }
 
-void StreamService::free_slot(uint8_t slot)
+void StreamService::on_stream_ended(StreamFrameChannel* channel)
 {
-    if (slot >= MAX_STREAMS || !m_slots[slot].active)
+    if (channel == nullptr)
     {
         return;
     }
 
-    // The connection has already dropped, so close() must not be called
-    // (it could re-fire the disconnect callback). Reclaim the writer.
-    m_slots[slot].writer.reset();
-    m_slots[slot].active = false;
+    for (uint8_t i = 0; i < m_max_streams; i++)
+    {
+        if (m_slots[i].active && m_slots[i].channel.get() == channel)
+        {
+            // The transport destroyed the response (client disconnect
+            // or completed stream); reclaim the slot. The response held
+            // its own channel reference and is already gone.
+            m_slots[i].channel.reset();
+            m_slots[i].active = false;
 
-    m_log.info(SUBSYSTEM, "Stream slot %u freed on disconnect",
-               static_cast<unsigned int>(slot));
+            m_log.info(SUBSYSTEM, "Stream slot %u freed on disconnect",
+                       static_cast<unsigned int>(i));
+            return;
+        }
+    }
 }
 
 void StreamService::deliver_frame(const uint8_t* data, size_t len)
 {
     if (data == nullptr || len == 0)
     {
+        return;
+    }
+
+    // Build the per-frame part header with the actual Content-Length.
+    // PART_HEADER is ~64 bytes; add room for the decimal length
+    // (up to 10 digits) plus the trailing CRLFCRLF.
+    char header[96];
+    int n = snprintf(header, sizeof(header), "%s%u\r\n\r\n",
+                     PART_HEADER, static_cast<unsigned int>(len));
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(header))
+    {
+        m_log.warn(SUBSYSTEM, "Frame header overflow");
         return;
     }
 
@@ -126,25 +145,29 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
             continue;
         }
 
-        hal::StreamWriter* writer = m_slots[i].writer.get();
-
-        // Build the per-frame part header with the actual Content-Length.
-        // PART_HEADER is ~64 bytes; add room for the decimal length
-        // (up to 10 digits) plus the trailing CRLFCRLF.
-        char header[96];
-        int n = snprintf(header, sizeof(header), "%s%u\r\n\r\n",
-                         PART_HEADER, static_cast<unsigned int>(len));
-        if (n < 0 || static_cast<size_t>(n) >= sizeof(header))
+        std::shared_ptr<StreamFrameChannel> channel = m_slots[i].channel;
+        if (!channel)
         {
-            m_log.warn(SUBSYSTEM, "Frame header overflow on slot %u", i);
             continue;
         }
 
-        writer->write(reinterpret_cast<const uint8_t*>(header),
-                      static_cast<size_t>(n));
-        writer->write(data, len);
-        writer->write(reinterpret_cast<const uint8_t*>(PART_FOOTER),
-                      strlen(PART_FOOTER));
+        // Assemble the complete part (header + JPEG + footer) once per
+        // frame and push it into the viewer's channel. A viewer still
+        // draining its previous part drops this frame — the transport
+        // pulls at the client's speed, so the part can never be
+        // truncated mid-frame.
+        m_part_scratch.clear();
+        m_part_scratch.reserve(n + len + strlen(PART_FOOTER));
+        m_part_scratch.insert(m_part_scratch.end(),
+                              reinterpret_cast<uint8_t*>(header),
+                              reinterpret_cast<uint8_t*>(header) + n);
+        m_part_scratch.insert(m_part_scratch.end(), data, data + len);
+        m_part_scratch.insert(m_part_scratch.end(),
+                              reinterpret_cast<const uint8_t*>(PART_FOOTER),
+                              reinterpret_cast<const uint8_t*>(PART_FOOTER) +
+                                  strlen(PART_FOOTER));
+
+        channel->push_part(m_part_scratch.data(), m_part_scratch.size());
     }
 }
 

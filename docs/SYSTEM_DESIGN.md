@@ -42,7 +42,7 @@ The design follows a layered architecture that separates hardware access from ap
 │                Hardware Abstraction Layer (HAL)             │
 │  CameraHal       SdCardHal      LogBackend                  │
 │  GpioHal         TimeHal        WifiHal    SerialHal        │
-│  WebServerHal    StreamWriter                               │
+│  WebServerHal    StreamFrameChannel                         │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -147,13 +147,13 @@ package "HAL interfaces" as HAL_IF {
         +header(name) : const char*
         +auth_header() : const char*
         +send(code, content_type, content)
-        +create_stream_writer() : StreamWriter*
+        +send_stream_response(channel, boundary, on_end) : bool
     }
 
-    interface StreamWriter {
-        +write(data : const uint8_t*, len : size_t) : size_t
+    class StreamFrameChannel {
+        +push_part(data, len) : bool
+        +pull(out, max_len) : size_t
         +close()
-        +on_disconnect(cb)
     }
 
     interface LogBackend {
@@ -196,8 +196,9 @@ package "ESP32 implementations" as HAL_IMPL {
         -m_request : AsyncWebServerRequest*
     }
 
-    class AsyncWebStreamWriter {
-        -m_client : AsyncClient*
+    class AsyncJpegStreamResponse {
+        -m_channel : shared_ptr<StreamFrameChannel>
+        +_fillBuffer(buf, maxLen) : size_t
     }
 
     class SerialLogBackend {
@@ -240,12 +241,13 @@ TimerHalImpl -up-|> TimerHal
 WifiHalImpl -up-|> WifiHal
 WebServerHalImpl -up-|> WebServerHal
 AsyncRequestRef .up.|> RequestRef
-AsyncWebStreamWriter -up-|> StreamWriter
+AsyncJpegStreamResponse -up-|> AsyncWebServerResponse
 SerialLogBackend -up-|> LogBackend
 
 SerialLogBackend -up-> SerialHal : writes log lines
 WebServerHalImpl .right.> AsyncRequestRef : creates per request
-RequestRef .down.> StreamWriter : create_stream_writer()
+RequestRef .down.> StreamFrameChannel : send_stream_response()
+AsyncJpegStreamResponse .down.> StreamFrameChannel : pulls parts
 
 @enduml
 ```
@@ -341,10 +343,11 @@ package "Services" {
         -m_slots : StreamSlot[MAX_STREAMS]
         -m_max_streams : uint8_t
         +init(max_streams : uint8_t)
-        +start_stream(writer : unique_ptr<StreamWriter>) : int
+        +start_stream(channel : shared_ptr<StreamFrameChannel>) : int
         +stop_stream(slot : uint8_t)
         +stop_all_streams()
         +deliver_frame(data, len)
+        +on_stream_ended(channel : StreamFrameChannel*)
         +active_slot_count() : uint8_t
     }
 
@@ -381,7 +384,7 @@ package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface WifiHal_ext as "WifiHal"
     interface WebServerHal_ext as "WebServerHal"
     interface RequestRef_ext as "RequestRef"
-    interface StreamWriter_ext as "StreamWriter"
+    class StreamFrameChannel_ext as "StreamFrameChannel"
 }
 
 package "External (see Diagram 4 - Utilities)" <<Frame>> {
@@ -400,7 +403,7 @@ LedStateMachine ..> LedMode
 SdController --> SdCardHal_ext : file I/O
 SdController --> TimeService : CS timing
 SdController ..> SdSignal : tick() output
-StreamService *-- "0..8" StreamWriter_ext : stream slots
+StreamService *-- "0..8" StreamFrameChannel_ext : stream slots
 StreamService --> LoggingService : diagnostics
 ConfigService --> LoggingService : diagnostics
 ConfigService *-- "1" ConfigData_ext : owns
@@ -729,7 +732,6 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
 | `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
 | `TimerHal` | `include/hal/timer_hal.h` | Hardware timer abstraction for periodic ISR callbacks. Provides `init(interval_us, isr)`, `set_frequency()`, `start()`, `stop()`. |
-| `StreamWriter` | `include/hal/stream_writer.h` | Abstract write sink for streaming bytes to a client connection. Provides `write(data, len)`, `close()`, and `on_disconnect(cb)` (invoked when the connection drops). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native). |
 
 **`hal::FileOpenMode`** — file open modes supported by `SdCardHal::open()`:
 
@@ -804,7 +806,7 @@ Each request is represented by a per-request `RequestRef` object that provides a
 | `auth_header()` | Get the `Authorization` header |
 | `send(code, type, content)` | Send a complete response (string body) |
 | `send(code, type, data, len)` | Send a complete response (binary body) |
-| `create_stream_writer()` | Create a `hal::StreamWriter*` bound to the request's client connection (used by the `/stream` MJPEG endpoint) |
+| `send_stream_response(channel, boundary, on_end)` | Attach a live multipart streaming response to the request: the transport writes the HTTP headers, pulls pre-formatted multipart parts from `channel` under framework flow control, and fires `on_end` when the response is destroyed (used by the `/stream` MJPEG endpoint) |
 
 **ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
 
@@ -837,7 +839,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `file_content` (seed content) |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
-| `MockStreamWriter` | `write_call_count`, `close_call_count`, `captured` (accumulated bytes) | `accept_writes` (to simulate a blocked/closed sink), `close_counter` (external counter observed after the writer is deleted); `simulate_disconnect()` fires the registered disconnect callback |
+| `MockWebServerHal` | `init_call_count`, `stop_call_count`, `registered_routes` | `init_result`; `MockRequestRef` carries configurable request state (`request_uri`, args, headers, auth) and captures `responses` plus attached streaming responses (`stream_responses` with channel and end callback; `end_stream_response(i)` simulates the transport ending a response) |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
 
 ---
@@ -930,27 +932,30 @@ Generates non-colliding file paths by appending serial suffixes (`_1`, `_2`, ...
 
 #### Responsibility
 
-Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-replace` MJPEG stream. Synchronous and platform-agnostic: `deliver_frame()` writes the multipart framing plus frame bytes directly to each active `hal::StreamWriter`. There are no per-slot frame buffers or FreeRTOS tasks — backpressure is handled by the underlying transport's send queue (AsyncTCP).
+Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-replace` MJPEG stream. Platform-agnostic: each viewer occupies one slot holding a `StreamFrameChannel`. `deliver_frame()` formats the complete multipart part (boundary header with `Content-Type: image/jpeg` and `Content-Length`, JPEG bytes, footer) and pushes it into the per-viewer channel; the transport response attached at connect time pulls the bytes from the channel as the client acknowledges data. Flow control and framing integrity are the transport framework's responsibility, so frame data is never truncated by a transport send-buffer limit.
+
+The channel is a bounded single-part mailbox: a push while the previous part is still pending is dropped (live-preview semantics — the freshest frame matters, and producer latency stays flat). Pushes never block, so the frame producer always runs at capture cadence.
 
 #### Interfaces
 
 - `IStreamService` — minimal frame-sink interface consumed by `VideoController`. Declares `deliver_frame(data, len)` and `stop_all_streams()`, mirroring the `ICaptureScheduler` abstraction pattern so `VideoController` stays decoupled and natively testable.
-- `hal::StreamWriter` — abstract write sink (`write()`, `close()`, `on_disconnect()`). Implemented by `AsyncWebStreamWriter` (ESP32/AsyncTCP) and `MockStreamWriter` (native).
+- `StreamFrameChannel` (`include/stream_frame_channel.h`, `src/stream_frame_channel.cpp`) — per-viewer byte channel between the frame producer (`push_part()`) and the transport response (`pull()`). Thread-safe (one producer task, one consumer task); the consumer decides how many bytes to take per call.
 
 #### API
 
 | Method | Purpose |
 |--------|---------|
 | `init(max_streams)` | Sets the maximum concurrent stream slots (clamped to `MAX_STREAMS = 8`). |
-| `start_stream(writer)` | Takes ownership of the writer (`std::unique_ptr<hal::StreamWriter>`), registers its disconnect callback, writes the HTTP 200 + multipart preamble, and returns the slot index (`-1` if full). |
-| `stop_stream(slot)` | Writes the closing boundary, closes and deletes the writer, and frees the slot. |
+| `start_stream(channel)` | Seeds the multipart opening boundary as the first channel bytes (the HTTP 200 response headers are written by the transport response) and binds the channel to a free slot (`-1` if full or null). |
+| `stop_stream(slot)` | Pushes the closing boundary (best effort — dropped when a frame part is still pending), marks the channel closed, and frees the slot. The transport response drains the pending bytes and completes. |
 | `stop_all_streams()` | Stops every active stream via `stop_stream()`. Invoked by `VideoController` whenever streaming mode turns off and when the capture pipeline is torn down, so viewers never outlive frame delivery. During recording, the close is executed by the capture task at the next dispatch boundary so it cannot interleave with an in-flight `deliver_frame()`. |
-| `deliver_frame(data, len)` | Writes a multipart JPEG part (`Content-Type: image/jpeg`, `Content-Length`, frame bytes) to every active slot. |
+| `deliver_frame(data, len)` | Formats a complete multipart JPEG part and pushes it into every active slot's channel (dropped for viewers still draining). |
+| `on_stream_ended(channel)` | Frees the slot whose streaming response ended. Invoked via the end callback fired when the transport destroys the response — on client disconnect or after the response completes. Idempotent. |
 | `active_slot_count()` | Returns the number of active viewers. |
 
 #### Ownership & Disconnect Handling
 
-Each slot owns its writer via `std::unique_ptr`, so the writer is deleted exactly once regardless of how the stream ends. `start_stream()` wires the writer's `on_disconnect()` callback to `free_slot(slot)`, which reclaims the slot (and deletes the writer) when the client drops — without calling `close()`, since the connection is already gone. `stop_stream()` moves the writer out of the slot and deactivates it **before** calling `close()`, so the synchronous `onDisconnect` fired by `AsyncClient::close()` is a no-op and does not re-enter the slot. A `nullptr` writer is rejected; when no slot is free the passed writer is deleted by the `unique_ptr`.
+The slot and the transport response share the channel via `std::shared_ptr`. The transport response pulls from the channel and finishes when the channel is closed and drained or the client disconnects; the request/response lifecycle stays entirely inside the transport (its disconnect handler is never overwritten, so per-viewer transport objects cannot leak). When the transport destroys the response, its end callback fires exactly once and routes to `on_stream_ended()`, which reclaims the slot. `stop_stream()` frees the slot immediately and only ends the channel; the later end callback finds no matching slot and is a no-op.
 
 #### Streaming Model
 
@@ -1139,7 +1144,7 @@ Complete list of HTTP endpoints exposed by the system, showing which class regis
 | GET | `/` | `WebServerService::init()` | `handle_index()` — serves the built-in HTML status page | Conditional¹ |
 | GET | `/status` | `WebCommandTransport::register_routes()` | `handle_status()` → `dispatch_and_respond(GET_STATUS)` → `CommandHandler::dispatch()` | Conditional¹ |
 | GET | `/control` | `WebCommandTransport::register_routes()` | `handle_control()` → `map_cmd_string(cmd)` → `dispatch_and_respond(code[, payload])` → `CommandHandler::dispatch()` | Conditional¹ |
-| GET | `/stream` | `SystemOrchestrator::init()` | `handle_stream_request()` → `check_basic_auth()` → `create_stream_writer()` → `StreamService::start_stream()` | Conditional¹ |
+| GET | `/stream` | `SystemOrchestrator::init()` | `handle_stream_request()` → `check_basic_auth()` → `StreamService::start_stream()` → `send_stream_response()` | Conditional¹ |
 
 ¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers do not send Basic credentials for embedded subresources (`<img>`/`<video>`), so an embedded viewer requires a different (token-based) mechanism — which is not yet implemented.
 
@@ -1543,7 +1548,7 @@ Lifecycle rules:
 
 Known limitations:
 
-- `StreamService` has no internal synchronization across task contexts: viewer close runs `stop_all_streams()` from two contexts — the deferred close via `process_pending_viewer_close()` inside the capture task's frame dispatch, and the teardown-path close inside `teardown_capture_pipeline()` in the command-task context of the stop/unregister caller — while `start_stream()` binding and `free_slot()` (viewer disconnect) run in the AsyncTCP task. These are unsynchronized, so a timed viewer connect/stop interleaving can leave a viewer hanging on a silent multipart response or cause a use-after-free on a stream writer (reliability/remote-crash class). `deliver_frame()` vs `free_slot()` shares the same family. The fix is planned as part of the upcoming `VideoController`/`StreamService` synchronization refactor.
+- `StreamService` has no internal synchronization across task contexts: viewer close runs `stop_all_streams()` from two contexts — the deferred close via `process_pending_viewer_close()` inside the capture task's frame dispatch, and the teardown-path close inside `teardown_capture_pipeline()` in the command-task context of the stop/unregister caller — while `start_stream()` binding and `on_stream_ended()` (viewer disconnect) run in the AsyncTCP task. These are unsynchronized, so a timed viewer connect/stop interleaving can leave a viewer hanging on a silent multipart response or cause a use-after-free on a stream channel (reliability/remote-crash class). `deliver_frame()` vs `on_stream_ended()` shares the same family. The fix is planned as part of the upcoming `VideoController`/`StreamService` synchronization refactor.
 
 ### Capture Scheduling
 
@@ -1739,7 +1744,8 @@ participant "CaptureScheduler\nEsp32" as CS
 participant "Capture Task\n(CPU0)" as TASK
 participant "CameraController" as CAM
 participant "StreamService" as SS
-participant "AsyncWebStreamWriter" as WRITER
+participant "StreamFrameChannel\n(per viewer)" as CH
+participant "AsyncJpegStream\nResponse" as RESP
 participant "AsyncTCP\n(client)" as TCP
 
 == Start preview ==
@@ -1762,14 +1768,16 @@ ORCH --> CLIENT : {"result":"ok"}
 CLIENT -> ORCH : GET /stream
 ORCH -> ORCH : check_basic_auth()
 ORCH -> ORCH : is_streaming()? (yes)
-ORCH -> VC : (request.create_stream_writer())
-ORCH -> WRITER : new AsyncWebStreamWriter(client)
-ORCH -> SS : start_stream(writer)
+ORCH -> CH : new StreamFrameChannel()
+ORCH -> SS : start_stream(channel)
 activate SS
-SS -> WRITER : write(HTTP 200 + multipart preamble)
-WRITER -> TCP : client->write(...)
+SS -> CH : push_part(multipart opening boundary)
 SS --> ORCH : slot index
 deactivate SS
+ORCH -> RESP : send_stream_response(channel, boundary, on_end)
+activate RESP
+RESP -> TCP : framework writes HTTP 200 +\nmultipart/x-mixed-replace headers
+note right: the response is attached with send();\nthe framework drives it entirely
 
 == Frame delivery loop ==
 
@@ -1785,13 +1793,15 @@ VC -> ST : on_frame(jpeg, len)
 activate ST
 ST -> SS : deliver_frame(jpeg, len)
 activate SS
-SS -> WRITER : write(--boundary + Content-Type: image/jpeg)
-SS -> WRITER : write(Content-Length: N)
-SS -> WRITER : write(JPEG bytes)
-WRITER -> TCP : client->write(...)
+SS -> CH : push_part(boundary + headers +\nJPEG bytes + footer)
+note right: complete part pushed into the\nbounded per-viewer mailbox;\ndropped when the viewer is slow
 deactivate SS
 deactivate ST
 VC -> CAM : release_frame()
+VC -> RESP : (framework poll/ack)
+RESP -> CH : pull(pending part bytes)
+note right: framework flow control — bytes are\npulled as the client acknowledges,\nso no send-buffer truncation
+RESP -> TCP : chunked transfer-encoding write
 deactivate VC
 
 end
@@ -1812,14 +1822,14 @@ alt recording keeps the loop running
 else last subscriber: teardown
     VC -> CS : stop() (only when no consumer remains)
     VC -> SS : stop_all_streams()
-    note right: viewers closed after the join
+    note right: channels ended and slots freed\nafter the join
 end
 ORCH --> CLIENT : {"result":"ok"}
 
 @enduml
 ```
 
-The `/stream` handler does **not** call `request->send()` — that would close the response. Instead it obtains a `hal::StreamWriter` via `request.create_stream_writer()` and hands it to `StreamService`, which writes the multipart framing and frame bytes directly to the `AsyncClient`.
+The `/stream` handler attaches a real streaming response via `request.send_stream_response()` (an `AsyncAbstractResponse` subclass with chunked transfer-encoding). The transport framework writes the HTTP headers itself, pulls pre-formatted multipart parts from the per-viewer `StreamFrameChannel` as the client acknowledges data, and completes the response when the channel is closed and drained or the client disconnects. Returning from the handler without attaching a response would make the transport emit a `501 Not Implemented` (with `Connection: close`) and kill the stream at birth — the defect this design replaces.
 
 ### Per-Frame SD Write Strategy
 

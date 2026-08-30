@@ -1,23 +1,27 @@
 #ifndef STREAM_SERVICE_H
 #define STREAM_SERVICE_H
 
-#include "hal/stream_writer.h"
 #include "logging_service.h"
+#include "stream_frame_channel.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 /**
  * @file stream_service.h
  * @brief Live MJPEG streaming service.
  *
  * Distributes captured JPEG frames to connected viewers as a
- * `multipart/x-mixed-replace` HTTP stream. The service is synchronous
- * and platform-agnostic: deliver_frame() writes the multipart framing
- * plus frame bytes directly to each active StreamWriter. On ESP32 the
- * writers are AsyncWebStreamWriter instances (non-blocking AsyncTCP
- * writes); native tests inject MockStreamWriter instances.
+ * `multipart/x-mixed-replace` HTTP stream. Each viewer occupies one
+ * slot holding a StreamFrameChannel: deliver_frame() formats the
+ * multipart part (header, JPEG bytes, footer) and pushes it into the
+ * per-viewer channel; the transport response attached at connect time
+ * pulls the bytes from the channel as the client acknowledges data, so
+ * flow control and framing integrity are the transport framework's
+ * responsibility and frame data is never truncated by a send-buffer
+ * limit.
  *
  * The class exposes the full API, while VideoController depends only on
  * the minimal IStreamService interface (mirroring ICaptureScheduler),
@@ -66,11 +70,12 @@ class IStreamService
  * @class StreamService
  * @brief Manages concurrent MJPEG stream slots.
  *
- * Each active viewer occupies one slot holding a StreamWriter. Frames
- * are delivered synchronously to every active slot. There are no
- * per-slot frame buffers or tasks — backpressure is handled by the
- * underlying transport's send queue (AsyncTCP) rather than by copying
- * frames into PSRAM.
+ * Each active viewer occupies one slot holding a StreamFrameChannel.
+ * deliver_frame() pushes a complete pre-formatted multipart part into
+ * each active channel; the transport response pulls the bytes as the
+ * client acknowledges data. A push while the previous part is still
+ * pending is dropped (live-preview semantics), so producer latency
+ * stays flat and no per-slot queue grows unboundedly.
  */
 class StreamService : public IStreamService
 {
@@ -97,45 +102,68 @@ class StreamService : public IStreamService
         void init(uint8_t max_streams);
 
         /**
-         * @brief Registers a new viewer and writes the stream preamble.
+         * @brief Registers a new viewer and seeds its multipart stream.
          *
-         * Writes the HTTP 200 response headers and the multipart
-         * boundary opening for the new stream, then binds the writer
-         * to a free slot.
+         * Seeds the multipart boundary opening as the first bytes of
+         * the channel (the HTTP 200 response headers are written by the
+         * transport response attached to the request) and binds the
+         * channel to a free slot.
          *
-         * @param writer StreamWriter for the client connection.
-         *               Ownership transfers to the service.
-         * @return The slot index on success, or -1 if no slot is free.
+         * @param channel Per-viewer frame channel; ownership is shared
+         *                with the transport response attached to the
+         *                viewer's request.
+         * @return The slot index on success, or -1 if no slot is free
+         *         or the channel is null.
          */
-        int start_stream(std::unique_ptr<hal::StreamWriter> writer);
+        int start_stream(std::shared_ptr<StreamFrameChannel> channel);
 
         /**
-         * @brief Stops and closes the stream in the given slot.
+         * @brief Stops the stream in the given slot.
          *
-         * Writes the closing multipart boundary, closes the writer, and
-         * frees the slot.
+         * Pushes the closing multipart boundary (best effort) and marks
+         * the channel closed, then frees the slot. The transport
+         * response drains the pending bytes and completes; its end
+         * callback later observes no matching slot (idempotent).
          *
          * @param slot Slot index (as returned by start_stream()).
          */
         void stop_stream(uint8_t slot);
 
         /**
-         * @brief Stops and closes all active streams.
+         * @brief Stops all active streams.
          *
-         * Iterates every slot and closes any active stream via
+         * Iterates every slot and stops any active stream via
          * stop_stream(). Invoked by `VideoController` whenever
          * streaming mode turns off (e.g. STOP_STREAM) and when the
          * capture loop is torn down, so connected viewers are closed
-         * and their writers freed rather than left occupying slots.
+         * and their slots freed rather than left occupying capacity.
          */
         void stop_all_streams() override;
 
         /**
          * @brief Delivers a JPEG frame to all active streams.
+         *
+         * Formats the complete multipart part and pushes it into each
+         * active viewer's channel. If a viewer is still draining its
+         * previous part, the frame is dropped for that viewer (live
+         * preview semantics; the transport pulls at client speed).
+         *
          * @param data Pointer to JPEG frame bytes.
          * @param len  Number of frame bytes.
          */
         void deliver_frame(const uint8_t* data, size_t len) override;
+
+        /**
+         * @brief Frees the slot whose streaming response ended.
+         *
+         * Invoked via the end callback fired by the transport response
+         * when it is destroyed — on client disconnect or after the
+         * response completes. Idempotent: a slot already freed by
+         * stop_stream() (or an unknown channel) is a no-op.
+         *
+         * @param channel Channel of the ended response.
+         */
+        void on_stream_ended(StreamFrameChannel* channel);
 
         /**
          * @brief Returns the number of active stream slots.
@@ -143,12 +171,13 @@ class StreamService : public IStreamService
         uint8_t active_slot_count() const;
 
     private:
-        /** HTTP response preamble written once per stream. */
-        static constexpr const char* PREAMBLE =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: multipart/x-mixed-replace; boundary="
-            STREAM_BOUNDARY_TOKEN "\r\n"
-            "\r\n";
+        /** Multipart opening written once per stream, before the first part. */
+        static constexpr const char* OPENING_BOUNDARY =
+            "--" STREAM_BOUNDARY_TOKEN "\r\n";
+
+        /** Best-effort multipart closing token. */
+        static constexpr const char* CLOSING_BOUNDARY =
+            "--" STREAM_BOUNDARY_TOKEN "--\r\n";
 
         /** Fixed per-frame part header (Content-Length is appended). */
         static constexpr const char* PART_HEADER =
@@ -164,24 +193,21 @@ class StreamService : public IStreamService
         /** A single viewer slot. */
         struct StreamSlot
         {
-            std::unique_ptr<hal::StreamWriter> writer;
+            std::shared_ptr<StreamFrameChannel> channel;
             bool active{false};
         };
-
-        /**
-         * @brief Reclaims the writer in a slot without closing it.
-         *
-         * Used by the writer's disconnect callback; the connection has
-         * already dropped, so close() must not be called (it could
-         * re-fire the disconnect callback).
-         *
-         * @param slot Slot index to free.
-         */
-        void free_slot(uint8_t slot);
 
         LoggingService& m_log;
         uint8_t m_max_streams{0};
         StreamSlot m_slots[MAX_STREAMS]{};
+
+        /**
+         * Scratch buffer used by deliver_frame() to assemble a complete
+         * multipart part before pushing it into a channel. Only the
+         * frame producer's task calls deliver_frame(), so a single
+         * reused buffer avoids per-frame allocations.
+         */
+        std::vector<uint8_t> m_part_scratch;
 };
 
 #endif // STREAM_SERVICE_H

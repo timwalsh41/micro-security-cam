@@ -436,24 +436,41 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
         return;
     }
 
-    std::unique_ptr<hal::StreamWriter> writer(request.create_stream_writer());
-    if (!writer)
+    std::shared_ptr<StreamFrameChannel> channel =
+        std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* channel_ptr = channel.get();
+
+    int slot = m_streams.start_stream(channel);
+    if (slot < 0)
     {
-        request.send(500, "application/json",
-                     "{\"error\":\"streaming unavailable\"}");
+        // start_stream() shares ownership of the channel; when no slot
+        // is free it returns -1 and our reference deletes it here.
+        // request.send() attaches the error response and closes the
+        // connection.
+        request.send(503, "application/json",
+                     "{\"error\":\"no free stream slots\"}");
         return;
     }
 
-    int slot = m_streams.start_stream(std::move(writer));
-    if (slot < 0)
+    // Attach a real streaming response: the transport writes the HTTP
+    // headers, pulls multipart parts from the channel under framework
+    // flow control (no raw client writes, no send-buffer truncation),
+    // and destroys the response on disconnect or completion. Its end
+    // callback frees the viewer slot, and the request/response lifecycle
+    // stays entirely inside the transport (no per-viewer leak).
+    auto on_end = [this, channel_ptr]()
     {
-        // start_stream() takes the writer by value (unique_ptr). When no
-        // slot is free it returns -1 without transferring ownership, so
-        // its parameter destructor deletes the writer here. That does not
-        // close the connection (the writer holds AsyncClient as a
-        // non-owning pointer); request.send() closes it.
-        request.send(503, "application/json",
-                     "{\"error\":\"no free stream slots\"}");
+        m_streams.on_stream_ended(channel_ptr);
+    };
+    if (!request.send_stream_response(channel, STREAM_BOUNDARY_TOKEN, on_end))
+    {
+        // The response could not be attached: end the stream directly.
+        // The channel has no transport reference, so freeing the slot
+        // here is safe.
+        m_streams.stop_stream(static_cast<uint8_t>(slot));
+        m_streams.on_stream_ended(channel_ptr);
+        request.send(500, "application/json",
+                     "{\"error\":\"streaming unavailable\"}");
         return;
     }
 

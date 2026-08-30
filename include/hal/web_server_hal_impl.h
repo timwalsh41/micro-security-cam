@@ -51,7 +51,10 @@ class AsyncRequestRef : public RequestRef
         void send(int code, const char* content_type,
                   const uint8_t* data, size_t len) override;
 
-        StreamWriter* create_stream_writer() override;
+        bool send_stream_response(
+            std::shared_ptr<StreamFrameChannel> channel,
+            const char* boundary,
+            StreamEndCallback on_end) override;
 
     private:
         AsyncWebServerRequest* m_request;

@@ -13,8 +13,8 @@
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include "mock_web_server_hal.h"
-#include "mock_stream_writer.h"
 #include <cstring>
+#include <memory>
 #include <string>
 
 // ============================================================
@@ -260,10 +260,9 @@ void test_stop_recording_closes_connected_viewers()
 
     // Recording delivers frames to streams too; connect a viewer.
     dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
-    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
-    int close_count = 0;
-    w1->close_counter = &close_count;
-    f.stream_service.start_stream(std::move(w1));
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    f.stream_service.start_stream(channel);
     TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
 
     dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
@@ -272,7 +271,7 @@ void test_stop_recording_closes_connected_viewers()
 
     // The viewer's stream must have been closed and its slot freed.
     TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
-    TEST_ASSERT_EQUAL_INT(1, close_count);
+    TEST_ASSERT_TRUE(raw->is_closed());
 }
 
 /**
@@ -287,10 +286,9 @@ void test_stop_recording_keeps_streams_when_streaming_active()
     f.setup_fake_frame();
 
     dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
-    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
-    int close_count = 0;
-    w1->close_counter = &close_count;
-    f.stream_service.start_stream(std::move(w1));
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    f.stream_service.start_stream(channel);
 
     dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
     dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
@@ -299,12 +297,12 @@ void test_stop_recording_keeps_streams_when_streaming_active()
     TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_TRUE(f.video.is_streaming());
     TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
-    TEST_ASSERT_EQUAL_INT(0, close_count);
+    TEST_ASSERT_FALSE(raw->is_closed());
 
     // Cleanup: stop streaming closes the viewer.
     dispatch_cmd(f.cmd_handler, CommandCode::STOP_STREAM);
     TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
-    TEST_ASSERT_EQUAL_INT(1, close_count);
+    TEST_ASSERT_TRUE(raw->is_closed());
 }
 
 /**
@@ -589,13 +587,12 @@ void test_stop_stream_closes_active_streams()
 
     // Connect two viewers while streaming.
     dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
-    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
-    auto w2 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
-    int close_count = 0;
-    w1->close_counter = &close_count;
-    w2->close_counter = &close_count;
-    f.stream_service.start_stream(std::move(w1));
-    f.stream_service.start_stream(std::move(w2));
+    auto c1 = std::make_shared<StreamFrameChannel>();
+    auto c2 = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw1 = c1.get();
+    StreamFrameChannel* raw2 = c2.get();
+    f.stream_service.start_stream(c1);
+    f.stream_service.start_stream(c2);
     TEST_ASSERT_EQUAL_UINT8(2, f.stream_service.active_slot_count());
 
     CommandResult result = dispatch_cmd(
@@ -606,9 +603,10 @@ void test_stop_stream_closes_active_streams()
         static_cast<uint8_t>(result));
     TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_FALSE(f.video.is_streaming());
-    // Both writers closed and both slots freed.
+    // Both streams ended and both slots freed.
     TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
-    TEST_ASSERT_EQUAL_INT(2, close_count);
+    TEST_ASSERT_TRUE(raw1->is_closed());
+    TEST_ASSERT_TRUE(raw2->is_closed());
 }
 
 /**
@@ -627,10 +625,9 @@ void test_stop_stream_closes_viewers_while_recording()
     // Streaming starts, a viewer connects, then recording begins on the
     // shared capture loop.
     dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
-    auto w1 = std::unique_ptr<MockStreamWriter>(new MockStreamWriter());
-    int close_count = 0;
-    w1->close_counter = &close_count;
-    f.stream_service.start_stream(std::move(w1));
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    f.stream_service.start_stream(channel);
     TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
     dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
     TEST_ASSERT_TRUE(f.video.is_recording());
@@ -651,7 +648,7 @@ void test_stop_stream_closes_viewers_while_recording()
     // Next frame dispatch executes the close...
     f.capture_one_frame();
     TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
-    TEST_ASSERT_EQUAL_INT(1, close_count);
+    TEST_ASSERT_TRUE(raw->is_closed());
     // ...while recording persists unchanged.
     TEST_ASSERT_TRUE(f.video.is_recording());
 }
@@ -714,13 +711,29 @@ void test_stream_route_rejects_without_streaming_mode()
 
     dispatch_cmd(f.cmd_handler, CommandCode::STOP_RECORDING);
 
-    // Explicit streaming mode: a viewer writer is created.
+    // Explicit streaming mode: a live streaming response is attached to
+    // the request (no error response — the stream itself is the reply).
     dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
     f.web_hal.mock_request.responses.clear();
     TEST_ASSERT_TRUE(f.web_hal.simulate_request("/stream", hal::HttpMethod::GET));
     TEST_ASSERT_EQUAL_INT(0, f.web_hal.mock_request.responses.size());
-    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.stream_writers.size());
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.stream_responses.size());
     TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+
+    // The viewer connects through the transport response: the channel is
+    // seeded with the multipart opening boundary.
+    std::shared_ptr<StreamFrameChannel> viewer =
+        f.web_hal.mock_request.stream_responses[0].channel;
+    uint8_t buf[64];
+    size_t n = viewer->pull(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(strstr(
+        reinterpret_cast<const char*>(buf), "--CAM_BOUNDARY") != nullptr);
+    TEST_ASSERT_GREATER_THAN(0, n);
+
+    // When the transport ends the response (client disconnect), the end
+    // callback frees the viewer slot.
+    f.web_hal.mock_request.end_stream_response(0);
+    TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
 }
 
 // ============================================================

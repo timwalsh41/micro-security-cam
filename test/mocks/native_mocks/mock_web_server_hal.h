@@ -2,10 +2,10 @@
 #define MOCK_WEB_SERVER_HAL_H
 
 #include "hal/web_server_hal.h"
-#include "mock_stream_writer.h"
 #include <cstring>
-#include <vector>
+#include <memory>
 #include <string>
+#include <vector>
 #include <functional>
 
 /**
@@ -70,6 +70,17 @@ class MockRequestRef : public hal::RequestRef
         };
         std::vector<ResponseRecord> responses;
 
+        /** Record of an attached streaming response. */
+        struct StreamResponseRecord
+        {
+            std::shared_ptr<StreamFrameChannel> channel;
+            std::function<void()> on_end;
+        };
+        std::vector<StreamResponseRecord> stream_responses;
+
+        /** Value returned by send_stream_response(). */
+        bool send_stream_result{true};
+
         // ============================================================
         // Interface implementation
         // ============================================================
@@ -133,16 +144,37 @@ class MockRequestRef : public hal::RequestRef
             responses.push_back(rec);
         }
 
-        hal::StreamWriter* create_stream_writer() override
+        bool send_stream_response(
+            std::shared_ptr<StreamFrameChannel> channel,
+            const char* boundary,
+            std::function<void()> on_end) override
         {
-            // Allocate a mock writer and track it for test assertions.
-            auto* writer = new MockStreamWriter();
-            stream_writers.push_back(writer);
-            return writer;
+            if (!send_stream_result || !channel || boundary == nullptr)
+            {
+                return false;
+            }
+            StreamResponseRecord rec;
+            rec.channel = channel;
+            rec.on_end = std::move(on_end);
+            stream_responses.push_back(std::move(rec));
+            return true;
         }
 
-        /** Stream writers created via create_stream_writer(). */
-        std::vector<MockStreamWriter*> stream_writers;
+        /**
+         * @brief Simulates the transport ending a streaming response
+         *        (client disconnect or completed stream).
+         *
+         * Invokes the recorded end callback, which frees the viewer
+         * slot, exactly as the transport's response destruction would.
+         */
+        void end_stream_response(size_t index)
+        {
+            if (index < stream_responses.size() &&
+                stream_responses[index].on_end)
+            {
+                stream_responses[index].on_end();
+            }
+        }
 
         // ============================================================
         // Helper methods for test setup
@@ -298,6 +330,7 @@ class MockWebServerHal : public hal::WebServerHal
         {
             // Clear responses from any previous simulation
             mock_request.responses.clear();
+            mock_request.stream_responses.clear();
 
             for (auto& route : registered_routes)
             {

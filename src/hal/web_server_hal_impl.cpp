@@ -1,5 +1,5 @@
 #include "hal/web_server_hal_impl.h"
-#include "async_web_stream_writer.h"
+#include "async_stream_response.h"
 #include <cstring>
 
 #include <ESPAsyncWebServer.h>
@@ -96,16 +96,25 @@ void AsyncRequestRef::send(int code, const char* content_type,
     }
 }
 
-StreamWriter* AsyncRequestRef::create_stream_writer()
+bool AsyncRequestRef::send_stream_response(
+    std::shared_ptr<StreamFrameChannel> channel,
+    const char* boundary,
+    StreamEndCallback on_end)
 {
-    if (m_request == nullptr || m_request->client() == nullptr)
+    if (m_request == nullptr || !channel || boundary == nullptr)
     {
-        return nullptr;
+        return false;
     }
 
-    // Ownership passes to the caller (StreamService); the AsyncClient is
-    // owned by the request and freed on disconnect.
-    return new AsyncWebStreamWriter(m_request->client());
+    // The response is owned by the request from here on: the transport
+    // sends it, pulls parts from the channel under framework flow
+    // control, and destroys it on disconnect or completion (firing
+    // on_end so the viewer slot can be reclaimed).
+    AsyncJpegStreamResponse* response =
+        new AsyncJpegStreamResponse(std::move(channel), boundary,
+                                    std::move(on_end));
+    m_request->send(response);
+    return true;
 }
 
 // ============================================================
