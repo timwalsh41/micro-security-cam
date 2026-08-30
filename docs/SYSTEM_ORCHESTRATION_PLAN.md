@@ -81,7 +81,7 @@ The captain approved the following order of work on 2026-08-29, interleaving pos
 
 1. **Clip-rotation hardening** (in flight) — fixes the clip-state cross-task race, including the capture-failure `close_clip` site at `src/video_controller.cpp:659`.
 2. **Streaming-stall fix** (in flight) — `StreamService` data/state synchronization, including the `deliver_frame`/`free_slot` pairing.
-3. **Video-controller refactor D0, D1, and D3** from the video-controller refactor report (in flight, landed together with items 1–2 as one 5-commit PR) — D0 claim removal, D1 `AviClipSession` extraction, and D3 single-owner lifecycle executor as the target architecture. D2 (registry extraction) is deferred; see [Future Extensions](#future-extensions).
+3. **Video-controller refactor D0, D1, and D3** from the video-controller refactor report (in flight, to land together with items 1–2 as one 5-commit PR) — D0 claim removal, D1 `AviClipSession` extraction, and D3 single-owner lifecycle executor as the target architecture. D2 (registry extraction) is deferred; see [Future Extensions](#future-extensions).
 4. **Photo capability** — **deferred** to later. When picked up, the recommended mechanism is **ADAPT**: a capture-task-owned one-shot photo request flag served by the pump (the hybrid design in `data/msc-photo-subscriber-feasibility/report.md` §6.3), not a register/unregister registry subscriber.
 
 The slices below remain the standing capability roadmap; the items above are sequenced against the existing `VideoController`/`StreamService` implementation and this plan's slices.
