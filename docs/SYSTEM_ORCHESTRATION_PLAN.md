@@ -2303,6 +2303,7 @@ Always downsample to 96×96 for comparison, but decode at native resolution. If 
 
 The following are **not** part of this plan but are candidates for follow-up work:
 
+- **Frame-consumer registry extraction** — today the frame-consumer registry (the 3-slot array holding the recording, streaming, and motion-detection consumers) lives inside `VideoController`, together with the slot claim/release protocol and its lifecycle coupling. Growing the registry beyond 3 slots would put yet more slot-management and lifecycle responsibility in `VideoController`, further entangling its responsibilities. The proposed fix is to extract a dedicated frame-consumer registry that owns the slot array with the claim/release protocol and a lock-free dispatch path for the frame pump. When the need for additional slots arises (e.g. additional persistent consumers such as timelapse), extract `FrameConsumerRegistry` owning `ConsumerSlot m_slots[3]`, the slot claim/release/detach protocol, and a lock-free `dispatch(callable)` iterator for the pump. Approach summary and cost/benefit analysis: `data/msc-video-controller-refactor/report.md` (Design 2) and its addendum.
 - **Live audio streaming** — WebSocket-based real-time audio alongside MJPEG video
 - **Opus encoding** — Reduce audio bandwidth ~10× over raw PCM via `esp-opus-encoder`
 - **Cloud integration** — Upload clips to cloud storage, remote access via tunnel
