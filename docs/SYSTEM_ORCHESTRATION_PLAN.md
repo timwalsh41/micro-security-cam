@@ -75,6 +75,17 @@ Slice 1 ──► Slice 2 ──► Slice 3 ──► Slice 4 ──► Slice 5
 
 Slice 2 depends on Slice 1 (serial transport needs `CommandHandler`). Slices 4–6 depend on Slice 3 (FreeRTOS tasks). Slice 7 depends on Slice 4 and Slice 6 (orchestrator needs `MicService` and `MotionDetector` references).
 
+### Adopted Order (status as of 2026-08-29)
+
+The captain approved the following order of work on 2026-08-29, interleaving post-slice hardening and refactor items before the photo capability:
+
+1. **Clip-rotation hardening** (in flight) — fixes the clip-state cross-task race, including the capture-failure `close_clip` site at `src/video_controller.cpp:659`.
+2. **Streaming-stall fix** (in flight) — `StreamService` data/state synchronization, including the `deliver_frame`/`free_slot` pairing.
+3. **Video-controller refactor D0, D1, and D3** from the video-controller refactor report (in flight, landed together with items 1–2 as one 5-commit PR) — D0 claim removal, D1 `AviClipSession` extraction, and D3 single-owner lifecycle executor as the target architecture. D2 (registry extraction) is deferred; see [Future Extensions](#future-extensions).
+4. **Photo capability** — **deferred** to later. When picked up, the recommended mechanism is **ADAPT**: a capture-task-owned one-shot photo request flag served by the pump (the hybrid design in `data/msc-photo-subscriber-feasibility/report.md` §6.3), not a register/unregister registry subscriber.
+
+The slices below remain the standing capability roadmap; the items above are sequenced against the existing `VideoController`/`StreamService` implementation and this plan's slices.
+
 ---
 
 ## Composition Tree Evolution
@@ -2303,6 +2314,7 @@ Always downsample to 96×96 for comparison, but decode at native resolution. If 
 
 The following are **not** part of this plan but are candidates for follow-up work:
 
+- **Frame-consumer registry extraction (D2)** — deferred until the frame-consumer registry must grow beyond the 3 slots envisioned today (recording, streaming, and the phase-6 motion detection consumer). Rationale: the registry is small and its lifecycle coupling (`register` → `ensure_loop_running`; `unregister` → `maybe_teardown`) remains in `VideoController` unless the D3 executor absorbs it, so extracting it now buys little — the hard part (the clip race) is addressed by the hardening fix and D1/D3, not the registry. When slot pressure arrives (e.g. timelapse or photo requiring a 4th slot), extract `FrameConsumerRegistry` owning `ConsumerSlot m_slots[3]`, the slot claim/release/detach protocol, and a lock-free `dispatch(callable)` iterator for the pump. Approach summary and cost/benefit analysis: `data/msc-video-controller-refactor/report.md` (Design 2) and its addendum.
 - **Live audio streaming** — WebSocket-based real-time audio alongside MJPEG video
 - **Opus encoding** — Reduce audio bandwidth ~10× over raw PCM via `esp-opus-encoder`
 - **Cloud integration** — Upload clips to cloud storage, remote access via tunnel
