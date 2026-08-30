@@ -518,15 +518,10 @@ class VideoController
         // State
         std::atomic<bool> m_stop_clip{false};
         std::atomic<bool> m_close_viewers_pending{false}; ///< Viewer close deferred to the next dispatch boundary
-        // Per-activity claims: exchanged at entry of start_recording() /
-        // start_streaming() so concurrent starts arriving from different
-        // command tasks are mutually exclusive; held while the activity
-        // is subscribed and released when it stops.
-        std::atomic<bool> m_record_claim{false};
-        std::atomic<bool> m_stream_claim{false};
-        // True while an unfinalized clip is open; owned exclusively by
-        // the capture task (set by open_clip(), cleared by close_clip()).
-        std::atomic<bool> m_clip_close_pending{false};
+        // True while an unfinalized clip is open. Written only under
+        // m_lifecycle_mutex (all clip operations hold it), and read by
+        // start_recording() under the same mutex — no atomic needed.
+        bool m_clip_close_pending{false};
         /**
          * @brief Serializes lifecycle transitions between command
          *        transports.

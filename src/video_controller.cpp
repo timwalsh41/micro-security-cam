@@ -52,10 +52,12 @@ bool VideoController::start_recording()
 {
     std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
 
-    // Claim the recording activity up front so concurrent start
-    // attempts arriving from different command tasks cannot both
-    // proceed to mutate clip state and the registry.
-    if (m_record_claim.exchange(true, std::memory_order_acq_rel))
+    // Registry guard: the recording sink is registered exactly while
+    // the activity is active, and this section is serialized against
+    // all other lifecycle mutations by the mutex, so a duplicate start
+    // can never slip through and a failure path needs no manual
+    // claim reset.
+    if (is_registered(&m_record_sink))
     {
         return false;
     }
@@ -64,11 +66,12 @@ bool VideoController::start_recording()
     // asynchronous stop (other consumers such as streaming kept the
     // loop running) the capture task finalizes the clip on its next
     // activation. Opening a new clip before the old one is closed
-    // would corrupt both files.
-    if (m_clip_close_pending.load(std::memory_order_relaxed))
+    // would corrupt both files. All clip operations run under the
+    // lifecycle mutex, so this read is ordered against the capture
+    // task's close/reopen sections.
+    if (m_clip_close_pending)
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
-        m_record_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -76,7 +79,6 @@ bool VideoController::start_recording()
     if (id < 0)
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: consumer registry full");
-        m_record_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -86,7 +88,6 @@ bool VideoController::start_recording()
     if (!m_avi_writer.is_open())
     {
         release_slot(id);
-        m_record_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -96,7 +97,6 @@ bool VideoController::start_recording()
     {
         close_clip();
         release_slot(id);
-        m_record_claim.store(false, std::memory_order_release);
         m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
         return false;
     }
@@ -123,10 +123,6 @@ void VideoController::stop_recording()
     m_stop_clip = true;
 
     detach_consumer(id);
-
-    // Release the activity claim only after the sink is detached so a
-    // concurrent restart cannot re-enter until the stop is observable.
-    m_record_claim.store(false, std::memory_order_release);
 
     if (!maybe_teardown_if_idle(lock))
     {
@@ -333,22 +329,19 @@ bool VideoController::start_streaming()
 {
     std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
 
-    // Claim the streaming activity up front so concurrent start
-    // attempts arriving from different command tasks cannot both
-    // proceed to reserve slots.
-    if (m_stream_claim.exchange(true, std::memory_order_acq_rel))
+    // Already active — treat as a no-op success. The registry guard is
+    // exact here: this section is serialized against all other
+    // lifecycle mutations by the mutex, and the streaming sink is
+    // registered exactly while the activity is active.
+    if (is_registered(&m_stream_sink))
     {
-        // Already active — treat as a no-op success. A start attempt
-        // still in flight on another task is not yet observable and
-        // reports as not active.
-        return is_registered(&m_stream_sink);
+        return true;
     }
 
     int id = acquire_free_slot();
     if (id < 0)
     {
         m_log.warn(SUBSYSTEM, "Streaming start rejected: consumer registry full");
-        m_stream_claim.store(false, std::memory_order_release);
         return false;
     }
 
@@ -357,7 +350,6 @@ bool VideoController::start_streaming()
     if (!ensure_loop_running())
     {
         release_slot(id);
-        m_stream_claim.store(false, std::memory_order_release);
         m_log.warn(SUBSYSTEM, "Streaming start failed: scheduler busy");
         return false;
     }
@@ -383,7 +375,6 @@ void VideoController::stop_streaming()
     }
 
     detach_consumer(id);
-    m_stream_claim.store(false, std::memory_order_release);
     m_log.info(SUBSYSTEM, "Streaming stopped");
 
     // Viewers exist only while streaming mode is active: close them as
