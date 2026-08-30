@@ -1,7 +1,24 @@
 #include "video_controller.h"
 #include "stream_service.h"
+#include <chrono>
 #include <cstring>
 #include <cstdio>
+#include <thread>
+
+namespace
+{
+/**
+ * @brief True while the calling thread runs an executor activation.
+ *
+ * Set only by the capture task (or the native test thread driving the
+ * scheduler callback) around capture_and_dispatch_frame(); command APIs
+ * read it to detect calls made from within on_frame() and turn them
+ * into fire-and-forget requests. Thread-local by design: another task
+ * holding the executor token does not make a command fire-and-forget.
+ */
+thread_local bool t_executor_context = false;
+}
+
 
 // ============================================================
 // Construction
@@ -53,88 +70,55 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 
 bool VideoController::start_recording()
 {
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
-
-    // Registry guard: the recording sink is registered exactly while
-    // the activity is active, and this section is serialized against
-    // all other lifecycle mutations by the mutex, so a duplicate start
-    // can never slip through and a failure path needs no manual
-    // claim reset.
     if (is_registered(&m_record_sink))
     {
         return false;
     }
 
-    // Reject while an unfinalized clip is still open: after an
-    // asynchronous stop (other consumers such as streaming kept the
-    // loop running) the capture task finalizes the clip on its next
-    // activation. Opening a new clip before the old one is closed
-    // would corrupt both files. All clip operations run under the
-    // lifecycle mutex, so this read is ordered against the capture
-    // task's close/reopen sections.
-    if (m_clip_session.close_pending())
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::START_RECORDING, nullptr, -1);
+    if (!completion)
     {
-        m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
         return false;
     }
 
-    int id = acquire_free_slot();
-    if (id < 0)
+    if (t_executor_context)
     {
-        m_log.warn(SUBSYSTEM, "Recording start rejected: consumer registry full");
-        return false;
+        // Executor context (a consumer's on_frame): fire-and-forget.
+        // The request is consumed at this activation's boundary or the
+        // next one; waiting here would deadlock the capture task
+        // against itself.
+        return true;
     }
 
-    m_clip_session.clear_close_request();
-    if (!m_clip_session.open())
-    {
-        release_slot(id);
-        return false;
-    }
-
-    // Start the capture loop if it is not already running (reused when
-    // e.g. streaming is subscribed).
-    if (!ensure_loop_running())
-    {
-        m_clip_session.close();
-        release_slot(id);
-        m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
-        return false;
-    }
-
-    claim_slot(id, &m_record_sink);
-
-    m_log.info(SUBSYSTEM, "Recording started: %s", m_clip_session.file_path());
-    return true;
+    bool ok = false;
+    const bool completed = wait_for_completion(completion, &ok, nullptr);
+    finish_command();
+    return completed && ok;
 }
 
 void VideoController::stop_recording()
 {
-    std::unique_lock<std::mutex> lock(m_lifecycle_mutex);
-
-    int id = find_id(&m_record_sink);
-    if (id < 0)
+    if (!is_registered(&m_record_sink))
     {
         return;
     }
 
-    // Request clip closure before detaching so the pipeline's final
-    // callback (or the next frame callback when other consumers keep
-    // the loop running) finalizes the clip.
-    m_clip_session.request_close();
-
-    detach_consumer(id);
-
-    if (!maybe_teardown_if_idle(lock))
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::STOP_RECORDING, nullptr, -1);
+    if (!completion)
     {
-        m_log.info(SUBSYSTEM,
-                   "Recording stopped; capture loop serves remaining consumers, "
-                   "clip closes on next frame");
+        return;
     }
-    else
+
+    if (!t_executor_context)
     {
-        m_log.info(SUBSYSTEM, "Recording stopped");
+        bool ok = false;
+        wait_for_completion(completion, &ok, nullptr);
+        finish_command();
     }
+    // Executor context: fire-and-forget; consumed at the dispatch
+    // boundary (see start_recording()).
 }
 
 // ============================================================
@@ -143,6 +127,8 @@ void VideoController::stop_recording()
 
 int VideoController::acquire_free_slot()
 {
+    // Executor-only: no CAS needed, slots are mutated exclusively in
+    // the capture task.
     for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
     {
         bool expected = false;
@@ -173,7 +159,7 @@ int VideoController::find_id(const IFrameConsumer* consumer) const
     for (size_t i = 0; i < MAX_FRAME_CONSUMERS; i++)
     {
         if (m_slots[i].used.load(std::memory_order_relaxed) &&
-            m_slots[i].consumer == consumer)
+            m_slots[i].consumer.load(std::memory_order_relaxed) == consumer)
         {
             return static_cast<int>(i);
         }
@@ -199,17 +185,15 @@ size_t VideoController::consumer_count() const
     return count;
 }
 
-void VideoController::claim_slot(int id, IFrameConsumer* consumer)
+void VideoController::bind_slot(int id, IFrameConsumer* consumer)
 {
     if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS))
     {
         return;
     }
     // The slot was reserved via acquire_free_slot(), so the used flag
-    // is already set; binding the pointer after the reservation store
-    // makes the pointer visible to the capture task once it observes
-    // the flag (dispatch skips null consumers in the interim).
-    m_slots[id].consumer = consumer;
+    // is already set; binding the pointer completes the registration.
+    m_slots[id].consumer.store(consumer, std::memory_order_release);
 }
 
 void VideoController::detach_consumer(int id)
@@ -218,51 +202,69 @@ void VideoController::detach_consumer(int id)
     {
         return;
     }
-    // Clear the occupied flag first so an in-flight dispatch observes
-    // an empty slot rather than a dangling pointer; the pointer follows.
+    // Clear the occupied flag first so a concurrent status query
+    // observes an empty slot; the pointer follows.
     m_slots[id].used.store(false, std::memory_order_release);
-    m_slots[id].consumer = nullptr;
+    m_slots[id].consumer.store(nullptr, std::memory_order_release);
 }
 
 int VideoController::register_frame_consumer(IFrameConsumer* consumer)
 {
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
-
     if (consumer == nullptr || is_registered(consumer))
     {
         return -1;
     }
 
-    int id = acquire_free_slot();
-    if (id < 0)
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::REGISTER_CONSUMER, consumer, -1);
+    if (!completion)
     {
-        m_log.warn(SUBSYSTEM, "Consumer registration rejected: registry full");
         return -1;
     }
 
-    if (!ensure_loop_running())
+    if (t_executor_context)
     {
-        release_slot(id);
-        m_log.warn(SUBSYSTEM, "Consumer registration rejected: scheduler busy");
+        // Executor context: fire-and-forget; the id is not knowable
+        // synchronously.
         return -1;
     }
 
-    claim_slot(id, consumer);
-    return id;
+    bool ok = false;
+    int id = -1;
+    if (!wait_for_completion(completion, &ok, &id))
+    {
+        return -1;
+    }
+    finish_command();
+    return ok ? id : -1;
 }
 
 void VideoController::unregister_frame_consumer(int id)
 {
-    std::unique_lock<std::mutex> lock(m_lifecycle_mutex);
-
+    // Validate against a registry snapshot; the executor re-validates
+    // exactly (slot id and bound consumer pointer) before detaching, so
+    // a stale snapshot can never detach a rebound slot.
     if (id < 0 || id >= static_cast<int>(MAX_FRAME_CONSUMERS) ||
         !m_slots[id].used.load(std::memory_order_relaxed))
     {
         return;
     }
+    IFrameConsumer* expected =
+        m_slots[id].consumer.load(std::memory_order_relaxed);
 
-    detach_consumer(id);
-    maybe_teardown_if_idle(lock);
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::UNREGISTER_CONSUMER, expected, id);
+    if (!completion)
+    {
+        return;
+    }
+
+    if (!m_executor_active.load(std::memory_order_relaxed))
+    {
+        bool ok = false;
+        wait_for_completion(completion, &ok, nullptr);
+        finish_command();
+    }
 }
 
 // ============================================================
@@ -272,10 +274,12 @@ void VideoController::unregister_frame_consumer(int id)
 bool VideoController::capture_photo(const char* path)
 {
     {
-        // Serialize the gate check with lifecycle transitions so it
-        // cannot pass while a concurrent start is mid-registration; the
-        // SD I/O below runs without the mutex.
-        std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+        // Serialize the gate check with lifecycle commands so it cannot
+        // pass while a command is mid-post; the SD I/O below runs
+        // without the mutex. (The full photo capability — pump-served
+        // capture while activities run — is deferred; this keeps the
+        // idle-only capture semantics.)
+        std::lock_guard<std::mutex> lock(m_command_mutex);
         if (is_capture_active())
         {
             m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
@@ -328,72 +332,51 @@ void VideoController::set_stream_service(IStreamService* stream_service)
 
 bool VideoController::start_streaming()
 {
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
-
-    // Already active — treat as a no-op success. The registry guard is
-    // exact here: this section is serialized against all other
-    // lifecycle mutations by the mutex, and the streaming sink is
-    // registered exactly while the activity is active.
+    // Already active — treat as a no-op success.
     if (is_registered(&m_stream_sink))
     {
         return true;
     }
 
-    int id = acquire_free_slot();
-    if (id < 0)
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::START_STREAMING, nullptr, -1);
+    if (!completion)
     {
-        m_log.warn(SUBSYSTEM, "Streaming start rejected: consumer registry full");
         return false;
     }
 
-    // Start the capture loop if it is not already running (reused when
-    // e.g. recording is subscribed).
-    if (!ensure_loop_running())
+    if (t_executor_context)
     {
-        release_slot(id);
-        m_log.warn(SUBSYSTEM, "Streaming start failed: scheduler busy");
-        return false;
+        return true;  // executor context: fire-and-forget
     }
 
-    claim_slot(id, &m_stream_sink);
-
-    // A deferred viewer close from a stop/restart within one frame
-    // period is obsolete: streaming mode is active again.
-    m_close_viewers_pending.store(false, std::memory_order_release);
-
-    m_log.info(SUBSYSTEM, "Streaming started");
-    return true;
+    bool ok = false;
+    const bool completed = wait_for_completion(completion, &ok, nullptr);
+    finish_command();
+    return completed && ok;
 }
 
 void VideoController::stop_streaming()
 {
-    std::unique_lock<std::mutex> lock(m_lifecycle_mutex);
-
-    int id = find_id(&m_stream_sink);
-    if (id < 0)
+    if (!is_registered(&m_stream_sink))
     {
         return;
     }
 
-    detach_consumer(id);
-    m_log.info(SUBSYSTEM, "Streaming stopped");
-
-    // Viewers exist only while streaming mode is active: close them as
-    // soon as the StreamSink detaches, even when other consumers keep
-    // the capture loop running for recording. When the loop survives,
-    // the close is deferred to the next dispatch boundary so it cannot
-    // interleave with an in-flight deliver_frame() inside the capture
-    // task; full teardown closes the viewers itself after the join.
-    if (!maybe_teardown_if_idle(lock))
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::STOP_STREAMING, nullptr, -1);
+    if (!completion)
     {
-        // Only defer when the loop survives for other consumers; a dead
-        // or already-torn-down loop has no dispatch boundary to drain
-        // the flag, and full teardown closes the viewers itself.
-        if (m_loop_active.load(std::memory_order_acquire))
-        {
-            m_close_viewers_pending.store(true, std::memory_order_release);
-        }
+        return;
     }
+
+    if (!t_executor_context)
+    {
+        bool ok = false;
+        wait_for_completion(completion, &ok, nullptr);
+        finish_command();
+    }
+    // Executor context: fire-and-forget (see start_recording()).
 }
 
 // ============================================================
@@ -436,60 +419,56 @@ bool VideoController::ensure_loop_running()
         return true;
     }
 
+    // Start with the mutex held (command side); the executor's first
+    // activation serves any request queued before this call.
     m_loop_active = m_scheduler.start(m_frame_interval_ms,
                                       [this]() { capture_and_dispatch_frame(); });
     return m_loop_active;
 }
 
-bool VideoController::teardown_capture_pipeline(
-    std::unique_lock<std::mutex>& lock)
+void VideoController::finish_command()
 {
-    // Single-flight entry: the platform scheduler's stop() is not
-    // reentrant-safe, so only one caller at a time may drive the join.
-    // A caller arriving while another teardown owns the join window
-    // skips its own stop; the owner's post-join recheck below observes
-    // the final registry state and completes or defers correctly.
-    if (m_teardown_in_progress.exchange(true, std::memory_order_acq_rel))
+    std::unique_lock<std::mutex> lock(m_command_mutex);
+
+    // The executor alone reports the transition to a drained registry,
+    // and the flag is consumed exactly once, so concurrent command
+    // tasks collapse into one join.
+    if (!m_pipeline_drained.exchange(false, std::memory_order_acq_rel))
     {
-        return false;
+        return;
     }
 
-    // A viewer close queued by stop_streaming() is subsumed by the
-    // synchronous close below; clear it first so the scheduler's final
-    // callback does not run a duplicate close. If this teardown aborts
-    // below, the flag is restored for activities that still need it.
-    const bool was_pending =
-        m_close_viewers_pending.exchange(false, std::memory_order_release);
+    if (m_join_in_progress)
+    {
+        // Another command task owns the join window (a drain arriving
+        // while a join is in flight). Its post-join recheck observes the
+        // final registry state and completes the teardown.
+        return;
+    }
+    m_join_in_progress = true;
 
-    // Release the lifecycle mutex around the scheduler stop/join: a
-    // consumer invoking start_recording() from within on_frame() must
-    // never block behind this joiner, or the bounded join would wait on
-    // a task waiting on us and wedge the scheduler until reboot.
+    // The bounded scheduler join runs on the command side with the
+    // mutex released: the executor never waits on a lock holder, and no
+    // joiner holds the mutex the executor could be blocked behind.
     lock.unlock();
     m_scheduler.stop();
     lock.lock();
 
+    m_loop_active = false;
+    m_join_in_progress = false;
+
     if (consumer_count() > 0)
     {
-        // A concurrent start registered consumers while the mutex was
-        // released: honor it by restoring the loop and deferring this
-        // teardown to a later stop. Under pathological start/stop churn
-        // a teardown attempt may be deferred repeatedly, but it can
-        // never complete under a live registry.
-        m_loop_active = false;
+        // A concurrent command registered consumers while the mutex was
+        // released (its request was consumed by the join's final
+        // callback): honor it by restoring the loop and deferring this
+        // teardown to a later drain.
         if (!ensure_loop_running())
         {
             m_log.warn(SUBSYSTEM, "Teardown aborted: loop restart failed");
         }
-        if (was_pending && !is_streaming())
-        {
-            m_close_viewers_pending.store(true, std::memory_order_release);
-        }
-        m_teardown_in_progress.store(false, std::memory_order_release);
-        return false;
+        return;
     }
-
-    m_loop_active = false;
 
     // Close all connected viewers: with the loop gone they would
     // otherwise hang forever on a silent multipart response.
@@ -497,23 +476,6 @@ bool VideoController::teardown_capture_pipeline(
     {
         m_stream_service->stop_all_streams();
     }
-
-    // Any deferred viewer close requested while the mutex was released
-    // during the join is subsumed by the synchronous close above.
-    m_close_viewers_pending.store(false, std::memory_order_release);
-
-    m_teardown_in_progress.store(false, std::memory_order_release);
-    return true;
-}
-
-bool VideoController::maybe_teardown_if_idle(
-    std::unique_lock<std::mutex>& lock)
-{
-    if (consumer_count() == 0 && m_loop_active)
-    {
-        return teardown_capture_pipeline(lock);
-    }
-    return false;
 }
 
 // ============================================================
@@ -522,9 +484,11 @@ bool VideoController::maybe_teardown_if_idle(
 
 void VideoController::process_pending_viewer_close()
 {
-    if (m_close_viewers_pending.exchange(false, std::memory_order_relaxed) &&
-        m_stream_service != nullptr)
+    // Executor-only flag: the close runs at the dispatch boundary so it
+    // cannot interleave with an in-flight deliver_frame() in this task.
+    if (m_close_viewers_pending && m_stream_service != nullptr)
     {
+        m_close_viewers_pending = false;
         m_stream_service->stop_all_streams();
     }
 }
@@ -535,6 +499,32 @@ void VideoController::process_pending_viewer_close()
 
 void VideoController::capture_and_dispatch_frame()
 {
+    // Executor entry: everything in this activation runs against the
+    // executor-owned state under the executor token. The token is held
+    // by a waiting command task only while this task is between
+    // activations, so the wait here is bounded by that task's bounded
+    // serve section (never by a scheduler join).
+    bool expected = false;
+    while (!m_executor_active.compare_exchange_strong(expected, true,
+                                                      std::memory_order_acq_rel))
+    {
+        expected = false;
+        std::this_thread::yield();
+    }
+    t_executor_context = true;
+
+    // Executor boundary: serve queued pipeline commands first, so their
+    // effects (bindings, detachments, clip operations) are applied
+    // before this activation's capture. An activation that consumed
+    // requests is a pure service pass and captures nothing: commands
+    // take effect at the boundary, frames flow on the next one.
+    if (process_requests() > 0)
+    {
+        t_executor_context = false;
+        m_executor_active.store(false, std::memory_order_release);
+        return;
+    }
+
     bool closing = m_clip_session.is_close_requested();
 
     // Guard against stale callbacks (e.g. a task notification that was
@@ -542,6 +532,8 @@ void VideoController::capture_and_dispatch_frame()
     // subscribed or a stopped clip still awaits its final closure.
     if (consumer_count() == 0 && !closing)
     {
+        t_executor_context = false;
+        m_executor_active.store(false, std::memory_order_release);
         return;
     }
 
@@ -552,20 +544,16 @@ void VideoController::capture_and_dispatch_frame()
 
         // Never wedge the pipeline: if a stopped clip was awaiting its
         // final closure, finalize it even though this frame failed.
-        // Clip operations are mutually exclusive against command-task
-        // lifecycle mutations: the lock here covers the capture-failure
-        // finalization the same way the closure handler's lock does, so a
-        // concurrent start_recording() cannot race an in-flight clip
-        // close (torn-clip class). Critical sections on the command side
-        // are bounded, and stop paths release the mutex across the
-        // scheduler join, so this acquisition never blocks behind a
-        // joiner.
+        // Clip operations are executor-only (task affinity), so this
+        // finalization is mutually exclusive against command-side
+        // lifecycle mutations by construction.
         if (closing)
         {
-            std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
             m_clip_session.close();
         }
         process_pending_viewer_close();
+        t_executor_context = false;
+        m_executor_active.store(false, std::memory_order_release);
         return;
     }
 
@@ -578,7 +566,8 @@ void VideoController::capture_and_dispatch_frame()
         {
             continue;
         }
-        IFrameConsumer* consumer = m_slots[i].consumer;
+        IFrameConsumer* consumer = m_slots[i].consumer.load(
+            std::memory_order_acquire);
         if (consumer != nullptr)
         {
             consumer->on_frame(frame.data, frame.len);
@@ -589,23 +578,23 @@ void VideoController::capture_and_dispatch_frame()
 
     handle_clip_closure();
 
-    // Drain a viewer close deferred by stop_streaming() while other
-    // consumers kept the loop alive: running here serializes the close
-    // with frame delivery inside the capture task, regardless of
+    // Drain a viewer close deferred by a stop_streaming command while
+    // other consumers kept the loop alive: running here serializes the
+    // close with frame delivery inside the capture task, regardless of
     // whether this frame captured successfully.
     process_pending_viewer_close();
+
+    t_executor_context = false;
+    m_executor_active.store(false, std::memory_order_release);
 }
 
 void VideoController::handle_clip_closure()
 {
-    // Serialize the whole close/reopen decision against command-task
-    // lifecycle mutations: a STOP/START landing inside the rotation
-    // window can no longer interleave with the capture task's clip
-    // finalization or reopen (torn-clip class). The critical section is
-    // bounded SD I/O; stop paths release the mutex across the scheduler
-    // join, so this acquisition never blocks behind a joiner.
-    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
-
+    // Executor-only: the close/finalize/reopen decision runs in the
+    // capture task; commands can only change the registry at activation
+    // boundaries (their requests are consumed at the top of this
+    // function's owning activation), so the decision is totally ordered
+    // against command-side lifecycle mutations by task affinity.
     if (!m_clip_session.consume_close_request())
     {
         return;
@@ -643,7 +632,336 @@ void VideoController::StreamSink::on_frame(const uint8_t* data, size_t len)
 }
 
 // ============================================================
-// SD I/O helpers
+// Executor: command queue
+// ============================================================
+// The capture task is the sole executor of pipeline state. Command
+// tasks post requests into a fixed ring and wait (bounded) for the
+// executor to consume them at the next dispatch boundary; a command
+// issued from within on_frame() is fire-and-forget. See the class
+// docstring in video_controller.h for the concurrency contract.
+
+std::shared_ptr<VideoController::CommandCompletion> VideoController::post_request(
+    PipelineRequestType type, IFrameConsumer* consumer, int slot_id)
+{
+    std::lock_guard<std::mutex> lock(m_command_mutex);
+
+    if (m_queued.load(std::memory_order_relaxed) >=
+        static_cast<int>(MAX_PENDING_REQUESTS))
+    {
+        m_log.warn(SUBSYSTEM, "Command rejected: request queue full");
+        return nullptr;
+    }
+
+    const int tail = m_queue_tail.load(std::memory_order_relaxed);
+    PipelineRequest& req = m_requests[tail];
+    req.type = type;
+    req.consumer = consumer;
+    req.slot_id = slot_id;
+    req.completion = std::make_shared<CommandCompletion>();
+
+    // Make sure an executor exists to serve the request. The loop's
+    // first activation consumes everything published so far. The request
+    // is published (tail advanced, count bumped) only once the scheduler
+    // can run: an unpublished slot is invisible to the executor and is
+    // simply overwritten by the next post.
+    if (!ensure_loop_running())
+    {
+        // The scheduler cannot run (wedged or refused start): the
+        // command is dropped unexecuted rather than left queued forever.
+        m_log.error(SUBSYSTEM,
+                    "Command dropped: capture scheduler unavailable");
+        return nullptr;
+    }
+
+    m_queue_tail.store((tail + 1) % static_cast<int>(MAX_PENDING_REQUESTS),
+                       std::memory_order_release);
+    m_queued.fetch_add(1, std::memory_order_release);
+
+    return req.completion;
+}
+
+bool VideoController::wait_for_completion(
+    const std::shared_ptr<CommandCompletion>& completion,
+    bool* ok, int* id)
+{
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() +
+                          std::chrono::milliseconds(REQUEST_COMPLETION_TIMEOUT_MS);
+
+    // The executor signals completion via the shared box; the command
+    // task waits with m_command_mutex released, so it can never block
+    // the capture task behind a lock holder. Typical wait: at most one
+    // frame interval (the executor's next dispatch boundary) plus clip
+    // SD I/O. While the capture task is between activations, the
+    // waiting task may claim the executor token (try-acquire — it never
+    // blocks the capture task) and serve the queued batch itself; on
+    // the platform scheduler the capture task usually consumes the
+    // request first at its own boundary.
+    while (!completion->done.load(std::memory_order_acquire))
+    {
+        if (clock::now() >= deadline)
+        {
+            m_log.error(SUBSYSTEM,
+                        "Command timed out waiting for the capture task; "
+                        "it may still execute later");
+            return false;
+        }
+
+        bool expected = false;
+        if (m_executor_active.compare_exchange_strong(expected, true,
+                                                       std::memory_order_acq_rel))
+        {
+            process_requests();
+            m_executor_active.store(false, std::memory_order_release);
+        }
+        else
+        {
+            std::this_thread::yield();
+        }
+    }
+
+    *ok = completion->ok;
+    if (id != nullptr)
+    {
+        *id = completion->id;
+    }
+    return true;
+}
+
+int VideoController::process_requests()
+{
+    // Claim the whole queued batch atomically. Posters run under
+    // m_command_mutex and publish slot content before bumping the count,
+    // so the acquire side of the exchange orders all published requests
+    // before consumption. m_queue_head is executor-only.
+    int n = m_queued.exchange(0, std::memory_order_acq_rel);
+    if (n <= 0)
+    {
+        return 0;
+    }
+
+    // Snapshot the claimed batch's completion boxes up front: the
+    // executor then works on local copies, and a returning command task
+    // can never overlap the executor while the rest of its batch is
+    // still running.
+    std::shared_ptr<CommandCompletion> completions[MAX_PENDING_REQUESTS];
+    for (int i = 0; i < n; i++)
+    {
+        const int slot = (m_queue_head + i) % static_cast<int>(MAX_PENDING_REQUESTS);
+        completions[i] = m_requests[slot].completion;
+    }
+
+    bool detached = false;
+    for (int i = 0; i < n; i++)
+    {
+        PipelineRequest& req = m_requests[m_queue_head];
+        m_queue_head = (m_queue_head + 1) % static_cast<int>(MAX_PENDING_REQUESTS);
+        execute_request(req, &detached);
+    }
+
+    // Signal completions only after the whole batch executed.
+    for (int i = 0; i < n; i++)
+    {
+        const int slot =
+            (m_queue_head - n + i + static_cast<int>(MAX_PENDING_REQUESTS)) %
+            static_cast<int>(MAX_PENDING_REQUESTS);
+        if (completions[i])
+        {
+            completions[i]->ok = m_requests[slot].result_ok;
+            completions[i]->id = m_requests[slot].result_id;
+            completions[i]->done.store(true, std::memory_order_release);
+        }
+    }
+    return n;
+}
+
+void VideoController::execute_request(PipelineRequest& req, bool* detached)
+{
+    bool ok = false;
+    int id = -1;
+
+    switch (req.type)
+    {
+        case PipelineRequestType::START_RECORDING:
+            ok = executor_start_recording();
+            break;
+        case PipelineRequestType::STOP_RECORDING:
+            *detached = executor_stop_recording() || *detached;
+            ok = true;
+            break;
+        case PipelineRequestType::START_STREAMING:
+            ok = executor_start_streaming();
+            break;
+        case PipelineRequestType::STOP_STREAMING:
+            *detached = executor_stop_streaming() || *detached;
+            ok = true;
+            break;
+        case PipelineRequestType::REGISTER_CONSUMER:
+            id = executor_register(req.consumer);
+            ok = id >= 0;
+            break;
+        case PipelineRequestType::UNREGISTER_CONSUMER:
+            executor_unregister(req.consumer, req.slot_id);
+            *detached = true;
+            ok = true;
+            break;
+    }
+
+    req.result_ok = ok;
+    req.result_id = id;
+
+    // The executor alone detects the transition to a drained registry
+    // (a no-op stop on an already-empty registry does not re-signal);
+    // a command task consumes this signal exactly once and drives the
+    // bounded join. A viewer close deferred by a stop command is
+    // subsumed by the teardown's synchronous close after the join.
+    if (*detached && consumer_count() == 0)
+    {
+        m_close_viewers_pending = false;
+        m_pipeline_drained.store(true, std::memory_order_release);
+    }
+}
+
+bool VideoController::executor_start_recording()
+{
+    if (is_registered(&m_record_sink))
+    {
+        return false;
+    }
+
+    // Reject while an unfinalized clip is still open: opening a new
+    // clip before the old one is closed would corrupt both files. All
+    // clip operations are executor-only, so this check is ordered
+    // against the capture task's own close/reopen sections.
+    if (m_clip_session.close_pending())
+    {
+        m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
+        return false;
+    }
+
+    int id = acquire_free_slot();
+    if (id < 0)
+    {
+        m_log.warn(SUBSYSTEM, "Recording start rejected: consumer registry full");
+        return false;
+    }
+
+    m_clip_session.clear_close_request();
+    if (!m_clip_session.open())
+    {
+        release_slot(id);
+        return false;
+    }
+
+    bind_slot(id, &m_record_sink);
+
+    m_log.info(SUBSYSTEM, "Recording started: %s", m_clip_session.file_path());
+    return true;
+}
+
+bool VideoController::executor_stop_recording()
+{
+    int id = find_id(&m_record_sink);
+    if (id < 0)
+    {
+        return false;
+    }
+
+    // Request clip closure before detaching so the closure pass later
+    // in this activation (or the capture-failure path) finalizes the
+    // clip; while recording remains subscribed (rotation), the pass
+    // reopens instead.
+    m_clip_session.request_close();
+    detach_consumer(id);
+    m_log.info(SUBSYSTEM, "Recording stopped");
+    return true;
+}
+
+bool VideoController::executor_start_streaming()
+{
+    if (is_registered(&m_stream_sink))
+    {
+        return true;  // already active: no-op success
+    }
+
+    int id = acquire_free_slot();
+    if (id < 0)
+    {
+        m_log.warn(SUBSYSTEM, "Streaming start rejected: consumer registry full");
+        return false;
+    }
+
+    bind_slot(id, &m_stream_sink);
+
+    // A deferred viewer close from a stop/restart within one frame
+    // period is obsolete: streaming mode is active again.
+    m_close_viewers_pending = false;
+
+    m_log.info(SUBSYSTEM, "Streaming started");
+    return true;
+}
+
+bool VideoController::executor_stop_streaming()
+{
+    int id = find_id(&m_stream_sink);
+    if (id < 0)
+    {
+        return false;
+    }
+
+    detach_consumer(id);
+    m_log.info(SUBSYSTEM, "Streaming stopped");
+
+    // Viewers exist only while streaming mode is active: close them as
+    // soon as the sink detaches, even when recording keeps the loop
+    // running. With survivors, the close is deferred to this
+    // activation's dispatch boundary (process_pending_viewer_close) so
+    // it cannot interleave with an in-flight deliver_frame(); a drained
+    // registry hands the close to the command-side teardown after the
+    // join.
+    if (consumer_count() > 0)
+    {
+        m_close_viewers_pending = true;
+    }
+    return true;
+}
+
+int VideoController::executor_register(IFrameConsumer* consumer)
+{
+    if (consumer == nullptr || is_registered(consumer))
+    {
+        return -1;
+    }
+
+    int id = acquire_free_slot();
+    if (id < 0)
+    {
+        m_log.warn(SUBSYSTEM, "Consumer registration rejected: registry full");
+        return -1;
+    }
+
+    bind_slot(id, consumer);
+    return id;
+}
+
+void VideoController::executor_unregister(IFrameConsumer* expected, int slot_id)
+{
+    if (slot_id < 0 || slot_id >= static_cast<int>(MAX_FRAME_CONSUMERS))
+    {
+        return;
+    }
+    // Re-validate exactly: only detach if the slot still binds the
+    // consumer the command validated against (a stale snapshot must
+    // never detach a rebound slot).
+    if (m_slots[slot_id].consumer.load(std::memory_order_acquire) != expected)
+    {
+        return;
+    }
+    detach_consumer(slot_id);
+}
+
+// ============================================================
+// Path utilities
 // ============================================================
 
 bool VideoController::make_unique_path(const char* base_path, char* out, size_t out_size)

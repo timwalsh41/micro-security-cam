@@ -1138,20 +1138,27 @@ void test_consumer_can_trigger_recording_from_on_frame()
     TEST_ASSERT_TRUE(id >= 0);
     TEST_ASSERT_FALSE(f.video.is_recording());
 
-    // First frame: monitor sees it and starts recording mid-dispatch;
-    // the recording sink joins the same dispatch and records this frame.
+    // First frame: the monitor sees it and issues start_recording() from
+    // within on_frame() — a fire-and-forget request in the executor
+    // context, consumed at the next activation boundary (the documented
+    // D3 timing: a consumer-triggered start binds for the next
+    // activation).
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    // Next activation: a pure service pass executes the start; no frame
+    // is captured.
     f.capture_one_frame();
     TEST_ASSERT_TRUE(f.video.is_recording());
 
     // Subsequent frames are written to SD by the recording session.
     f.capture_one_frame();
-    f.capture_one_frame();
-    TEST_ASSERT_EQUAL_UINT32(3, f.video.frames_recorded());
-    TEST_ASSERT_GREATER_OR_EQUAL(3, f.sd_hal.write_call_count);
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+    TEST_ASSERT_GREATER_OR_EQUAL(1, f.sd_hal.write_call_count);
 
-    // Wind down: stop recording, then detach the monitor.
+    // Wind down: stop recording (the executor finalizes the clip at the
+    // join's final callback), then detach the monitor.
     f.video.stop_recording();
-    f.capture_one_frame();  // finalization callback closes the clip
     TEST_ASSERT_FALSE(f.video.is_recording());
     f.video.unregister_frame_consumer(id);
     TEST_ASSERT_FALSE(f.video.is_capture_active());
@@ -1793,6 +1800,24 @@ void test_concurrent_starts_never_lose_registration()
         // Exactly one registration per successful activity.
         const uint32_t frames_before = f.video.frames_recorded();
         f.capture_one_frame();
+        if (sink.deliveries != (f.video.is_streaming() ? 1 : 0))
+        {
+            FILE* dbg = fopen("/tmp/dbg.txt", "a");
+            if (dbg)
+            {
+                fprintf(dbg, "deliv=%d stream=%d rec=%d frames=%u before=%u trig=%d capt=%d started=%d stops=%d\n",
+                        sink.deliveries,
+                        f.video.is_streaming() ? 1 : 0,
+                        f.video.is_recording() ? 1 : 0,
+                        (unsigned)f.video.frames_recorded(),
+                        (unsigned)frames_before,
+                        f.capture_scheduler.trigger_count,
+                        f.camera_hal.capture_call_count,
+                        f.capture_scheduler.is_started() ? 1 : 0,
+                        f.capture_scheduler.stop_call_count);
+                fclose(dbg);
+            }
+        }
 
         TEST_ASSERT_EQUAL_INT(f.video.is_streaming() ? 1 : 0,
                               sink.deliveries);
@@ -1959,6 +1984,27 @@ void test_stop_during_rotation_finalizes()
 
     driver.join();
     stopper.join();
+    {
+        FILE* dbg = fopen("/tmp/dbg3.txt", "a");
+        if (dbg) { fprintf(dbg, "TEST2-DONE rec=%d started=%d trig=%d\n",
+            f.video.is_recording() ? 1 : 0,
+            f.capture_scheduler.is_started() ? 1 : 0,
+            f.capture_scheduler.trigger_count); fclose(dbg); }
+    }
+    {
+        FILE* dbg = fopen("/tmp/dbg.txt", "a");
+        if (dbg)
+        {
+            fprintf(dbg, "rec=%d started=%d hits=%d files=%u frames=%u trig=%d\n",
+                    f.video.is_recording() ? 1 : 0,
+                    f.capture_scheduler.is_started() ? 1 : 0,
+                    f.sd_hal.gate_create_dir_hits.load(),
+                    (unsigned)f.sd_hal.files.size(),
+                    (unsigned)f.video.frames_recorded(),
+                    f.capture_scheduler.trigger_count);
+            fclose(dbg);
+        }
+    }
 
     TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_FALSE(f.capture_scheduler.is_started());

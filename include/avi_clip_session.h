@@ -21,13 +21,14 @@
  * an explicit contract instead of being mutated from two task contexts
  * under an unwritten locking discipline.
  *
- * Locking contract: all methods except append_frame() and the status
- * accessors (frames_recorded(), file_size()) must be called while the
- * owning controller holds its lifecycle mutex; that mutex makes clip
+ * Locking contract: all methods run in the owning controller's executor
+ * context (the capture task) — task affinity makes clip
  * open/finalize/rotation-reopen mutually exclusive against command-task
- * lifecycle mutations. append_frame() runs on the lock-free frame pump
- * path and only touches the writer, the per-frame chunk write, and
- * atomics (counters and the close/rotation request flag).
+ * lifecycle mutations by construction, since commands can only change
+ * the registry at executor activation boundaries. The close/rotation
+ * request flag and the counters stay atomic: the close request is also
+ * set by stop paths, and the counters are read cross-task for status
+ * queries.
  *
  * AVI write strategy: per-frame SD writes. Each frame is formatted by
  * AviWriter and immediately written to SD. At clip close the index is
@@ -76,8 +77,6 @@ class AviClipSession
          * writes a placeholder AVI header, and resets the per-clip state.
          * On success the clip awaits finalization (close_pending()).
          *
-         * Caller must hold the owning controller's lifecycle mutex.
-         *
          * @return true if a clip is open after the call.
          */
         bool open();
@@ -90,7 +89,6 @@ class AviClipSession
          * Resets the per-clip state and clears both the close request
          * and the close-pending latch.
          *
-         * Caller must hold the owning controller's lifecycle mutex.
          */
         void close();
 
@@ -123,8 +121,6 @@ class AviClipSession
         /**
          * @brief Consumes the close request (exchange with false).
          *
-         * Caller must hold the owning controller's lifecycle mutex.
-         *
          * @return true if a close request was pending.
          */
         bool consume_close_request();
@@ -132,7 +128,6 @@ class AviClipSession
         /**
          * @brief Clears an unconsumed close request (fresh clip start).
          *
-         * Caller must hold the owning controller's lifecycle mutex.
          */
         void clear_close_request();
 
@@ -144,8 +139,6 @@ class AviClipSession
         /**
          * @brief Returns whether an opened clip still awaits
          *        finalization.
-         *
-         * Caller must hold the owning controller's lifecycle mutex.
          */
         bool close_pending() const;
 

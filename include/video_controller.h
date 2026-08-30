@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include "avi_clip_session.h"
 #include "camera_controller.h"
@@ -57,15 +58,34 @@ class IStreamService;
 /**
  * @class VideoController
  * @brief Owns the capture pump, the consumer registry, and the
- *        AviClipSession (recording/AVI clip owner).
+ *        AviClipSession (recording/AVI clip owner). The capture task
+ *        is the single owner and executor of all pipeline state.
  *
  * Depends on CameraController for frame capture, SdController for
  * SD I/O (synchronous per-frame writes), TimeService for frame pacing,
  * LoggingService for diagnostics, and ICaptureScheduler for
  * platform-agnostic capture scheduling. The clip/AVI session state
  * (writer, paths, counters, close/rotation flag) lives in the
- * AviClipSession member; clip operations run under this class's
- * lifecycle mutex.
+ * AviClipSession member.
+ *
+ * Executor model: lifecycle commands (start/stop of recording and
+ * streaming, consumer registration/unregistration) do not mutate
+ * pipeline state directly. They post requests into a small bounded
+ * queue; the capture task — the executor — consumes them at the start
+ * of each frame activation and executes them against its own plain
+ * state (registry slots, clip session, activity decisions). Command
+ * tasks never touch pipeline state: a start therefore binds for the
+ * next activation, and clip operations run exclusively in the capture
+ * task (task affinity replaces clip-op locking).
+ *
+ * Command tasks hold m_command_mutex only around request posting,
+ * scheduler start/stop, and the photo gate, and wait for completion
+ * with the mutex released. The bounded scheduler join runs on the
+ * command side, triggered once per executor-reported drain of the
+ * registry, with the mutex released across the join: the capture task
+ * can never block behind a joiner. A command issued from within
+ * on_frame() (executor context) is fire-and-forget: it is queued and
+ * consumed at the next activation boundary, never waited on.
  */
 class VideoController
 {
@@ -119,13 +139,14 @@ class VideoController
         /**
          * @brief Stops the current recording session.
          *
-         * Unsubscribes the recording consumer immediately so status
-         * queries observe the stop right away. When other consumers
-         * (streaming) remain subscribed, the capture loop keeps running
-         * and the clip is finalized by the next frame callback;
-         * otherwise the capture pipeline is torn down synchronously
-         * (bounded) and any connected stream viewers are closed. Safe
-         * to call in any state — no-op if not recording.
+         * Queues a stop request that the capture task consumes at the
+         * next activation: the recording consumer is detached and the
+         * clip is finalized in the same activation. When other consumers
+         * (streaming) remain subscribed, the capture loop keeps running;
+         * otherwise the executor reports the drained registry and this
+         * function performs the bounded teardown join, closing all
+         * connected stream viewers afterwards. Safe to call in any
+         * state — no-op if not recording.
          */
         void stop_recording();
 
@@ -193,10 +214,12 @@ class VideoController
         /**
          * @brief Begins live preview (streaming without SD recording).
          *
-         * Subscribes the streaming frame consumer, starting the capture
-         * loop if it is not already running (e.g. during recording), so
-         * frames are delivered to connected stream clients. No-op
-         * (returns true) if streaming is already subscribed.
+         * Queues a start request that the capture task consumes at the
+         * next activation, subscribing the streaming frame consumer and
+         * starting the capture loop first if it is not already running
+         * (e.g. during recording), so frames are delivered to connected
+         * stream clients. No-op (returns true) if streaming is already
+         * subscribed.
          *
          * @return true if preview is active after the call.
          */
@@ -205,13 +228,14 @@ class VideoController
         /**
          * @brief Stops live preview.
          *
-         * Unsubscribes the streaming consumer. Connected stream viewers
-         * are closed whenever streaming turns off: when other consumers
-         * keep the capture loop running, the close is deferred to the
-         * next dispatch boundary so it cannot race an in-flight frame
-         * delivery inside the capture task; otherwise the capture
-         * pipeline is torn down (bounded) and viewers are closed after
-         * the join. No-op if streaming is not active.
+         * Queues a stop request that the capture task consumes at the
+         * next activation, unsubscribing the streaming consumer.
+         * Connected stream viewers are closed whenever streaming turns
+         * off: when other consumers keep the capture loop running, the
+         * close runs in the executor at that activation's dispatch
+         * boundary; otherwise the executor reports the drained registry
+         * and this function performs the bounded teardown join, closing
+         * the viewers after the join. No-op if streaming is not active.
          */
         void stop_streaming();
 
@@ -246,23 +270,62 @@ class VideoController
          *
          * @param consumer Consumer to subscribe; must outlive the
          *                 registration.
-         * @return Registration id (>= 0), or -1 if the registry is full
-         *         or the consumer is null or already registered.
+         * @return Registration id (>= 0), or -1 if the registry is full,
+         *         the consumer is null or already registered, or the
+         *         request could not be served.
          */
         int register_frame_consumer(IFrameConsumer* consumer);
 
         /**
          * @brief Unsubscribes a registered frame consumer.
          *
-         * When the last consumer unsubscribes, the capture pipeline is
-         * torn down (bounded) and all connected stream viewers are
-         * closed.
+         * When the last consumer unsubscribes, the executor reports the
+         * drained registry and the bounded teardown join runs on the
+         * calling task, closing all connected stream viewers afterwards.
          *
          * @param id Registration id returned by register_frame_consumer().
          */
         void unregister_frame_consumer(int id);
 
     private:
+        /** Pipeline commands the executor consumes at dispatch boundaries. */
+        enum class PipelineRequestType : uint8_t
+        {
+            START_RECORDING,
+            STOP_RECORDING,
+            START_STREAMING,
+            STOP_STREAMING,
+            REGISTER_CONSUMER,
+            UNREGISTER_CONSUMER,
+        };
+
+        /**
+         * @brief Completion box for one posted pipeline command.
+         *
+         * Waiter-owned via shared_ptr: the executor writes the result
+         * and signals done; a waiter that timed out may already be gone,
+         * and the executor's shared copy keeps the box alive.
+         */
+        struct CommandCompletion
+        {
+            std::atomic<bool> done{false};
+            bool ok{false};
+            int id{-1};
+        };
+
+        /**
+         * @brief One queued executor request.
+         */
+        struct PipelineRequest
+        {
+            PipelineRequestType type{};
+            IFrameConsumer* consumer{nullptr};  ///< REGISTER/UNREGISTER
+            int slot_id{-1};                    ///< UNREGISTER target slot
+            std::shared_ptr<CommandCompletion> completion;
+            bool result_ok{false};              ///< Filled by the executor
+            int result_id{-1};                  ///< Filled by the executor
+        };
+
         /**
          * @brief Frame consumer that formats AVI chunks and writes them
          *        to SD while recording is subscribed.
@@ -293,15 +356,16 @@ class VideoController
 
         /**
          * @brief One registry entry for a subscribed frame consumer.
+         *
+         * Mutated only by the executor (capture task); the used flag and
+         * consumer pointer stay atomic so command tasks can read
+         * registry state (activity queries, unregister validation)
+         * without locks.
          */
         struct ConsumerSlot
         {
-            /// Slot flag: compare-and-swap reserved by registrars before
-            /// the consumer pointer is bound; polled by the capture task
-            /// (a reserved-but-unbound slot reads as a null consumer and
-            /// is skipped by dispatch).
             std::atomic<bool> used{false};
-            IFrameConsumer* consumer{nullptr};
+            std::atomic<IFrameConsumer*> consumer{nullptr};
         };
 
         /**
@@ -310,10 +374,11 @@ class VideoController
         bool is_registered(const IFrameConsumer* consumer) const;
 
         /**
-         * @brief Atomically reserves a free slot.
+         * @brief Reserves a free slot for the executor.
          *
-         * Claims the slot's used flag with a compare-and-swap so two
-         * concurrent registrars can never reserve the same slot.
+         * Executor-only: slots are mutated exclusively in the capture
+         * task, so a plain scan-and-set suffices (the CAS protocol died
+         * with the command-side registry mutation).
          *
          * @return Reserved slot id, or -1 if the registry is full.
          */
@@ -337,9 +402,9 @@ class VideoController
         size_t consumer_count() const;
 
         /**
-         * @brief Binds a consumer into a free slot.
+         * @brief Binds a consumer into a reserved slot.
          */
-        void claim_slot(int id, IFrameConsumer* consumer);
+        void bind_slot(int id, IFrameConsumer* consumer);
 
         /**
          * @brief Releases a consumer's slot (flag first, then pointer).
@@ -347,71 +412,135 @@ class VideoController
         void detach_consumer(int id);
 
         /**
-         * @brief Tears down the pipeline if no consumer remains.
-         *
-         * @param lock Caller-held lifecycle mutex lock; released around
-         *             the bounded scheduler join inside.
-         * @return true if a teardown ran to completion; false when the
-         *         registry is not idle or another teardown already owns
-         *         the scheduler join (single-flight).
-         */
-        bool maybe_teardown_if_idle(std::unique_lock<std::mutex>& lock);
-
-        /**
          * @brief Ensures the capture loop is running.
+         *
+         * Command side only; called under m_command_mutex after a
+         * request has been queued so the executor's first activation
+         * serves it.
          *
          * @return true if the loop is running after the call.
          */
         bool ensure_loop_running();
 
         /**
-         * @brief Tears down the capture pipeline completely.
+         * @brief Posts a pipeline request for the executor.
          *
-         * Releases the lifecycle mutex, stops the capture scheduler
-         * (bounded join; its final callback closes any pending clip),
-         * then re-acquires the mutex and rechecks the registry: if a
-         * concurrent start registered consumers while the mutex was
-         * released, the teardown aborts, restarts the loop for them,
-         * and defers to a later stop. Otherwise it marks the loop
-         * inactive and closes all connected stream viewers. Called when
-         * the last consumer unsubscribes, so viewers never outlive
-         * frame delivery.
+         * Command side; called under m_command_mutex. Fails when the
+         * request queue is full or the capture scheduler cannot run
+         * (the request could never be consumed). Commands posted while
+         * the loop is down are served by the executor's first
+         * activation, which starts synchronously with the scheduler.
          *
-         * Teardown entry is single-flight: the platform scheduler's
-         * stop() is not reentrant, so a second caller arriving while
-         * another teardown owns the join window skips its own stop and
-         * reports false; the owner's post-join recheck observes the
-         * final registry state and completes or defers correctly.
-         *
-         * @param lock Caller-held lifecycle mutex lock.
-         * @return true if the teardown completed; false if it aborted,
-         *         or if another teardown already owns the join.
+         * @param type     Command to execute.
+         * @param consumer Consumer for REGISTER/UNREGISTER requests.
+         * @param slot_id  Target slot for UNREGISTER requests.
+         * @return Completion box, or nullptr when the request could not
+         *         be queued/served.
          */
-        bool teardown_capture_pipeline(std::unique_lock<std::mutex>& lock);
+        std::shared_ptr<CommandCompletion> post_request(
+            PipelineRequestType type, IFrameConsumer* consumer, int slot_id);
+
+        /**
+         * @brief Waits for a posted request to be executed.
+         *
+         * Called with m_command_mutex released: the executor never
+         * waits on a command task, and no holder blocks the capture
+         * task behind this wait. The executor serves the request at its
+         * next dispatch boundary; while the capture task is between
+         * activations, the waiting task may claim the executor token
+         * and serve the queued batch itself (try-acquire, never
+         * blocking the capture task).
+         *
+         * @param completion Box returned by post_request().
+         * @param ok         Receives the executor's success result.
+         * @param id         Receives the registration id (may be null).
+         * @return false on timeout (the request may still execute
+         *         later; status queries remain authoritative).
+         */
+        bool wait_for_completion(
+            const std::shared_ptr<CommandCompletion>& completion,
+            bool* ok, int* id);
+
+        /**
+         * @brief Completes a command: runs the teardown join if the
+         *        executor reported a drained registry.
+         *
+         * Command side; takes m_command_mutex. The bounded scheduler
+         * join runs exactly once per drain, with the mutex released.
+         * After the join a registry recheck honors a concurrent
+         * registration by restarting the loop; otherwise all connected
+         * stream viewers are closed so they never outlive frame
+         * delivery. Concurrent drains collapse into one join (the
+         * drained flag is consumed exactly once).
+         */
+        void finish_command();
 
         /**
          * @brief Captures one frame and dispatches it to consumers.
          *
-         * Called by the ICaptureScheduler callback on each frame trigger.
-         * Captures a frame, dispatches it to every subscribed consumer,
-         * releases the frame buffer, then drains any deferred viewer
-         * close and pending clip closure. Also serves as the
-         * finalization pass for a clip whose recording consumer detached
-         * before closure.
+         * Executor entry (called by the ICaptureScheduler callback on
+         * each frame trigger). First serves queued pipeline commands —
+         * their effects are visible to this activation's capture — then
+         * captures a frame, dispatches it to every subscribed consumer,
+         * releases the frame buffer, and drains any deferred viewer
+         * close and pending clip closure. An activation that only
+         * serves commands (no consumers, nothing to finalize) captures
+         * nothing.
          */
         void capture_and_dispatch_frame();
 
         /**
+         * @brief Consumes and executes every queued request.
+         *
+         * Executor-only: claims the queued batch atomically and runs
+         * each request against the executor-owned pipeline state.
+         *
+         * @return The number of requests consumed (0 when the queue was
+         *         empty); an activation that consumed requests is a pure
+         *         service pass and captures no frame.
+         */
+        int process_requests();
+
+        /**
+         * @brief Executes one request (executor-only); results are
+         *        stored on the request and signaled by the caller after
+         *        the whole claimed batch has run. Sets @p detached when
+         *        the request unsubscribed a consumer.
+         */
+        void execute_request(PipelineRequest& req, bool* detached);
+
+        /** @brief Executor-side start_recording. */
+        bool executor_start_recording();
+
+        /** @brief Executor-side stop_recording; true if it detached. */
+        bool executor_stop_recording();
+
+        /** @brief Executor-side start_streaming. */
+        bool executor_start_streaming();
+
+        /** @brief Executor-side stop_streaming; true if it detached. */
+        bool executor_stop_streaming();
+
+        /** @brief Executor-side consumer registration. */
+        int executor_register(IFrameConsumer* consumer);
+
+        /**
+         * @brief Executor-side consumer unregistration.
+         *
+         * Re-validates the slot against the expected consumer pointer so
+         * a stale command can never detach a rebound slot.
+         */
+        void executor_unregister(IFrameConsumer* expected, int slot_id);
+
+        /**
          * @brief Finalizes the current clip if closure was requested.
          *
-         * Acquires the lifecycle mutex for its whole critical section,
-         * covering the request exchange, the clip close, the reopen
-         * decision, and the reopen open, so the close/reopen decision is
-         * totally ordered against command-task lifecycle mutations.
-         *
-         * On explicit stop the clip stays closed; while recording
-         * remains subscribed (rotation limit), a fresh clip opens
-         * immediately.
+         * Executor-only: the close/finalize/reopen decision runs in the
+         * capture task, mutually exclusive with command-side lifecycle
+         * mutations by task affinity (commands can only change the
+         * registry at activation boundaries). On explicit stop the clip
+         * stays closed; while recording remains subscribed (rotation
+         * limit), a fresh clip opens immediately.
          */
         void handle_clip_closure();
 
@@ -459,42 +588,66 @@ class VideoController
         RecordSink m_record_sink;
         StreamSink m_stream_sink;
 
-        // State
-        std::atomic<bool> m_close_viewers_pending{false}; ///< Viewer close deferred to the next dispatch boundary
+        // State (executor-owned unless noted)
+        // Viewer close deferred to the current activation's dispatch
+        // boundary; written and drained only by the executor.
+        bool m_close_viewers_pending{false};
+        // Command side only (under m_command_mutex): capture scheduler
+        // running.
+        std::atomic<bool> m_loop_active{false};
+        // Set by the executor when a command detached a consumer and the
+        // registry is now empty; consumed exactly once by a command task,
+        // which then drives the bounded scheduler join.
+        std::atomic<bool> m_pipeline_drained{false};
+        // Command side (under m_command_mutex): a bounded scheduler join
+        // is in flight. A second drain arriving during the join window is
+        // deferred to the owner's post-join recheck, which observes the
+        // final registry state.
+        bool m_join_in_progress{false};
         /**
-         * @brief Serializes lifecycle transitions between command
-         *        transports.
+         * @brief Executor token: mutual exclusion for pipeline state
+         *        mutation.
          *
-         * Public mutators (start/stop of recording and streaming,
-         * consumer registration/unregistration, and the photo-capture
-         * gate check) hold this mutex across their mutation sections so
-         * transitions arriving concurrently from the web-transport and
-         * serial-transport tasks can never interleave: a start cannot
-         * bind into a loop that is being torn down, and a deferred
-         * viewer-close decision cannot be reordered behind a concurrent
-         * streaming restart. The capture task acquires this mutex only
-         * for its bounded clip close/reopen sections (the closure
-         * handler and the capture-failure finalization), making clip
-         * open/close mutually exclusive against lifecycle mutations;
-         * the per-frame pump itself stays lock-free over the registry
-         * slots. Consumers invoking start_recording() from on_frame()
-         * acquire it only for a short critical section:
-         * stop paths release this mutex around the bounded scheduler
-         * join inside teardown_capture_pipeline(), so the capture task
-         * can never block behind a joiner (no holder ever blocks
-         * indefinitely on the capture task). After the join, a post-join
-         * registry recheck either honors a concurrent registration or
-         * completes the teardown.
+         * The capture task holds the token for its whole activation
+         * (pump, clip operations, request execution). A waiting command
+         * task may claim the token — only while the capture task is
+         * provably between activations (try-acquire, never blocking) —
+         * to execute the queued request batch itself; on the platform
+         * scheduler the capture task usually consumes requests first at
+         * its next boundary, so the token handover is the rare path.
+         * Commands issued while the caller holds the token (from within
+         * on_frame()) are detected via this flag and turned into
+         * fire-and-forget requests.
          */
-        mutable std::mutex m_lifecycle_mutex;
-        std::atomic<bool> m_loop_active{false};        ///< Capture scheduler running
-        // Exchange-based single-flight claim guarding the scheduler
-        // join inside teardown_capture_pipeline(): the platform
-        // scheduler's stop() is not reentrant, so only one teardown at
-        // a time may drive it; losers skip their own stop and defer to
-        // the owner's post-join recheck. Command-task contexts only;
-        // always cleared on every teardown exit path.
-        std::atomic<bool> m_teardown_in_progress{false};
+        std::atomic<bool> m_executor_active{false};
+        /**
+         * @brief Serializes command-side pipeline control.
+         *
+         * Guarded sections: request posting (the bounded command queue
+         * and its ring bookkeeping), scheduler start/stop decisions
+         * (m_loop_active), and the photo-capture gate check. The
+         * executor (capture task) never acquires this mutex — it reads
+         * its own plain state and the queue handoff is a single atomic
+         * count exchange — so no holder can ever block the capture task
+         * behind a joiner; the bounded scheduler join runs from command
+         * contexts with the mutex released. Commands wait for executor
+         * completion with the mutex released, bounded by a timeout.
+         */
+        mutable std::mutex m_command_mutex;
+
+        /// Bounded wait for executor completion of a posted command
+        /// (budget: one frame interval plus clip SD I/O, with margin).
+        static constexpr uint32_t REQUEST_COMPLETION_TIMEOUT_MS = 1000;
+        // Executor request queue: a fixed ring of request slots. Posters
+        // (serialized by m_command_mutex) write a slot and bump
+        // m_queue_tail and m_queued; the executor claims the whole
+        // queued batch with one exchange of m_queued and advances
+        // m_queue_head (executor-only). A full queue fails the command.
+        static constexpr size_t MAX_PENDING_REQUESTS = 8;
+        PipelineRequest m_requests[MAX_PENDING_REQUESTS]{};
+        std::atomic<int> m_queued{0};
+        std::atomic<int> m_queue_tail{0};
+        int m_queue_head{0};
         hal::millis_t m_frame_interval_ms{100};
         ConfigData::VideoConfig m_config{};
         uint16_t m_width{640};    ///< Validated capture width in pixels

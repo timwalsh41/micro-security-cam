@@ -19,17 +19,16 @@
  * start_streaming() via claim_slot(); register_frame_consumer() is
  * the public API for additional external consumers only.
  *
- * on_frame() must never call unregister_frame_consumer(),
- * stop_recording(), or stop_streaming() when the caller could be the
- * last registered consumer: that tears down the capture scheduler from
- * inside the capture task itself, which blocks on joining its own task
- * until the bounded join times out and permanently wedges the
- * scheduler. Calling start_recording() from within on_frame() is safe
- * and is the sanctioned way for consumers to trigger recording: the
- * controller's internal lifecycle lock is never held across the bounded
- * teardown join, so the capture task can never block behind a joining
- * stop path and the short critical sections a start waits on always
- * complete without waiting on the capture task.
+ * Lifecycle commands issued from within on_frame() (start_recording(),
+ * stop_recording(), stop_streaming(), register/unregister) are safe:
+ * they are fire-and-forget in the capture task's executor context —
+ * queued and consumed at the next activation boundary — and never
+ * block the capture task on its own execution.
+ * A start triggered from on_frame() therefore binds for the next
+ * activation. The one restriction that remains: a command issued from
+ * on_frame() returns an acknowledgment, not the executed result (a
+ * registration returns no usable id), and waiting on executor-owned
+ * state from inside on_frame() is impossible by construction.
  */
 class IFrameConsumer
 {

@@ -85,10 +85,25 @@ class MockCaptureScheduler : public ICaptureScheduler
         void on_frame_capture() override
         {
             trigger_count++;
-            if (m_started.load() && m_callback)
+            // Model the real scheduler's notification semantics: a
+            // trigger arriving while an activation is running wakes the
+            // capture task again afterwards instead of overlapping
+            // activations (the capture task is a single thread).
+            if (m_in_callback.exchange(true, std::memory_order_acq_rel))
             {
-                m_callback();
+                m_pending_trigger.store(true, std::memory_order_release);
+                return;
             }
+            do
+            {
+                m_pending_trigger.store(false, std::memory_order_release);
+                if (m_started.load() && m_callback)
+                {
+                    m_callback();
+                }
+            } while (m_pending_trigger.exchange(false,
+                                                std::memory_order_acq_rel));
+            m_in_callback.store(false, std::memory_order_release);
         }
 
         /**
@@ -102,6 +117,8 @@ class MockCaptureScheduler : public ICaptureScheduler
     private:
         std::function<void()> m_callback;
         std::atomic<bool> m_started{false};
+        std::atomic<bool> m_in_callback{false};
+        std::atomic<bool> m_pending_trigger{false};
 };
 
 #endif // MOCK_CAPTURE_SCHEDULER_H
