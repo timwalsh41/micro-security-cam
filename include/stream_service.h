@@ -6,7 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <memory>
+#include <utility>
 #include <vector>
 
 /**
@@ -22,6 +24,17 @@
  * flow control and framing integrity are the transport framework's
  * responsibility and frame data is never truncated by a send-buffer
  * limit.
+ *
+ * Synchronization: viewer slots are mutated from several task contexts
+ * — start_stream() binding and on_stream_ended() (viewer disconnect via
+ * the transport response end callback) run in the transport's task,
+ * while deliver_frame() pushes and stop_all_streams() run in the frame
+ * producer's and stop callers' contexts. A single slot mutex serializes
+ * every slot mutation against delivery: a viewer slot can never be
+ * bound, freed, or reclaimed while the frame producer is iterating the
+ * registry, and a disconnecting viewer's slot cannot be reclaimed twice
+ * (on_stream_ended is idempotent under the mutex). The slot mutex is
+ * held only around slot bookkeeping; channel pushes happen outside it.
  *
  * The class exposes the full API, while VideoController depends only on
  * the minimal IStreamService interface (mirroring ICaptureScheduler),
@@ -200,6 +213,18 @@ class StreamService : public IStreamService
         LoggingService& m_log;
         uint8_t m_max_streams{0};
         StreamSlot m_slots[MAX_STREAMS]{};
+
+        /**
+         * @brief Serializes slot bookkeeping across task contexts.
+         *
+         * Guards slot binding/reclamation/deactivation so concurrent
+         * viewer connects, disconnects, stops, and frame deliveries
+         * cannot interleave on the slot array. Never held while pushing
+         * into or closing a channel; start_stream(), stop_stream(),
+         * stop_all_streams(), and on_stream_ended() copy channels out
+         * under this mutex and operate on the copies outside it.
+         */
+        mutable std::mutex m_slot_mutex;
 
         /**
          * Scratch buffer used by deliver_frame() to assemble a complete

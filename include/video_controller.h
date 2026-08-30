@@ -5,9 +5,9 @@
 #include <cstdint>
 #include <cstddef>
 #include <mutex>
+#include "avi_clip_session.h"
 #include "camera_controller.h"
 #include "sd_controller.h"
-#include "avi_writer.h"
 #include "time_service.h"
 #include "logging_service.h"
 #include "capture_scheduler.h"
@@ -28,12 +28,6 @@ class IStreamService;
  * registering an IFrameConsumer; the loop runs while at least one
  * consumer is registered and is torn down (closing any connected
  * stream viewers) when the last one detaches.
- *
- * AVI Write Strategy: Per-Frame SD Writes
- * Each captured frame is formatted by AviWriter and immediately
- * written to SD. At clip close, the index is appended, then the
- * file is seeked to position 0 to overwrite the placeholder AVI
- * header with the final patched header (updated sizes).
  *
  * Lifecycle:
  *   init(config) → start_streaming() and/or start_recording()
@@ -63,13 +57,15 @@ class IStreamService;
 /**
  * @class VideoController
  * @brief Owns the capture pump, the consumer registry, and the
- *        recording (AVI/clip) session.
+ *        AviClipSession (recording/AVI clip owner).
  *
  * Depends on CameraController for frame capture, SdController for
- * SD I/O (synchronous per-frame writes), AviWriter for AVI
- * formatting, TimeService for frame pacing, LoggingService for
- * diagnostics, and ICaptureScheduler for platform-agnostic capture
- * scheduling.
+ * SD I/O (synchronous per-frame writes), TimeService for frame pacing,
+ * LoggingService for diagnostics, and ICaptureScheduler for
+ * platform-agnostic capture scheduling. The clip/AVI session state
+ * (writer, paths, counters, close/rotation flag) lives in the
+ * AviClipSession member; clip operations run under this class's
+ * lifecycle mutex.
  */
 class VideoController
 {
@@ -406,49 +402,18 @@ class VideoController
         void capture_and_dispatch_frame();
 
         /**
-         * @brief Formats one frame as an AVI chunk and writes it to SD.
-         *
-         * Updates clip counters and requests clip closure via
-         * m_stop_clip when a rotation limit is reached.
-         */
-        void write_avi_frame(const uint8_t* data, size_t len);
-
-        /**
          * @brief Finalizes the current clip if closure was requested.
          *
          * Acquires the lifecycle mutex for its whole critical section,
-         * covering the flag exchange, close_clip(), the reopen decision,
-         * and open_clip(), so the close/reopen decision is totally
-         * ordered against command-task lifecycle mutations.
+         * covering the request exchange, the clip close, the reopen
+         * decision, and the reopen open, so the close/reopen decision is
+         * totally ordered against command-task lifecycle mutations.
          *
          * On explicit stop the clip stays closed; while recording
          * remains subscribed (rotation limit), a fresh clip opens
          * immediately.
          */
         void handle_clip_closure();
-
-        /**
-         * @brief Opens a new AVI clip file.
-         *
-         * Builds the file path from the current timestamp, creates the
-         * parent directory, writes a placeholder AVI header, and resets
-         * AviWriter state.
-         *
-         * Caller must hold m_lifecycle_mutex.
-         */
-        void open_clip();
-
-        /**
-         * @brief Closes the current clip if one is open and writes the
-         *        final AVI to SD.
-         *
-         * Appends the index, then seeks to position 0 to overwrite the
-         * placeholder header with the patched header containing final
-         * sizes. Clears the clip-close-pending guard.
-         *
-         * Caller must hold m_lifecycle_mutex.
-         */
-        void close_clip();
 
         /**
          * @brief Drains a viewer close deferred by stop_streaming().
@@ -466,31 +431,6 @@ class VideoController
          */
         void create_directory(const char* path);
 
-        /**
-         * @brief Writes a single buffer to SD synchronously.
-         *
-         * Convenience wrapper around m_sd.write_sync().
-         *
-         * @param data Pointer to data.
-         * @param len  Number of bytes.
-         * @return true if write succeeded.
-         */
-        bool write_to_sd(const uint8_t* data, size_t len);
-
-        /**
-         * @brief Writes data at a specific file offset via SD.
-         *
-         * Convenience wrapper around m_sd.write_at_sync().
-         *
-         * @param path   File path.
-         * @param offset Byte offset.
-         * @param data   Pointer to data.
-         * @param len    Number of bytes.
-         * @return true if seek + write succeeded.
-         */
-        bool write_at_offset(const char* path, uint32_t offset,
-                             const uint8_t* data, size_t len);
-
         static constexpr const char* SUBSYSTEM = "VIDEO";
 
         // Dependencies (injected)
@@ -504,7 +444,11 @@ class VideoController
         IStreamService* m_stream_service{nullptr};
 
         // Owned components
-        AviWriter m_avi_writer;
+        // Clip/AVI session: owns the AVI writer, clip paths, per-clip
+        // counters, and the close/rotation request flag. All clip
+        // operations run under m_lifecycle_mutex (append_frame is the
+        // lock-free pump path).
+        AviClipSession m_clip_session;
 
         // Frame-consumer registry (command-task contexts mutate via
         // compare-and-swap slot reservations; the capture task reads
@@ -516,12 +460,7 @@ class VideoController
         StreamSink m_stream_sink;
 
         // State
-        std::atomic<bool> m_stop_clip{false};
         std::atomic<bool> m_close_viewers_pending{false}; ///< Viewer close deferred to the next dispatch boundary
-        // True while an unfinalized clip is open. Written only under
-        // m_lifecycle_mutex (all clip operations hold it), and read by
-        // start_recording() under the same mutex — no atomic needed.
-        bool m_clip_close_pending{false};
         /**
          * @brief Serializes lifecycle transitions between command
          *        transports.
@@ -557,21 +496,9 @@ class VideoController
         // always cleared on every teardown exit path.
         std::atomic<bool> m_teardown_in_progress{false};
         hal::millis_t m_frame_interval_ms{100};
-        std::atomic<uint32_t> m_frames_recorded{0};
-        std::atomic<uint32_t> m_file_size{0};
         ConfigData::VideoConfig m_config{};
         uint16_t m_width{640};    ///< Validated capture width in pixels
         uint16_t m_height{480};   ///< Validated capture height in pixels
-
-        /**
-         * @brief Generated file path for the current clip.
-         */
-        char m_file_path[64]{};
-
-        /**
-         * @brief File path for the currently open clip (persistent across close/open).
-         */
-        char m_clip_path[64]{};
 };
 
 #endif // VIDEO_CONTROLLER_H

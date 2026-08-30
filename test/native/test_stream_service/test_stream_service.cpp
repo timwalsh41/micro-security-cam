@@ -2,9 +2,11 @@
 #include "stream_service.h"
 #include "mock_log_backend.h"
 #include "time_service.h"
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 // ============================================================
@@ -355,6 +357,84 @@ void test_stream_end_after_stop_is_noop()
     TEST_ASSERT_EQUAL_UINT8(0, f.service.active_slot_count());
 }
 
+/**
+ * @brief Regression for the cross-task slot race: start_stream() binding
+ *        and on_stream_ended() reclamation (transport task) running
+ *        concurrently with deliver_frame() pushes and stop_all_streams()
+ *        (producer/stop contexts) can never interleave on the slot array
+ *        — no lost bindings, no double reclamation, no torn delivery
+ *        state.
+ */
+void test_concurrent_slot_mutation_and_delivery()
+{
+    constexpr int ROUNDS = 50;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        TestFixture f;
+        f.service.init(4);
+
+        std::atomic<bool> go{false};
+        std::atomic<bool> churn_done{false};
+
+        // Churn thread (stands in for the transport task): binds a
+        // viewer then reclaims its slot via the two possible paths —
+        // an explicit stop, or the response-end callback (disconnect).
+        std::thread churn([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < 50; i++)
+            {
+                auto channel = std::make_shared<StreamFrameChannel>();
+                StreamFrameChannel* raw = channel.get();
+                int slot = f.service.start_stream(channel);
+                if (slot < 0)
+                {
+                    continue;
+                }
+                if (i % 2 == 0)
+                {
+                    f.service.stop_stream(static_cast<uint8_t>(slot));
+                }
+                else
+                {
+                    f.service.on_stream_ended(raw);
+                }
+            }
+            churn_done.store(true, std::memory_order_release);
+        });
+
+        // Delivery thread (stands in for the frame producer task):
+        // pushes frames into whatever slots are active, snapshotting
+        // the registry under the slot mutex on every call.
+        std::thread deliver([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            while (!churn_done.load(std::memory_order_acquire))
+            {
+                f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+                std::this_thread::yield();
+            }
+        });
+
+        go.store(true, std::memory_order_release);
+        churn.join();
+        deliver.join();
+
+        // Every bound slot was reclaimed exactly once; the registry is
+        // empty and stops cleanly.
+        TEST_ASSERT_EQUAL_UINT8(0, f.service.active_slot_count());
+        f.service.stop_all_streams();
+        TEST_ASSERT_EQUAL_UINT8(0, f.service.active_slot_count());
+    }
+}
+
 // ============================================================
 // Test runner
 // ============================================================
@@ -378,6 +458,7 @@ int main()
     RUN_TEST(test_deliver_frame_empty);
     RUN_TEST(test_stream_end_frees_slot);
     RUN_TEST(test_stream_end_after_stop_is_noop);
+    RUN_TEST(test_concurrent_slot_mutation_and_delivery);
 
     return UNITY_END();
 }

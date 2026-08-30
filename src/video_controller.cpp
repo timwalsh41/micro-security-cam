@@ -17,6 +17,7 @@ VideoController::VideoController(CameraController& cam,
     , m_time(time)
     , m_log(log)
     , m_scheduler(scheduler)
+    , m_clip_session(sd, time, log)
     , m_record_sink(*this)
     , m_stream_sink(*this)
 {
@@ -32,6 +33,8 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
     m_config = config;
     m_width = width;
     m_height = height;
+
+    m_clip_session.init(config, width, height);
 
     m_frame_interval_ms = (m_config.fps > 0)
                               ? (1000u / m_config.fps)
@@ -69,7 +72,7 @@ bool VideoController::start_recording()
     // would corrupt both files. All clip operations run under the
     // lifecycle mutex, so this read is ordered against the capture
     // task's close/reopen sections.
-    if (m_clip_close_pending)
+    if (m_clip_session.close_pending())
     {
         m_log.warn(SUBSYSTEM, "Recording start rejected: clip close pending");
         return false;
@@ -82,10 +85,8 @@ bool VideoController::start_recording()
         return false;
     }
 
-    m_stop_clip = false;
-    open_clip();
-
-    if (!m_avi_writer.is_open())
+    m_clip_session.clear_close_request();
+    if (!m_clip_session.open())
     {
         release_slot(id);
         return false;
@@ -95,7 +96,7 @@ bool VideoController::start_recording()
     // e.g. streaming is subscribed).
     if (!ensure_loop_running())
     {
-        close_clip();
+        m_clip_session.close();
         release_slot(id);
         m_log.warn(SUBSYSTEM, "Recording start failed: scheduler busy");
         return false;
@@ -103,7 +104,7 @@ bool VideoController::start_recording()
 
     claim_slot(id, &m_record_sink);
 
-    m_log.info(SUBSYSTEM, "Recording started: %s", m_file_path);
+    m_log.info(SUBSYSTEM, "Recording started: %s", m_clip_session.file_path());
     return true;
 }
 
@@ -120,7 +121,7 @@ void VideoController::stop_recording()
     // Request clip closure before detaching so the pipeline's final
     // callback (or the next frame callback when other consumers keep
     // the loop running) finalizes the clip.
-    m_stop_clip = true;
+    m_clip_session.request_close();
 
     detach_consumer(id);
 
@@ -416,12 +417,12 @@ bool VideoController::is_capture_active() const
 
 uint32_t VideoController::frames_recorded() const
 {
-    return m_frames_recorded;
+    return m_clip_session.frames_recorded();
 }
 
 uint32_t VideoController::file_size() const
 {
-    return m_file_size;
+    return m_clip_session.file_size();
 }
 
 // ============================================================
@@ -519,100 +520,6 @@ bool VideoController::maybe_teardown_if_idle(
 // Clip lifecycle
 // ============================================================
 
-void VideoController::open_clip()
-{
-    // Build file path from unix timestamp (UTC)
-    uint32_t seconds = m_time.unix_now();
-
-    char date[9];
-    char time_str[7];
-    if (!TimeFormatter::format_date(seconds, date, sizeof(date)) ||
-        !TimeFormatter::format_time(seconds, time_str, sizeof(time_str)))
-    {
-        m_log.warn(SUBSYSTEM, "Failed to format timestamp");
-        return;
-    }
-
-    // Build directory path: /YYYYMMDD
-    char dir_path[16];
-    snprintf(dir_path, sizeof(dir_path), "/%s", date);
-
-    // Create the parent directory on the SD card
-    create_directory(dir_path);
-
-    // Build file path: /YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
-    char base_path[sizeof(m_file_path)];
-    snprintf(base_path, sizeof(base_path),
-             "/%s/%s_%s_%ux%u_%ufps.avi",
-             date, date, time_str,
-             m_width, m_height, m_config.fps);
-
-    // Avoid clobbering a clip from an earlier recording within the same
-    // second by uniquifying with a serial suffix
-    if (!make_unique_path(base_path, m_file_path, sizeof(m_file_path)))
-    {
-        m_log.warn(SUBSYSTEM, "Could not allocate unique clip path");
-        return;
-    }
-
-    // Store clip path for close_clip()
-    strncpy(m_clip_path, m_file_path, sizeof(m_clip_path) - 1);
-    m_clip_path[sizeof(m_clip_path) - 1] = '\0';
-
-    // Open AVI writer (generates header in memory). While a clip is
-    // open it awaits finalization, so latch the close-pending guard
-    // here; close_clip() clears it once finalization completes.
-    if (m_avi_writer.open(m_file_path, m_config.fps, m_width, m_height))
-    {
-        m_clip_close_pending = true;
-    }
-
-    // Write placeholder header to SD at position 0
-    AviBytes hdr = m_avi_writer.header();
-    if (hdr.data && hdr.len > 0)
-    {
-        write_to_sd(hdr.data, hdr.len);
-    }
-
-    // Reset clip state
-    m_frames_recorded = 0;
-    m_file_size = 0;
-}
-
-void VideoController::close_clip()
-{
-    // Finalize AVI (patches header, builds index)
-    m_avi_writer.close();
-
-    // Append index to the file
-    AviBytes idx = m_avi_writer.index();
-    if (idx.data && idx.len > 0)
-    {
-        write_to_sd(idx.data, idx.len);
-    }
-
-    // Seek to position 0 and overwrite the placeholder header
-    AviBytes hdr = m_avi_writer.patched_header();
-    if (hdr.data && hdr.len > 0)
-    {
-        write_at_offset(m_clip_path, 0, hdr.data, hdr.len);
-    }
-
-    m_log.info(SUBSYSTEM, "Clip closed: %s (%u frames, %u bytes)",
-               m_clip_path,
-               static_cast<uint32_t>(m_frames_recorded),
-               static_cast<uint32_t>(m_file_size));
-
-    // Clean up
-    m_frames_recorded = 0;
-    m_file_size = 0;
-    m_stop_clip = false;
-    m_avi_writer = AviWriter();  // Reset writer state
-
-    // No unfinalized clip remains.
-    m_clip_close_pending = false;
-}
-
 void VideoController::process_pending_viewer_close()
 {
     if (m_close_viewers_pending.exchange(false, std::memory_order_relaxed) &&
@@ -628,7 +535,7 @@ void VideoController::process_pending_viewer_close()
 
 void VideoController::capture_and_dispatch_frame()
 {
-    bool closing = m_stop_clip.load(std::memory_order_relaxed);
+    bool closing = m_clip_session.is_close_requested();
 
     // Guard against stale callbacks (e.g. a task notification that was
     // already queued after teardown): never capture unless a consumer is
@@ -656,7 +563,7 @@ void VideoController::capture_and_dispatch_frame()
         if (closing)
         {
             std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
-            close_clip();
+            m_clip_session.close();
         }
         process_pending_viewer_close();
         return;
@@ -689,36 +596,6 @@ void VideoController::capture_and_dispatch_frame()
     process_pending_viewer_close();
 }
 
-void VideoController::write_avi_frame(const uint8_t* data, size_t len)
-{
-    // Format as AVI chunk and write to SD
-    m_avi_writer.write_frame(data, len);
-
-    AviBytes chunk = m_avi_writer.last_frame_chunk();
-    if (chunk.data && chunk.len > 0)
-    {
-        write_to_sd(chunk.data, chunk.len);
-        m_file_size += static_cast<uint32_t>(chunk.len);
-    }
-
-    m_frames_recorded++;
-
-    // Check clip termination conditions (auto-rotation); closure itself
-    // is handled by the pump after frame release.
-    if (m_config.clip_duration_s > 0 &&
-        m_frames_recorded >=
-            static_cast<uint32_t>(m_config.fps) * m_config.clip_duration_s)
-    {
-        m_stop_clip = true;
-    }
-    else if (m_config.max_file_size_mb > 0 &&
-             m_file_size >= static_cast<uint32_t>(m_config.max_file_size_mb) *
-                                1024UL * 1024UL)
-    {
-        m_stop_clip = true;
-    }
-}
-
 void VideoController::handle_clip_closure()
 {
     // Serialize the whole close/reopen decision against command-task
@@ -729,21 +606,20 @@ void VideoController::handle_clip_closure()
     // join, so this acquisition never blocks behind a joiner.
     std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
 
-    if (!m_stop_clip.exchange(false, std::memory_order_relaxed))
+    if (!m_clip_session.consume_close_request())
     {
         return;
     }
 
-    close_clip();
+    m_clip_session.close();
 
     if (is_recording())
     {
         // Auto-rotation: recording remains subscribed — open new clip
         // and resume.
-        open_clip();
-        if (m_avi_writer.is_open())
+        if (m_clip_session.open())
         {
-            m_log.info(SUBSYSTEM, "New clip: %s", m_clip_path);
+            m_log.info(SUBSYSTEM, "New clip: %s", m_clip_session.clip_path());
         }
     }
     // Explicit stop: the recording consumer is already detached; the
@@ -752,7 +628,9 @@ void VideoController::handle_clip_closure()
 
 void VideoController::RecordSink::on_frame(const uint8_t* data, size_t len)
 {
-    m_vc.write_avi_frame(data, len);
+    // Lock-free pump path into the clip session (see the session's
+    // locking contract in avi_clip_session.h).
+    m_vc.m_clip_session.append_frame(data, len);
 }
 
 void VideoController::StreamSink::on_frame(const uint8_t* data, size_t len)
@@ -767,17 +645,6 @@ void VideoController::StreamSink::on_frame(const uint8_t* data, size_t len)
 // ============================================================
 // SD I/O helpers
 // ============================================================
-
-bool VideoController::write_to_sd(const uint8_t* data, size_t len)
-{
-    return m_sd.write_sync(m_file_path, data, len, hal::FileOpenMode::APPEND);
-}
-
-bool VideoController::write_at_offset(const char* path, uint32_t offset,
-                                      const uint8_t* data, size_t len)
-{
-    return m_sd.write_at_sync(path, offset, data, len);
-}
 
 bool VideoController::make_unique_path(const char* base_path, char* out, size_t out_size)
 {

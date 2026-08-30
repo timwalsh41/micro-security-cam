@@ -27,17 +27,18 @@ int StreamService::start_stream(std::shared_ptr<StreamFrameChannel> channel)
         return -1;
     }
 
+    // Seed the multipart opening boundary as the first bytes the
+    // transport response will pull (outside the slot mutex; the channel
+    // is not bound to any slot yet).
+    channel->push_part(reinterpret_cast<const uint8_t*>(OPENING_BOUNDARY),
+                       strlen(OPENING_BOUNDARY));
+
+    std::lock_guard<std::mutex> lock(m_slot_mutex);
     // Find a free slot within the configured maximum.
     for (uint8_t i = 0; i < m_max_streams; i++)
     {
         if (!m_slots[i].active)
         {
-            // Seed the multipart opening boundary as the first bytes the
-            // transport response will pull.
-            channel->push_part(
-                reinterpret_cast<const uint8_t*>(OPENING_BOUNDARY),
-                strlen(OPENING_BOUNDARY));
-
             // Bind the channel into the slot. The transport response
             // attached to the viewer's request shares ownership and
             // pulls the bytes under framework flow control.
@@ -57,26 +58,30 @@ int StreamService::start_stream(std::shared_ptr<StreamFrameChannel> channel)
 
 void StreamService::stop_stream(uint8_t slot)
 {
-    if (slot >= MAX_STREAMS || !m_slots[slot].active)
+    std::shared_ptr<StreamFrameChannel> channel;
     {
-        return;
+        std::lock_guard<std::mutex> lock(m_slot_mutex);
+        if (slot >= MAX_STREAMS || !m_slots[slot].active)
+        {
+            return;
+        }
+
+        // Reclaim the slot under the mutex so it is immediately
+        // reusable and cannot be freed concurrently by a disconnect.
+        channel = m_slots[slot].channel;
+        m_slots[slot].channel.reset();
+        m_slots[slot].active = false;
     }
 
-    // Reclaim the slot first so it is immediately reusable, then end
-    // the stream: the closing token is pushed best effort (dropped when
-    // a frame part is still pending) and the channel is marked closed.
-    // The transport response drains the pending bytes, completes the
-    // multipart stream, and its end callback later finds no matching
-    // slot (idempotent).
-    std::shared_ptr<StreamFrameChannel> channel = m_slots[slot].channel;
-    m_slots[slot].channel.reset();
-    m_slots[slot].active = false;
-
+    // End the stream outside the slot mutex: the closing token is
+    // pushed best effort (dropped when a frame part is still pending)
+    // and the channel is marked closed. The transport response drains
+    // the pending bytes, completes the multipart stream, and its end
+    // callback later finds no matching slot (idempotent).
     if (channel)
     {
-        channel->push_part(
-            reinterpret_cast<const uint8_t*>(CLOSING_BOUNDARY),
-            strlen(CLOSING_BOUNDARY));
+        channel->push_part(reinterpret_cast<const uint8_t*>(CLOSING_BOUNDARY),
+                           strlen(CLOSING_BOUNDARY));
         channel->close();
     }
 
@@ -102,6 +107,11 @@ void StreamService::on_stream_ended(StreamFrameChannel* channel)
         return;
     }
 
+    // Runs in the transport's task context (response destruction). The
+    // mutex makes the slot reclamation mutually exclusive against
+    // start_stream() binding, stop_stream() reclamation, and the frame
+    // producer iterating the slots.
+    std::lock_guard<std::mutex> lock(m_slot_mutex);
     for (uint8_t i = 0; i < m_max_streams; i++)
     {
         if (m_slots[i].active && m_slots[i].channel.get() == channel)
@@ -138,19 +148,26 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
         return;
     }
 
-    for (uint8_t i = 0; i < m_max_streams; i++)
+    // Snapshot the active channels under the slot mutex: slots can be
+    // bound or reclaimed concurrently (viewer connect/disconnect), but
+    // the snapshot keeps delivery consistent with the registry state at
+    // this instant and keeps the channel pushes outside the mutex. The
+    // shared_ptr copies keep snapshot channels alive even if their slot
+    // is reclaimed mid-push.
+    std::vector<std::shared_ptr<StreamFrameChannel>> channels;
     {
-        if (!m_slots[i].active)
+        std::lock_guard<std::mutex> lock(m_slot_mutex);
+        for (uint8_t i = 0; i < m_max_streams; i++)
         {
-            continue;
+            if (m_slots[i].active && m_slots[i].channel)
+            {
+                channels.push_back(m_slots[i].channel);
+            }
         }
+    }
 
-        std::shared_ptr<StreamFrameChannel> channel = m_slots[i].channel;
-        if (!channel)
-        {
-            continue;
-        }
-
+    for (auto& channel : channels)
+    {
         // Assemble the complete part (header + JPEG + footer) once per
         // frame and push it into the viewer's channel. A viewer still
         // draining its previous part drops this frame — the transport
@@ -173,6 +190,7 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
 
 uint8_t StreamService::active_slot_count() const
 {
+    std::lock_guard<std::mutex> lock(m_slot_mutex);
     uint8_t count = 0;
     for (uint8_t i = 0; i < MAX_STREAMS; i++)
     {

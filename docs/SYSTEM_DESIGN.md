@@ -31,7 +31,7 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                Service / Controller Layer                   │
 │  CameraController    VideoController   LedStateMachine      │
-│  SdController        AviWriter         StreamService        │
+│  SdController   AviClipSession     StreamService        │
 │  TimeService         LoggingService                         │
 │  ConfigService       IniParser                              │
 │  WifiService         WebServerService                       │
@@ -515,9 +515,8 @@ package "Controllers" {
         -m_slots : ConsumerSlot[3]
         -m_record_sink : RecordSink
         -m_stream_sink : StreamSink
-        -m_stop_clip : atomic<bool>
-        -m_clip_close_pending : atomic<bool>
-        -m_avi_writer : AviWriter
+        -m_close_viewers_pending : atomic<bool>
+        -m_clip_session : AviClipSession
         -m_stream_service : IStreamService*
         -m_config : VideoConfig
         -m_width : uint16_t
@@ -536,12 +535,25 @@ package "Controllers" {
         +is_streaming() : bool
         +is_capture_active() : bool
         -capture_and_dispatch_frame()
-        -write_avi_frame(data, len)
         -handle_clip_closure()
         -teardown_capture_pipeline()
         -ensure_loop_running() : bool
-        -open_clip()
-        -close_clip()
+    }
+
+    class AviClipSession {
+        -m_avi_writer : AviWriter
+        -m_close_requested : atomic<bool>
+        -m_close_pending : bool
+        -m_frames_recorded : atomic<uint32_t>
+        -m_file_size : atomic<uint32_t>
+        -m_file_path : char[64]
+        -m_clip_path : char[64]
+        +open() : bool
+        +close()
+        +append_frame(data, len)
+        +request_close() / consume_close_request() : bool
+        +is_open() / close_pending() : bool
+        +frames_recorded() / file_size() : uint32_t
     }
 
     class AviWriter {
@@ -636,7 +648,8 @@ SystemOrchestrator --> TimeService_ext : time ops
 SystemOrchestrator --> WebServerHal_ext : /stream route
 
 CameraController --> CameraHal_ext : clamps against capabilities
-VideoController *-- "1" AviWriter : owns
+VideoController *-- "1" AviClipSession : owns
+AviClipSession *-- "1" AviWriter : owns
 VideoController --> CameraController : capture cycle
 VideoController --> SdController_ext : sync writes
 VideoController --> LoggingService_ext : diagnostics
@@ -650,7 +663,7 @@ CaptureSchedulerEsp32 --> TimerHal_ext : periodic ISR
 @enduml
 ```
 
-Note: `VideoController` owns its `AviWriter` instance (composition); `AviWriter` performs no I/O — formatted bytes flow through `SdController`.
+Note: `VideoController` owns its `AviClipSession` (composition), which owns the `AviWriter`; `AviWriter` performs no I/O — formatted bytes flow through `SdController`.
 
 #### 4. Utilities & Configuration Data
 
@@ -935,6 +948,8 @@ Generates non-colliding file paths by appending serial suffixes (`_1`, `_2`, ...
 Distributes captured JPEG frames to connected viewers as a `multipart/x-mixed-replace` MJPEG stream. Platform-agnostic: each viewer occupies one slot holding a `StreamFrameChannel`. `deliver_frame()` formats the complete multipart part (boundary header with `Content-Type: image/jpeg` and `Content-Length`, JPEG bytes, footer) and pushes it into the per-viewer channel; the transport response attached at connect time pulls the bytes from the channel as the client acknowledges data. Flow control and framing integrity are the transport framework's responsibility, so frame data is never truncated by a transport send-buffer limit.
 
 The channel is a bounded single-part mailbox: a push while the previous part is still pending is dropped (live-preview semantics — the freshest frame matters, and producer latency stays flat). Pushes never block, so the frame producer always runs at capture cadence.
+
+Slot bookkeeping is serialized by an internal slot mutex across task contexts: `start_stream()` binding and `on_stream_ended()` reclamation (transport task) versus `deliver_frame()` pushes and `stop_all_streams()` (frame producer / stop callers). `deliver_frame()` snapshots the active channels under the mutex and pushes outside it, so a slot can never be bound, freed, or reclaimed while the frame producer is iterating the registry, and a disconnecting viewer's slot cannot be reclaimed twice.
 
 #### Interfaces
 
@@ -1464,7 +1479,7 @@ Fully testable on native via `MockCameraHal`, which provides configurable return
 
 ## VideoController
 
-**Files**: `include/video_controller.h`, `src/video_controller.cpp`, `include/capture_scheduler.h`, `include/capture_scheduler_esp32.h`, `src/capture_scheduler_esp32.cpp`
+**Files**: `include/video_controller.h`, `src/video_controller.cpp`, `include/avi_clip_session.h`, `src/avi_clip_session.cpp`, `include/capture_scheduler.h`, `include/capture_scheduler_esp32.h`, `src/capture_scheduler_esp32.cpp`
 
 ### Responsibility
 
@@ -1477,7 +1492,7 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 - `TimeService &` — for clip duration tracking (elapsed time checks).
 - `LoggingService &` — for diagnostic output.
 - `ICaptureScheduler &` — for platform-agnostic capture scheduling. The scheduler invokes `capture_and_dispatch_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
-- `AviWriter` — owned; formats AVI byte streams in memory.
+- `AviClipSession` — owned; the clip/AVI session owner (writer, clip paths, per-clip counters, close/rotation request). All clip operations except the lock-free `append_frame()` pump path run under the lifecycle mutex.
 
 ### Consumer Registry (Activity Model)
 
@@ -1530,7 +1545,7 @@ VideoController --> StreamSink : owns
 
 Built-in consumers:
 
-- **RecordSink** — recording's built-in sink, owned by `VideoController`. `start_recording()` claims a registry slot for it internally via `claim_slot()` after opening the clip — it is never registered through the public API. Formats each frame as an AVI chunk and writes it to SD; requests clip closure via the rotation limit or explicit stop.
+- **RecordSink** — recording's built-in sink, owned by `VideoController`. `start_recording()` claims a registry slot for it internally via `claim_slot()` after opening the clip — it is never registered through the public API. Forwards each frame to `AviClipSession::append_frame()` (the lock-free pump path), which formats the AVI chunk, writes it to SD, and requests clip closure at rotation limits.
 - **StreamSink** — streaming's built-in sink, owned by `VideoController`. `start_streaming()` claims a slot for it internally via `claim_slot()`; forwards every frame to the `IStreamService` for delivery to connected viewers.
 - **External consumers** — registered through the public `register_frame_consumer()` / `unregister_frame_consumer()` API. The production firmware registers none today; the API is the extension point for additional consumers such as the planned phase-6 motion-detection consumer, which may call `start_recording()` from its frame callback (no controller special-casing required). Only native tests exercise it at present.
 
@@ -1542,7 +1557,7 @@ Lifecycle rules:
 - `stop_recording()` unsubscribes immediately so status queries observe the stop right away and requests clip closure. When other consumers keep the loop running the clip is finalized by the next frame callback (bounded by one frame period); `start_recording()` is rejected until finalization completes (`clip close pending`). When it was the last subscriber the pipeline is torn down synchronously (bounded), whose final callback closes the clip and closes all connected stream viewers.
 - `stop_streaming()` unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` within that window cancels the pending close since streaming mode is active again.
 - Clip rotation reopens a fresh clip while recording remains subscribed.
-- Clip lifecycle serialization: clip open, finalization, and rotation reopen are serialized under the same lifecycle mutex as the activity transitions. `open_clip()` / `close_clip()` run only in contexts that hold the mutex: command-task start/stop paths (which already hold it) and the capture task, which acquires it around its bounded clip close/reopen sections — the closure handler (flag exchange, close, reopen decision) and the capture-failure finalization. The per-frame pump stays lock-free; only the closure boundary (at most once per clip) takes the mutex, so frame cadence is unaffected and the frame pump never blocks behind a joining stop path. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the capture task's rotation window can no longer interleave with the rotation: the stop's flag and consumer detach are ordered against the capture task's close/reopen decision by the mutex, and the start observes either an unfinalized clip (`clip close pending`) or a fully closed one — never a mid-rotation torn state. Every clip on the SD card is finalized with a patched AVI header or is the live clip of a running session; an abandoned placeholder-header clip cannot be produced by any start/stop interleaving.
+- Clip lifecycle serialization: clip open, finalization, and rotation reopen are serialized under the same lifecycle mutex as the activity transitions. All `AviClipSession::open()` / `close()` calls run only in contexts that hold the mutex: command-task start/stop paths (which already hold it) and the capture task, which acquires it around its bounded clip close/reopen sections — the closure handler (flag exchange, close, reopen decision) and the capture-failure finalization. The per-frame pump stays lock-free; only the closure boundary (at most once per clip) takes the mutex, so frame cadence is unaffected and the frame pump never blocks behind a joining stop path. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the capture task's rotation window can no longer interleave with the rotation: the stop's flag and consumer detach are ordered against the capture task's close/reopen decision by the mutex, and the start observes either an unfinalized clip (`clip close pending`) or a fully closed one — never a mid-rotation torn state. Every clip on the SD card is finalized with a patched AVI header or is the live clip of a running session; an abandoned placeholder-header clip cannot be produced by any start/stop interleaving.
 - `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle.
 - Start/stop commands may arrive from multiple task contexts (the web transport dispatches in the AsyncTCP task, serial commands in the main-loop task). All lifecycle mutation sections — activity starts/stops, consumer registration/unregistration, and the `capture_photo()` gate check — are mutually exclusive under a single lifecycle mutex, so concurrent commands can fail cleanly with an error response but can never interleave: registrations cannot be silently lost or duplicated, a start cannot bind into a loop that is being torn down, and a deferred viewer-close decision cannot be reordered behind a concurrent streaming restart. The frame pump stays lock-free over the registry slots; consumers invoking `start_recording()` from their frame callback only ever block on short critical sections. Stop paths release the lifecycle mutex around the bounded scheduler join inside the teardown: after the join they recheck the registry, honoring a concurrent registration by restarting the loop and deferring the teardown to a later stop (under pathological start/stop churn a teardown attempt may therefore be deferred, but it can never complete under a live registry). This keeps the capture task from ever blocking behind a joining stop path.
 
