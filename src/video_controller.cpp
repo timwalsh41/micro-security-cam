@@ -654,8 +654,17 @@ void VideoController::capture_and_dispatch_frame()
 
         // Never wedge the pipeline: if a stopped clip was awaiting its
         // final closure, finalize it even though this frame failed.
+        // Clip operations are mutually exclusive against command-task
+        // lifecycle mutations: the lock here covers the capture-failure
+        // finalization the same way the closure handler's lock does, so a
+        // concurrent start_recording() cannot race an in-flight clip
+        // close (torn-clip class). Critical sections on the command side
+        // are bounded, and stop paths release the mutex across the
+        // scheduler join, so this acquisition never blocks behind a
+        // joiner.
         if (closing)
         {
+            std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
             close_clip();
         }
         process_pending_viewer_close();
@@ -721,6 +730,14 @@ void VideoController::write_avi_frame(const uint8_t* data, size_t len)
 
 void VideoController::handle_clip_closure()
 {
+    // Serialize the whole close/reopen decision against command-task
+    // lifecycle mutations: a STOP/START landing inside the rotation
+    // window can no longer interleave with the capture task's clip
+    // finalization or reopen (torn-clip class). The critical section is
+    // bounded SD I/O; stop paths release the mutex across the scheduler
+    // join, so this acquisition never blocks behind a joiner.
+    std::lock_guard<std::mutex> lock(m_lifecycle_mutex);
+
     if (!m_stop_clip.exchange(false, std::memory_order_relaxed))
     {
         return;

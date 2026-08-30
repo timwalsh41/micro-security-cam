@@ -8,8 +8,10 @@
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include <atomic>
-#include <thread>
+#include <chrono>
 #include <cstring>
+#include <string>
+#include <thread>
 
 // ============================================================
 // Test configuration
@@ -1801,6 +1803,456 @@ void test_concurrent_starts_never_lose_registration()
 }
 
 // ============================================================
+// Clip-rotation hardening (cross-task serialization)
+// ============================================================
+
+/**
+ * @brief Reads the little-endian u32 at the given offset.
+ */
+static uint32_t read_u32_le(const std::vector<uint8_t>& content, size_t offset)
+{
+    return static_cast<uint32_t>(content[offset]) |
+           (static_cast<uint32_t>(content[offset + 1]) << 8) |
+           (static_cast<uint32_t>(content[offset + 2]) << 16) |
+           (static_cast<uint32_t>(content[offset + 3]) << 24);
+}
+
+/**
+ * @brief Returns whether one stored clip is a finalized AVI.
+ *
+ * A clip is considered finalized when it is large enough for a real
+ * header and its RIFF size field (offset 4) equals content size minus 8.
+ * A placeholder header carries 0 there; only close_clip()'s patched
+ * header fills the real size.
+ */
+static bool clip_file_is_patched(const std::vector<uint8_t>& content)
+{
+    if (content.size() < 224)
+    {
+        return false;
+    }
+    return read_u32_le(content, 4) ==
+           static_cast<uint32_t>(content.size() - 8);
+}
+
+/**
+ * @brief Returns whether every .avi clip in the mock SD store is
+ *        finalized (no abandoned placeholder-header clip).
+ */
+static bool all_avi_clips_patched(const MockSdCardHal& sd_hal)
+{
+    for (const auto& entry : sd_hal.files)
+    {
+        if (entry.first.size() < 4 ||
+            entry.first.compare(entry.first.size() - 4, 4, ".avi") != 0)
+        {
+            continue;
+        }
+        if (!clip_file_is_patched(entry.second))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief Waits until the create_dir park gate has been hit n times.
+ */
+static void wait_for_gate_hits(const MockSdCardHal& sd_hal, int n)
+{
+    constexpr long MAX_SPIN = 10000000L;
+    long spins = 0;
+    while (sd_hal.gate_create_dir_hits.load(std::memory_order_acquire) < n &&
+           spins++ < MAX_SPIN)
+    {
+        std::this_thread::yield();
+    }
+}
+
+/**
+ * @brief Normal rotation finalizes clip A with a patched header and a
+ *        fresh clip B receives the next frame; B finalizes at stop.
+ */
+void test_rotation_finalizes_and_reopens_header()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+
+    // Record exactly one clip's worth of frames: the last frame triggers
+    // the duration limit and the pump rotates to a fresh clip.
+    for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+    {
+        f.capture_one_frame();
+    }
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    // Two clips exist: finalized clip A and the live reopened clip B.
+    TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+    for (const auto& entry : f.sd_hal.files)
+    {
+        if (entry.first.find("_1.avi") == std::string::npos)
+        {
+            // Clip A: finalized by the rotation with a patched header.
+            TEST_ASSERT_TRUE(clip_file_is_patched(entry.second));
+        }
+    }
+
+    // The next frame lands in the reopened clip B, which finalizes at stop.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(1, f.video.frames_recorded());
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+    TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+}
+
+/**
+ * @brief A STOP landing inside the rotation window cannot interleave:
+ *        the capture task holds the lifecycle mutex for its close/reopen
+ *        section, the stop serializes behind it, and the reopened clip
+ *        is finalized. No torn clip is possible.
+ */
+void test_stop_during_rotation_finalizes()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    // Arm the park gate before start_recording: the initial clip open
+    // is create_dir call #1, the rotation's reopen is call #2, where the
+    // capture thread parks mid-rotation (holding the lifecycle mutex).
+    f.sd_hal.gate_create_dir_at_count = 2;
+    TEST_ASSERT_TRUE(f.video.start_recording());
+
+    std::atomic<bool> stop_issued{false};
+    std::thread driver([&]()
+    {
+        // Fire exactly one clip's worth of frames: the last activation
+        // enters the rotation and parks on the gate.
+        for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+        {
+            f.capture_one_frame();
+        }
+    });
+    std::thread stopper([&]()
+    {
+        while (!stop_issued.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        f.video.stop_recording();
+    });
+
+    // Wait until the capture thread is parked mid-rotation (holding the
+    // lifecycle mutex), then issue the stop so it serializes behind it.
+    wait_for_gate_hits(f.sd_hal, 2);
+    stop_issued.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Watchdog release: the parked capture task holds the mutex the
+    // stopper needs, so the release must come from this thread.
+    f.sd_hal.gate_create_dir_release = true;
+
+    driver.join();
+    stopper.join();
+
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+}
+
+/**
+ * @brief The R4F1 regression: STOP + START landing inside the capture
+ *        task's rotation window can never produce a stray clip with an
+ *        unpatched AVI header. The start either serializes behind the
+ *        whole rotation (and is rejected while a clip awaits closure or
+ *        starts cleanly after finalization) or is rejected because the
+ *        recording is still active; corruption is impossible either way.
+ */
+void test_stop_start_during_rotation_race()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.sd_hal.gate_create_dir_at_count = 2;
+    TEST_ASSERT_TRUE(f.video.start_recording());
+
+    std::atomic<bool> go{false};
+    std::thread driver([&]()
+    {
+        for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+        {
+            f.capture_one_frame();
+        }
+    });
+    std::thread stopper([&]()
+    {
+        while (!go.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        f.video.stop_recording();
+    });
+    std::thread restarter([&]()
+    {
+        while (!go.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        (void)f.video.start_recording();
+    });
+
+    wait_for_gate_hits(f.sd_hal, 2);
+    go.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    f.sd_hal.gate_create_dir_release = true;
+
+    driver.join();
+    stopper.join();
+    restarter.join();
+
+    // Registry/loop consistency: reported state and actual loop state
+    // must agree.
+    const bool started = f.video.is_recording();
+    TEST_ASSERT_EQUAL_INT(started ? 1 : 0,
+                          f.capture_scheduler.is_started() ? 1 : 0);
+
+    // Quiesce: if the start won the race it opened a fresh live clip
+    // (placeholder header until finalization); stopping it finalizes
+    // every clip on the card.
+    if (started)
+    {
+        f.video.stop_recording();
+        TEST_ASSERT_FALSE(f.video.is_recording());
+    }
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+}
+
+/**
+ * @brief A START issued while the capture task rotates serializes behind
+ *        the rotation and is rejected because the reopened clip still
+ *        awaits finalization; no stray file is produced.
+ */
+void test_start_during_rotation_rejected_or_clean()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    f.sd_hal.gate_create_dir_at_count = 2;
+    TEST_ASSERT_TRUE(f.video.start_recording());
+
+    std::thread driver([&]()
+    {
+        for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+        {
+            f.capture_one_frame();
+        }
+    });
+
+    wait_for_gate_hits(f.sd_hal, 2);
+
+    std::thread restarter([&]()
+    {
+        // Blocks on the lifecycle mutex held by the parked rotation.
+        (void)f.video.start_recording();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    f.sd_hal.gate_create_dir_release = true;
+
+    driver.join();
+    restarter.join();
+
+    // The rotation completed under the mutex; the start observed the
+    // unfinalized reopened clip and was rejected.
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+}
+
+/**
+ * @brief Both orderings of a STOP's flag-set against the rotation's
+ *        flag exchange leave every clip finalized.
+ *
+ * Ordering 1: the stop lands before the rotation's exchange (streaming
+ * keeps the loop alive), the rotation consumes the stop's flag, clip A
+ * is finalized, and no clip is reopened. Ordering 2: the stop lands
+ * inside the rotation window (parked mid-rotation); the reopened clip B
+ * is finalized by the next activation.
+ */
+void test_stop_flag_vs_rotation_flag_ordering()
+{
+    // --- Ordering 1: the stop's flag-set lands before the closure's
+    // --- exchange (the rotation exchange consumes the stop's flag). ---
+    {
+        TestFixture f;
+        TrackingSink sink;
+        f.video.set_stream_service(&sink);
+        f.setup_fake_frame();
+        set_mock_millis(1000);
+
+        TEST_ASSERT_TRUE(f.video.start_streaming());
+        TEST_ASSERT_TRUE(f.video.start_recording());
+
+        // A few frames, well below the rotation limit.
+        for (uint32_t i = 0; i < 3; i++)
+        {
+            f.capture_one_frame();
+        }
+
+        // Stop before the next activation: the stop's flag-set lands
+        // before the closure's exchange. The exchange consumes the stop's
+        // flag, clip A is finalized, and the reopen decision observes the
+        // detached sink and keeps the clip closed (no reopen, no stray
+        // file).
+        f.video.stop_recording();
+        TEST_ASSERT_FALSE(f.video.is_recording());
+        TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+        f.capture_one_frame();
+        TEST_ASSERT_EQUAL_UINT32(1, f.sd_hal.files.size());
+        TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+
+        f.video.stop_streaming();
+        TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    }
+
+    // --- Ordering 2: stop lands inside the rotation window. ---
+    {
+        TestFixture f;
+        TrackingSink sink;
+        sink.scheduler_ref = &f.capture_scheduler;
+        f.video.set_stream_service(&sink);
+        f.setup_fake_frame();
+        set_mock_millis(1000);
+
+        TEST_ASSERT_TRUE(f.video.start_streaming());
+        f.sd_hal.gate_create_dir_at_count = 2;
+        TEST_ASSERT_TRUE(f.video.start_recording());
+
+        std::atomic<bool> stop_issued{false};
+        std::thread driver([&]()
+        {
+            for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+            {
+                f.capture_one_frame();
+            }
+        });
+        std::thread stopper([&]()
+        {
+            while (!stop_issued.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            f.video.stop_recording();
+        });
+
+        wait_for_gate_hits(f.sd_hal, 2);
+        stop_issued.store(true, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        f.sd_hal.gate_create_dir_release = true;
+
+        driver.join();
+        stopper.join();
+
+        // Recording stopped; streaming keeps the loop alive. Clip A was
+        // finalized by the rotation, the reopened clip B is finalized by
+        // the next activation.
+        TEST_ASSERT_FALSE(f.video.is_recording());
+        TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+        TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+
+        f.capture_one_frame();
+        TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+
+        f.video.stop_streaming();
+        TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+    }
+}
+
+/**
+ * @brief Stress: rotation races with concurrent stop/start churn across
+ *        many rounds; every clip stays finalized and the registry/loop
+ *        state stays consistent.
+ */
+void test_concurrent_rotation_stop_start_stress()
+{
+    constexpr int ROUNDS = 150;
+
+    for (int round = 0; round < ROUNDS; round++)
+    {
+        TestFixture f;
+        f.setup_fake_frame();
+        set_mock_millis(1000);
+
+        f.sd_hal.gate_create_dir_at_count = 2;
+        TEST_ASSERT_TRUE(f.video.start_recording());
+
+        const bool with_restart = (round % 2) == 1;
+        std::atomic<bool> go{false};
+        std::thread driver([&]()
+        {
+            for (uint32_t i = 0; i < TEST_FRAME_COUNT; i++)
+            {
+                f.capture_one_frame();
+            }
+        });
+        std::thread stopper([&]()
+        {
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            f.video.stop_recording();
+        });
+        std::thread restarter;
+        if (with_restart)
+        {
+            restarter = std::thread([&]()
+            {
+                while (!go.load(std::memory_order_acquire))
+                {
+                    std::this_thread::yield();
+                }
+                (void)f.video.start_recording();
+            });
+        }
+
+        wait_for_gate_hits(f.sd_hal, 2);
+        go.store(true, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        f.sd_hal.gate_create_dir_release = true;
+
+        driver.join();
+        stopper.join();
+        if (with_restart)
+        {
+            restarter.join();
+        }
+
+        // Quiesce: any surviving session stops cleanly.
+        if (f.video.is_recording())
+        {
+            f.video.stop_recording();
+        }
+
+        TEST_ASSERT_FALSE(f.video.is_recording());
+        TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+        TEST_ASSERT_TRUE(all_avi_clips_patched(f.sd_hal));
+    }
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -1893,6 +2345,14 @@ int main()
     RUN_TEST(test_concurrent_starts_never_lose_registration);
     RUN_TEST(test_start_racing_last_consumer_teardown_never_dead_registers);
     RUN_TEST(test_concurrent_teardown_is_single_flight);
+
+    // Clip-rotation hardening (cross-task serialization)
+    RUN_TEST(test_rotation_finalizes_and_reopens_header);
+    RUN_TEST(test_stop_during_rotation_finalizes);
+    RUN_TEST(test_stop_start_during_rotation_race);
+    RUN_TEST(test_start_during_rotation_rejected_or_clean);
+    RUN_TEST(test_stop_flag_vs_rotation_flag_ordering);
+    RUN_TEST(test_concurrent_rotation_stop_start_stress);
 
     return UNITY_END();
 }

@@ -3,11 +3,13 @@
 
 #include "hal/sd_card_hal.h"
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 /**
@@ -118,6 +120,34 @@ class MockSdCardHal : public hal::SdCardHal
 
         /** The path argument from the most recent exists() call. */
         const char* last_exists_path{nullptr};
+
+        // ============================================================
+        // Deterministic park gate (create_dir)
+        // ============================================================
+
+        /**
+         * @brief Inert-by-default gate to park a caller inside create_dir().
+         *
+         * Lets tests deterministically park a task at the Nth create_dir()
+         * call (e.g. mid clip rotation, inside a now-locked critical
+         * section) while other threads issue concurrent lifecycle
+         * commands. Because a parked caller may hold a lock the main
+         * thread needs, the gate MUST be released by a watchdog: a thread
+         * other than the one blocked on the parked caller's critical
+         * section sets gate_create_dir_release to true.
+         *
+         * Usage: set gate_create_dir_at_count to N (1-based, absolute
+         * call count since fixture creation; 0 keeps the gate inert) and
+         * leave gate_create_dir_release false; a watchdog releases it.
+         * The gate is one-shot: it parks only the Nth call.
+         */
+        std::atomic<int> gate_create_dir_at_count{0};
+
+        /** Number of create_dir() calls observed (1-based). */
+        std::atomic<int> gate_create_dir_hits{0};
+
+        /** Set true by the watchdog to release the parked caller. */
+        std::atomic<bool> gate_create_dir_release{false};
 
         // ============================================================
         // Interface implementation
@@ -251,6 +281,23 @@ class MockSdCardHal : public hal::SdCardHal
                 strncpy(last_create_dir_path, path,
                         sizeof(last_create_dir_path) - 1);
             }
+
+            // Park gate: spin at the Nth call until the watchdog releases.
+            if (gate_create_dir_at_count.load(std::memory_order_relaxed) > 0)
+            {
+                const int hit = gate_create_dir_hits.fetch_add(1,
+                                                   std::memory_order_acq_rel) + 1;
+                if (hit == gate_create_dir_at_count.load(
+                               std::memory_order_relaxed))
+                {
+                    while (!gate_create_dir_release.load(
+                               std::memory_order_acquire))
+                    {
+                        std::this_thread::yield();
+                    }
+                }
+            }
+
             return create_dir_result;
         }
 

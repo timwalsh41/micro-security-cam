@@ -416,6 +416,11 @@ class VideoController
         /**
          * @brief Finalizes the current clip if closure was requested.
          *
+         * Acquires the lifecycle mutex for its whole critical section,
+         * covering the flag exchange, close_clip(), the reopen decision,
+         * and open_clip(), so the close/reopen decision is totally
+         * ordered against command-task lifecycle mutations.
+         *
          * On explicit stop the clip stays closed; while recording
          * remains subscribed (rotation limit), a fresh clip opens
          * immediately.
@@ -428,6 +433,8 @@ class VideoController
          * Builds the file path from the current timestamp, creates the
          * parent directory, writes a placeholder AVI header, and resets
          * AviWriter state.
+         *
+         * Caller must hold m_lifecycle_mutex.
          */
         void open_clip();
 
@@ -438,6 +445,8 @@ class VideoController
          * Appends the index, then seeks to position 0 to overwrite the
          * placeholder header with the patched header containing final
          * sizes. Clears the clip-close-pending guard.
+         *
+         * Caller must hold m_lifecycle_mutex.
          */
         void close_clip();
 
@@ -529,9 +538,13 @@ class VideoController
          * serial-transport tasks can never interleave: a start cannot
          * bind into a loop that is being torn down, and a deferred
          * viewer-close decision cannot be reordered behind a concurrent
-         * streaming restart. The frame pump path itself stays lock-free
-         * over the registry slots; consumers invoking start_recording()
-         * from on_frame() acquire it only for a short critical section:
+         * streaming restart. The capture task acquires this mutex only
+         * for its bounded clip close/reopen sections (the closure
+         * handler and the capture-failure finalization), making clip
+         * open/close mutually exclusive against lifecycle mutations;
+         * the per-frame pump itself stays lock-free over the registry
+         * slots. Consumers invoking start_recording() from on_frame()
+         * acquire it only for a short critical section:
          * stop paths release this mutex around the bounded scheduler
          * join inside teardown_capture_pipeline(), so the capture task
          * can never block behind a joiner (no holder ever blocks
