@@ -290,11 +290,16 @@ void VideoController::unregister_frame_consumer(int id)
 bool VideoController::capture_photo(const char* path)
 {
     {
-        // Serialize the gate check with lifecycle commands so it cannot
-        // pass while a command is mid-post; the SD I/O below runs
-        // without the mutex. (The full photo capability — pump-served
-        // capture while activities run — is deferred; this keeps the
-        // idle-only capture semantics.)
+        // Hold the command mutex across the entire gate check, camera
+        // capture, and SD write. Releasing it before the capture would
+        // allow a concurrent START_STREAM / START_RECORDING command to
+        // post and activate the executor, whose capture_frame() would
+        // then overlap this capture+write window on the shared camera.
+        // The executor never acquires this mutex, so it is never blocked
+        // here; only other command tasks wait, bounded by photo duration.
+        // (The full photo capability — pump-served capture while
+        // activities run — is deferred; this keeps the idle-only capture
+        // semantics.)
         std::lock_guard<std::mutex> lock(m_command_mutex);
         if (is_capture_active() ||
             m_loop_active.load(std::memory_order_relaxed))
@@ -302,41 +307,41 @@ bool VideoController::capture_photo(const char* path)
             m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
             return false;
         }
+
+        CameraCaptureResult result = m_camera.capture_frame();
+        if (result != CameraCaptureResult::SUCCESS)
+        {
+            m_log.warn(SUBSYSTEM, "Photo capture failed");
+            return false;
+        }
+
+        hal::CameraFrame frame = m_camera.get_frame();
+
+        // Ensure the parent directory exists before writing (mirrors
+        // AviClipSession::open()).
+        // The first photo of a new day would otherwise fail to open the file.
+        char dir_path[64];
+        if (PathUtils::extract_parent_dir(path, dir_path, sizeof(dir_path)))
+        {
+            create_directory(dir_path);
+        }
+
+        // Write JPEG data directly (no AVI framing)
+        bool ok = m_sd.write_sync(path, frame.data, frame.len,
+                                  hal::FileOpenMode::WRITE);
+
+        m_camera.release_frame();
+
+        if (ok)
+        {
+            m_log.info(SUBSYSTEM, "Photo saved: %s (%u bytes)", path, frame.len);
+        }
+        else
+        {
+            m_log.warn(SUBSYSTEM, "Photo SD write failed: %s", path);
+        }
+        return ok;
     }
-
-    CameraCaptureResult result = m_camera.capture_frame();
-    if (result != CameraCaptureResult::SUCCESS)
-    {
-        m_log.warn(SUBSYSTEM, "Photo capture failed");
-        return false;
-    }
-
-    hal::CameraFrame frame = m_camera.get_frame();
-
-    // Ensure the parent directory exists before writing (mirrors
-    // AviClipSession::open()).
-    // The first photo of a new day would otherwise fail to open the file.
-    char dir_path[64];
-    if (PathUtils::extract_parent_dir(path, dir_path, sizeof(dir_path)))
-    {
-        create_directory(dir_path);
-    }
-
-    // Write JPEG data directly (no AVI framing)
-    bool ok = m_sd.write_sync(path, frame.data, frame.len,
-                              hal::FileOpenMode::WRITE);
-
-    m_camera.release_frame();
-
-    if (ok)
-    {
-        m_log.info(SUBSYSTEM, "Photo saved: %s (%u bytes)", path, frame.len);
-    }
-    else
-    {
-        m_log.warn(SUBSYSTEM, "Photo SD write failed: %s", path);
-    }
-    return ok;
 }
 
 void VideoController::set_stream_service(IStreamService* stream_service)

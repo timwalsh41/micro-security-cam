@@ -122,6 +122,25 @@ class MockSdCardHal : public hal::SdCardHal
         const char* last_exists_path{nullptr};
 
         // ============================================================
+        // Deterministic park gate (write)
+        // ============================================================
+
+        /**
+         * @brief Inert-by-default gate to park a caller inside write().
+         *
+         * Same contract as the create_dir gate below: parks the Nth
+         * write() call (1-based, 0 keeps the gate inert) until
+         * gate_write_release is set by another thread. One-shot.
+         */
+        std::atomic<int> gate_write_at_count{0};
+
+        /** Number of write() calls observed (1-based). */
+        std::atomic<int> gate_write_hits{0};
+
+        /** Set true by another thread to release the parked caller. */
+        std::atomic<bool> gate_write_release{false};
+
+        // ============================================================
         // Deterministic park gate (create_dir)
         // ============================================================
 
@@ -210,6 +229,22 @@ class MockSdCardHal : public hal::SdCardHal
             write_call_count++;
             last_write_data = data;
             last_write_len = len;
+
+            // Park gate: spin at the Nth call until released.
+            if (gate_write_at_count.load(std::memory_order_relaxed) > 0)
+            {
+                const int hit = gate_write_hits.fetch_add(1,
+                                               std::memory_order_acq_rel) + 1;
+                if (hit == gate_write_at_count.load(
+                               std::memory_order_relaxed))
+                {
+                    while (!gate_write_release.load(
+                               std::memory_order_acquire))
+                    {
+                        std::this_thread::yield();
+                    }
+                }
+            }
 
             if (!write_result || !m_file_open_state)
             {

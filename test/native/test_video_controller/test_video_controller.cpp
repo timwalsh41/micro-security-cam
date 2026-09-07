@@ -491,6 +491,105 @@ void test_capture_photo_writes_jpeg_data()
 }
 
 // ============================================================
+// Photo capture — cross-transport serialization
+// ============================================================
+
+/**
+ * @brief capture_photo() holds the command mutex across capture+write.
+ *
+ * Regression test for the boundary-audit race (report §6.1): a photo
+ * in flight must not let a concurrent START_STREAM (arriving on the
+ * other transport) post and activate the executor inside the photo's
+ * capture+SD-write window. While the photo is parked inside its SD
+ * write, a concurrent start_streaming() must be blocked — the capture
+ * loop must not start and the executor must not capture a frame —
+ * until the photo completes. Also asserts the written data is intact
+ * and the photo's frame buffer was released (no leak).
+ */
+void test_capture_photo_holds_mutex_across_capture_and_write()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1234567890u);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    // Park the photo inside its SD write; the gate is released below
+    // once the interleaving window has been exercised.
+    f.sd_hal.gate_write_at_count.store(1, std::memory_order_relaxed);
+
+    std::atomic<bool> photo_ok{false};
+    std::thread photographer([&]()
+    {
+        photo_ok.store(f.video.capture_photo(photo_path),
+                       std::memory_order_release);
+    });
+
+    // Wait until the photographer is parked inside the SD write.
+    constexpr long MAX_SPIN = 10000000L;
+    long spins = 0;
+    while (f.sd_hal.gate_write_hits.load(std::memory_order_acquire) < 1 &&
+           spins++ < MAX_SPIN)
+    {
+        std::this_thread::yield();
+    }
+    TEST_ASSERT_EQUAL_INT(1,
+        f.sd_hal.gate_write_hits.load(std::memory_order_acquire));
+
+    // Contending start from the second command transport while the
+    // photo holds the gate-check-to-write critical section.
+    std::atomic<bool> start_ok{false};
+    std::thread starter([&]()
+    {
+        start_ok.store(f.video.start_streaming(),
+                       std::memory_order_release);
+    });
+
+    // Give a broken serialization a window to slip the start in.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const bool loop_started_during_write =
+        f.capture_scheduler.is_started();
+    const int captures_during_write = f.camera_hal.capture_call_count;
+
+    // Release the photo; both contenders must then complete cleanly.
+    f.sd_hal.gate_write_release.store(true, std::memory_order_release);
+    photographer.join();
+    starter.join();
+
+    TEST_ASSERT_TRUE(photo_ok.load());
+    TEST_ASSERT_TRUE(start_ok.load());
+
+    // Core invariant: the executor never overlapped the photo window —
+    // the loop did not start and no extra frame was captured while the
+    // photo's write was in flight.
+    TEST_ASSERT_FALSE(loop_started_during_write);
+    TEST_ASSERT_EQUAL_INT(1, captures_during_write);
+
+    // No torn data: the photo file holds exactly the fake JPEG.
+    const std::vector<uint8_t>& content = f.sd_hal.files[photo_path];
+    TEST_ASSERT_EQUAL_UINT32(FAKE_JPEG_SIZE, content.size());
+    bool intact = true;
+    for (size_t i = 0; i < content.size(); i++)
+    {
+        if (content[i] != 0xAB)
+        {
+            intact = false;
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE(intact);
+
+    // No buffer leak: the photo released its frame exactly once.
+    TEST_ASSERT_EQUAL_INT(1, f.camera_hal.release_call_count);
+
+    // Wind down for a clean fixture teardown.
+    f.video.stop_streaming();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+// ============================================================
 // Rapid start/stop
 // ============================================================
 
@@ -2663,6 +2762,7 @@ int main()
     RUN_TEST(test_deferred_viewer_close_does_not_leak_into_new_session);
     RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
     RUN_TEST(test_capture_photo_gating_across_modes);
+    RUN_TEST(test_capture_photo_holds_mutex_across_capture_and_write);
 
     // Consumer registry
     RUN_TEST(test_register_consumer_lifecycle);
