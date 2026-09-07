@@ -407,6 +407,14 @@ CommandResult SystemOrchestrator::handle_list_streams(
 
 void SystemOrchestrator::register_stream_route()
 {
+    // Snapshot the web password at registration time: auth compares
+    // against this stable copy rather than the live config struct,
+    // which runtime config updates can mutate while a request handler
+    // runs.
+    strncpy(m_stream_password, m_config.config().web.password,
+            sizeof(m_stream_password) - 1);
+    m_stream_password[sizeof(m_stream_password) - 1] = '\0';
+
     m_web.on("/stream", hal::HttpMethod::GET,
              [this](hal::RequestRef& request)
              {
@@ -416,9 +424,9 @@ void SystemOrchestrator::register_stream_route()
 
 void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
 {
-    // Basic auth using the configured web password.
+    // Basic auth using the register-time password snapshot.
     const char* auth = request.auth_header();
-    const char* password = m_config.config().web.password;
+    const char* password = m_stream_password;
     if (!check_basic_auth(auth, password))
     {
         request.send(401, "application/json",

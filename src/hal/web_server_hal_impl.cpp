@@ -139,6 +139,18 @@ bool WebServerHalImpl::init(uint16_t port)
     delete m_server;
 
     m_server = new AsyncWebServer(port);
+
+    // Complete the route table before the server starts listening:
+    // handlers registered while the server was absent are attached
+    // here, so begin() never serves a request with a partial route
+    // table.
+    for (PendingRoute& route : m_pending_routes)
+    {
+        register_route(*m_server, route.uri.c_str(), route.method,
+                       std::move(route.handler));
+    }
+    m_pending_routes.clear();
+
     m_server->begin();
 
     return true;
@@ -149,19 +161,32 @@ void WebServerHalImpl::on(const char* uri, HttpMethod method,
 {
     if (m_server == nullptr)
     {
+        // Buffer the registration; init() replays it before begin().
+        PendingRoute route;
+        route.uri = (uri != nullptr) ? uri : "";
+        route.method = method;
+        route.handler = std::move(handler);
+        m_pending_routes.push_back(std::move(route));
         return;
     }
 
+    register_route(*m_server, uri, method, std::move(handler));
+}
+
+void WebServerHalImpl::register_route(AsyncWebServer& server,
+                                      const char* uri, HttpMethod method,
+                                      std::function<void(RequestRef&)> handler)
+{
     WebRequestMethodComposite arduino_method = (method == HttpMethod::POST)
         ? HTTP_POST
         : HTTP_GET;
 
-    m_server->on(uri, arduino_method,
-                 [handler](AsyncWebServerRequest* request)
-                 {
-                     AsyncRequestRef ref(request);
-                     handler(ref);
-                 });
+    server.on(uri, arduino_method,
+              [handler](AsyncWebServerRequest* request)
+              {
+                  AsyncRequestRef ref(request);
+                  handler(ref);
+              });
 }
 
 void WebServerHalImpl::stop()

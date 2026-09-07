@@ -6,6 +6,7 @@
 #include "command_handler.h"
 #include "time_service.h"
 #include "config_service.h"
+#include "ini_parser.h"
 #include "logging_service.h"
 #include "hal/web_server_hal.h"
 
@@ -68,6 +69,9 @@ class SystemOrchestrator
         LoggingService& m_log;
         StreamService& m_streams;
         hal::WebServerHal& m_web;
+
+        /** Register-time snapshot of the web password for /stream auth. */
+        char m_stream_password[CONFIG_FIELD_MAX_LENGTH]{};
 
         void register_commands();
 

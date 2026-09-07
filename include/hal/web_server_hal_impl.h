@@ -3,6 +3,10 @@
 
 #include "hal/web_server_hal.h"
 
+#include <functional>
+#include <string>
+#include <vector>
+
 /**
  * @file web_server_hal_impl.h
  * @brief ESP32 concrete implementation of WebServerHal using AsyncWebServer.
@@ -74,7 +78,10 @@ class AsyncRequestRef : public RequestRef
  * @brief Concrete WebServerHal wrapping ESPAsyncWebServer.
  *
  * Each route registers directly with the AsyncWebServer using
- * its native std::function-based API.
+ * its native std::function-based API. Registrations made before
+ * init() are buffered and attached to the route table before the
+ * server begins listening, so requests are never served with a
+ * partial route table.
  */
 class WebServerHalImpl : public WebServerHal
 {
@@ -88,7 +95,28 @@ class WebServerHalImpl : public WebServerHal
         void stop() override;
 
     private:
+        /** Route registration buffered while the server is absent. */
+        struct PendingRoute
+        {
+            std::string uri;
+            HttpMethod method;
+            std::function<void(RequestRef&)> handler;
+        };
+
         AsyncWebServer* m_server{nullptr};
+        std::vector<PendingRoute> m_pending_routes;
+
+        /**
+         * @brief Attaches a route handler to the given server.
+         *
+         * @param server  Server to register the route with.
+         * @param uri     URI pattern.
+         * @param method  HTTP method.
+         * @param handler Handler to invoke on a matching request.
+         */
+        static void register_route(AsyncWebServer& server, const char* uri,
+                                   HttpMethod method,
+                                   std::function<void(RequestRef&)> handler);
 };
 
 } // namespace hal

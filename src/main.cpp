@@ -194,17 +194,20 @@ void setup()
                       config_service.config().ap,
                       30);
 
-    // --- Initialize web server ---
-    web_server_service.init(config_service.config().web);
-
-    // --- Initialize orchestrator (registers commands) ---
+    // --- Initialize orchestrator (registers commands and the /stream route) ---
     system_orchestrator.init();
 
     // --- Register serial transport (after all commands are registered) ---
     command_handler.add_transport(serial_transport);
 
-    // --- Register web command routes (after all commands are registered) ---
+    // --- Register web command routes ---
+    // All HTTP routes register before the server starts listening; the
+    // HAL buffers registrations made before the server exists and
+    // attaches them to the route table before begin().
     web_transport.register_routes(config_service.config().web.password);
+
+    // --- Initialize web server ---
+    web_server_service.init(config_service.config().web);
 
     logger.info("MAIN", "Initialization complete");
 }

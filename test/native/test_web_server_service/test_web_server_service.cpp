@@ -175,6 +175,23 @@ void test_init_failure()
     TEST_ASSERT_TRUE(f.log_backend.messages.size() > 0);
 }
 
+/**
+ * @brief The landing page route registers even when HAL init fails.
+ *
+ * The route attaches to the HAL before the server start is requested,
+ * so a failed start must not drop the registration (it stays pending
+ * for a later server start).
+ */
+void test_init_failure_still_registers_index_route()
+{
+    TestFixture f;
+    f.hal.init_result = false;
+    f.service.init(make_web_config());
+
+    TEST_ASSERT_EQUAL_INT(1, f.hal.registered_routes.size());
+    TEST_ASSERT_EQUAL_STRING("/", f.hal.registered_routes[0].uri.c_str());
+}
+
 // ============================================================
 // WebServerService handle_index (landing page + auth) tests
 // ============================================================
@@ -297,6 +314,7 @@ int main()
     RUN_TEST(test_init_registers_index_route);
     RUN_TEST(test_init_logs_success);
     RUN_TEST(test_init_failure);
+    RUN_TEST(test_init_failure_still_registers_index_route);
 
     // handle_index + auth (via simulate_request)
     RUN_TEST(test_handle_index_sends_html);

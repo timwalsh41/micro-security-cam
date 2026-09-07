@@ -14,6 +14,14 @@ void WebServerService::init(const ConfigData::WebConfig& config)
     strncpy(m_password, config.password, CONFIG_FIELD_MAX_LENGTH - 1);
     m_password[CONFIG_FIELD_MAX_LENGTH - 1] = '\0';
 
+    // Register the landing page route before the HAL starts the HTTP
+    // server, so the route table is complete before requests are served.
+    m_hal.on("/", hal::HttpMethod::GET,
+             [this](hal::RequestRef& request)
+             {
+                 this->handle_index(request);
+             });
+
     // Start the HTTP server
     if (!m_hal.init(config.port))
     {
@@ -22,12 +30,6 @@ void WebServerService::init(const ConfigData::WebConfig& config)
         return;
     }
 
-    // Register landing page route
-    m_hal.on("/", hal::HttpMethod::GET,
-             [this](hal::RequestRef& request)
-             {
-                 this->handle_index(request);
-             });
     // Command routes (/status, /control) are registered by WebCommandTransport
 
     m_log.info(SUBSYSTEM, "Web server started on port %u", config.port);

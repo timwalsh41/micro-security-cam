@@ -3,6 +3,7 @@
 
 #include "hal/time_hal.h"
 
+#include <atomic>
 #include <cstdint>
 #include <ctime>
 
@@ -41,6 +42,10 @@ class TimeService
         /**
          * @brief Sets the Unix time offset using a known reference point.
          *
+         * The (unix_time, system_ms) pair is published as a single
+         * atomic 64-bit value so concurrent unix_now() readers never
+         * observe a torn pair.
+         *
          * @param unix_time The Unix timestamp at the given system time.
          * @param system_ms The system millisecond timestamp corresponding to unix_time.
          */
@@ -55,6 +60,8 @@ class TimeService
          * @brief Returns the current time as a broken-down std::tm struct in local time.
          *
          * The time is derived from the Unix offset set via set_unix_offset().
+         * Uses the reentrant conversion function, so concurrent callers
+         * each get a consistent broken-down time.
          */
         virtual std::tm localtime() const = 0;
 };
@@ -73,8 +80,8 @@ class RealTimeService : public TimeService
         std::tm localtime() const override;
 
     private:
-        uint32_t m_unix_offset{0};
-        uint32_t m_system_ms_at_offset{0};
+        /** (unix_offset << 32) | system_ms_at_offset, published atomically. */
+        std::atomic<uint64_t> m_offset_pair{0};
 };
 
 #endif // TIME_SERVICE_H

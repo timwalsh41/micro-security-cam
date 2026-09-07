@@ -38,7 +38,7 @@ struct TestFixture
     MockWebServerHal web_hal;
     SystemOrchestrator orchestrator;
 
-    TestFixture()
+    explicit TestFixture(const char* web_password = nullptr)
         : sd_controller(time, sd_hal)
         , camera_ctrl(camera_hal)
         , logger(log_backend, time)
@@ -65,6 +65,14 @@ struct TestFixture
         // Mirror main.cpp composition: the video controller delivers
         // frames to (and tears down) the shared stream service.
         video.set_stream_service(&stream_service);
+
+        // Config load precedes orchestrator init in the composition
+        // root; a configured web password must be visible to the
+        // /stream route registration snapshot.
+        if (web_password != nullptr)
+        {
+            config.set_config_value("web.password", web_password);
+        }
 
         orchestrator.init();
     }
@@ -737,6 +745,64 @@ void test_stream_route_rejects_without_streaming_mode()
 }
 
 // ============================================================
+// /stream authentication
+// ============================================================
+
+/**
+ * @brief /stream rejects requests without or with wrong credentials.
+ */
+void test_stream_route_rejects_bad_credentials()
+{
+    TestFixture f("secret");
+
+    // No auth header at all.
+    TEST_ASSERT_TRUE(f.web_hal.simulate_request("/stream", hal::HttpMethod::GET));
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(401, f.web_hal.mock_request.responses[0].code);
+
+    // Wrong password.
+    f.web_hal.mock_request.set_auth("user", "wrong");
+    f.web_hal.simulate_request("/stream", hal::HttpMethod::GET);
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(401, f.web_hal.mock_request.responses[0].code);
+}
+
+/**
+ * @brief /stream auth checks the register-time password snapshot.
+ *
+ * Regression pin for the live-config read: a runtime SET_CONFIG_VALUE
+ * on web.password must not change what /stream authenticates against —
+ * it keeps using the snapshot taken at registration, so /stream and /
+ * stay consistent after a runtime password change.
+ */
+void test_stream_route_uses_register_time_password_snapshot()
+{
+    TestFixture f("secret");
+
+    // Correct register-time credentials: auth passes (409 — streaming
+    // not started — not a 401).
+    f.web_hal.mock_request.set_auth("user", "secret");
+    TEST_ASSERT_TRUE(f.web_hal.simulate_request("/stream", hal::HttpMethod::GET));
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(409, f.web_hal.mock_request.responses[0].code);
+
+    // Runtime config mutation (mirrors serial SET web.password=...).
+    f.config.set_config_value("web.password", "rotated");
+
+    // The register-time password still authenticates...
+    f.web_hal.mock_request.set_auth("user", "secret");
+    f.web_hal.simulate_request("/stream", hal::HttpMethod::GET);
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(409, f.web_hal.mock_request.responses[0].code);
+
+    // ...while the rotated one does not.
+    f.web_hal.mock_request.set_auth("user", "rotated");
+    f.web_hal.simulate_request("/stream", hal::HttpMethod::GET);
+    TEST_ASSERT_EQUAL_INT(1, f.web_hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(401, f.web_hal.mock_request.responses[0].code);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -767,6 +833,8 @@ int main()
     RUN_TEST(test_take_photo_rejected_during_streaming_only);
     RUN_TEST(test_stream_route_registered);
     RUN_TEST(test_stream_route_rejects_without_streaming_mode);
+    RUN_TEST(test_stream_route_rejects_bad_credentials);
+    RUN_TEST(test_stream_route_uses_register_time_password_snapshot);
     RUN_TEST(test_get_status_reports_streaming_field);
 
     return UNITY_END();
