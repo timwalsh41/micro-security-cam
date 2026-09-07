@@ -1164,8 +1164,8 @@ In `main.cpp`, after SD card initialization:
 5. `CameraController::init(ResolvedCameraParams)` initializes the camera with the validated config.
 6. `VideoController::init(config, width, height)` stores the validated dimensions.
 7. `WifiService::init()` connects to STA or falls back to AP.
-8. `WebServerService::init()` starts the HTTP server.
-9. `SystemOrchestrator::init()` registers command handlers.
+8. `SystemOrchestrator::init()` registers command handlers and the `/stream` route.
+9. `WebCommandTransport::register_routes()` wires `/status` and `/control`; `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening (see [Initialization Sequence](#initialization-sequence)).
 
 ### Write Pattern
 

@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include <cstdlib>
 #include <ctime>
+#include <atomic>
+#include <thread>
+#include <utility>
 
 /**
  * @brief elapsed_ms() returns the difference when now is after since.
@@ -202,6 +205,125 @@ void test_localtime_returns_broken_down_time()
     TEST_ASSERT_EQUAL_INT(40, broken_down.tm_sec);
 }
 
+/**
+ * @brief Concurrent set_unix_offset() writers never expose a torn
+ *        (offset, system_ms) pair to unix_now() readers.
+ *
+ * Stress regression for the two-store offset race: with a fixed mock
+ * clock there are exactly two coherent readings (pair A sampled at its
+ * own reference ms, pair B at its own). Any other value means a reader
+ * observed half of one pair and half of the other.
+ */
+void test_unix_now_concurrent_with_offset_writers()
+{
+    setenv("TZ", "UTC", 1);
+    tzset();
+    set_mock_millis(61000);
+
+    const uint32_t OFFSET_A = 1600000000;
+    const uint32_t MS_A = 1000;
+    const uint32_t OFFSET_B = 1600000100;
+    const uint32_t MS_B = 61000;
+
+    RealTimeService time;
+    time.set_unix_offset(OFFSET_A, MS_A);
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> torn_reads{0};
+
+    std::thread writer([&]()
+    {
+        for (int i = 0; i < 200000 && !stop.load(std::memory_order_relaxed); ++i)
+        {
+            if (i & 1)
+            {
+                time.set_unix_offset(OFFSET_B, MS_B);
+            }
+            else
+            {
+                time.set_unix_offset(OFFSET_A, MS_A);
+            }
+        }
+        stop.store(true, std::memory_order_relaxed);
+    });
+
+    std::thread reader([&]()
+    {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            uint32_t t = time.unix_now();
+            // Coherent reads only: pair B read at its reference ms, or
+            // pair A read at its reference ms (60 s of elapsed mock time).
+            if (t != OFFSET_B && t != OFFSET_A + 60)
+            {
+                torn_reads.fetch_add(1, std::memory_order_relaxed);
+                stop.store(true, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    writer.join();
+    reader.join();
+    TEST_ASSERT_EQUAL_INT(0, torn_reads.load());
+}
+
+/**
+ * @brief localtime() stays coherent while another task republishes the
+ *        offset pair concurrently.
+ *
+ * Stress regression for the shared static buffer of std::localtime:
+ * with a fixed mock clock only two broken-down results are valid
+ * (12:27:40 for pair A, 12:28:20 for pair B, both 2020-09-13 UTC).
+ * A mixed minute/second pair means the std::tm was torn.
+ */
+void test_localtime_concurrent_with_offset_writers()
+{
+    setenv("TZ", "UTC", 1);
+    tzset();
+    set_mock_millis(61000);
+
+    RealTimeService time;
+    time.set_unix_offset(1600000000, 1000);
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> torn_calls{0};
+
+    std::thread writer([&]()
+    {
+        for (int i = 0; i < 200000 && !stop.load(std::memory_order_relaxed); ++i)
+        {
+            if (i & 1)
+            {
+                time.set_unix_offset(1600000100, 61000);
+            }
+            else
+            {
+                time.set_unix_offset(1600000000, 1000);
+            }
+        }
+        stop.store(true, std::memory_order_relaxed);
+    });
+
+    std::thread reader([&]()
+    {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            std::tm t = time.localtime();
+            bool valid_a = (t.tm_hour == 12 && t.tm_min == 27 && t.tm_sec == 40);
+            bool valid_b = (t.tm_hour == 12 && t.tm_min == 28 && t.tm_sec == 20);
+            if (!(valid_a || valid_b))
+            {
+                torn_calls.fetch_add(1, std::memory_order_relaxed);
+                stop.store(true, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    writer.join();
+    reader.join();
+    TEST_ASSERT_EQUAL_INT(0, torn_calls.load());
+}
+
 void setUp()
 {
 }
@@ -228,6 +350,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_set_unix_offset_replaces_pair_coherently);
     RUN_TEST(test_unix_now_handles_system_ms_rollover);
     RUN_TEST(test_localtime_returns_broken_down_time);
+    RUN_TEST(test_unix_now_concurrent_with_offset_writers);
+    RUN_TEST(test_localtime_concurrent_with_offset_writers);
 
     return UNITY_END();
 }
