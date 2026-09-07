@@ -1,3 +1,5 @@
+> **HISTORICAL — plan of record snapshot.** This document is a historical planning record, not the owner of current facts: it is the remediation plan for the pre-refactor `VideoController` (lifecycle-mutex design and the review findings of that era). For the authoritative description of the current system design, see [`docs/SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md).
+
 # Slice 3B Review Fix Plan
 
 ## Context
