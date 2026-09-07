@@ -45,7 +45,20 @@ def _send(url_path: str) -> int:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
-            data = json.loads(body)
+
+            # Some handlers return their payload verbatim with a JSON
+            # content type (e.g. photo returns the saved file path as
+            # plain text). The firmware only emits these bare bodies for
+            # successful dispatch; errors come back as the JSON envelope
+            # below, so a non-empty non-JSON body is a success payload.
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                if body.strip():
+                    print(body.strip())
+                    return 0
+                print("Error: empty response body", file=sys.stderr)
+                return 1
 
             # If the response has extra fields beyond result/code
             # (e.g. status telemetry), pretty-print everything.
@@ -59,7 +72,7 @@ def _send(url_path: str) -> int:
 
             # A 200 response with a valid JSON body is a success. The
             # "result" field is only emitted by the firmware's fallback
-            # path (e.g. start/stop/photo); /status returns telemetry
+            # path (e.g. start/stop); /status returns telemetry
             # without a "result" key, so it must not be treated as a
             # failure just because that key is absent.
             return 1 if data.get("result") == "error" else 0
