@@ -3,6 +3,7 @@
 #include "hal/timer_hal_impl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <atomic>
 
 /**
@@ -23,6 +24,20 @@ static std::atomic<uint32_t> g_isr_count{0};
 static void on_timer_isr()
 {
     g_isr_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+/** Semaphore signalling ISR callback observations (regression test). */
+static SemaphoreHandle_t g_isr_semaphore = nullptr;
+
+/**
+ * @brief ISR callback that signals a binary semaphore on each firing.
+ */
+static void on_timer_isr_sem()
+{
+    if (g_isr_semaphore != nullptr)
+    {
+        xSemaphoreGiveFromISR(g_isr_semaphore, nullptr);
+    }
 }
 
 // ============================================================
@@ -51,6 +66,50 @@ void test_init_start_stop_fires_periodically()
     g_isr_count.store(0, std::memory_order_relaxed);
     vTaskDelay(pdMS_TO_TICKS(100));
     TEST_ASSERT_EQUAL_UINT32(0, g_isr_count.load(std::memory_order_relaxed));
+}
+
+/**
+ * @brief Repeated init/start/stop cycles re-arm the ISR callback every time.
+ *
+ * Regression test for the use-after-free on the second stop-then-start pair:
+ * the ESP-IDF v4.4.7 timer driver frees the interrupt handle in
+ * timer_isr_callback_remove() without nulling its internal stored handle,
+ * so an unguarded second remove (previously performed by stop() followed
+ * by init()'s repeat-teardown) dereferenced freed memory and crashed with
+ * a Guru Meditation inside the next init(). The attach-flag guard in
+ * TimerHalImpl makes removal idempotent; this test dies in cycle 2's
+ * init() without that guard.
+ */
+void test_repeated_init_start_stop_cycles_rearm_isr()
+{
+    hal::TimerHalImpl timer;
+
+    g_isr_semaphore = xSemaphoreCreateBinary();
+    TEST_ASSERT_NOT_NULL(g_isr_semaphore);
+
+    for (int cycle = 1; cycle <= 3; ++cycle)
+    {
+        TEST_ASSERT_TRUE_MESSAGE(timer.init(20000, on_timer_isr_sem),
+                                 "init() failed");
+        timer.start();
+
+        // The ISR must actually fire after each re-arm (bounded wait).
+        TEST_ASSERT_EQUAL_MESSAGE(
+            pdTRUE, xSemaphoreTake(g_isr_semaphore, pdMS_TO_TICKS(500)),
+            "ISR did not fire after re-arm");
+
+        timer.stop();
+
+        // Drain any token signalled just before stop(), then verify no
+        // further callbacks fire once the timer is stopped.
+        xSemaphoreTake(g_isr_semaphore, 0);
+        TEST_ASSERT_NOT_EQUAL(pdTRUE,
+                              xSemaphoreTake(g_isr_semaphore,
+                                             pdMS_TO_TICKS(100)));
+    }
+
+    vSemaphoreDelete(g_isr_semaphore);
+    g_isr_semaphore = nullptr;
 }
 
 /**
@@ -98,6 +157,7 @@ int runUnityTests()
 {
     UNITY_BEGIN();
     RUN_TEST(test_init_start_stop_fires_periodically);
+    RUN_TEST(test_repeated_init_start_stop_cycles_rearm_isr);
     RUN_TEST(test_set_frequency_changes_period);
     return UNITY_END();
 }

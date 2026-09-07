@@ -28,6 +28,7 @@ class TimerHalImpl : public TimerHal
         static bool IRAM_ATTR timer_isr_trampoline(void* arg);
         std::function<void()> m_isr;
         bool m_initialized{false};
+        bool m_callback_attached{false};
 };
 
 } // namespace hal
