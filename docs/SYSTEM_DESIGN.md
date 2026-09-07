@@ -814,7 +814,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 |---------------|-------|
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
 | `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/read/close/seek) |
-| `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks. `stop()` removes the registered ISR callback along with pausing the counter; a repeat `init()` tears down the previous timer configuration before re-arming. |
+| `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks. `init()` and `stop()` are the sole toggle points for the registered ISR callback: `init()` attaches it, `stop()` removes it (along with pausing the counter) so no delayed alarm dispatch can invoke the callback after stop returns. Removal is idempotent by design — an attach-state flag guards both removal sites (`stop()` and `init()`'s repeat-teardown), since the ESP-IDF v4.4.7 driver frees the interrupt handle in `timer_isr_callback_remove()` without nulling its internally stored handle, making a second unguarded remove a use-after-free. `init()` re-arms the callback on every call; the ESP-IDF v4.4.7 driver re-initializes an in-use timer in place rather than refusing `timer_init()`, so the repeat-teardown in `init()` is what keeps each start cycle clean. |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
@@ -845,7 +845,7 @@ Abstract interface for WiFi operations. Provides STA/AP mode selection, connecti
 
 **File**: `include/hal/web_server_hal.h`
 
-Abstract interface for HTTP server operations. Uses an **async, callback-driven** model: route handlers are registered as `std::function` closures, and the underlying server calls them when a matching request arrives. 
+Abstract interface for HTTP server operations. Uses an **async, callback-driven** model: route handlers are registered as `std::function` closures, and the underlying server calls them when a matching request arrives.
 
 Each request is represented by a per-request `RequestRef` object that provides accessors for URI, method, query args, headers, and an `auth_header()` convenience accessor. Responses are sent through the `RequestRef` object using `send()`.
 
