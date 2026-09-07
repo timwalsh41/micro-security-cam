@@ -1645,9 +1645,9 @@ activate VC
 VC -> VC : post START_RECORDING
 note right: executed by the executor (capture task\nor a waiting command task's serve path) at\nan activation boundary — the steps below\nrun under the executor token
 VC -> ACS : open()
-VC -> AVI : open(path, fps, w, h)
+ACS -> AVI : open(path, fps, w, h)
 note right: Generates 224-byte\nAVI header template
-VC -> SDC : write_sync(path, header, WRITE)
+ACS -> SDC : write_sync(path, header, WRITE)
 activate SDC
 SDC -> SD : open(WRITE) → write(224 B) → close()
 SD --> SDC
@@ -1791,6 +1791,89 @@ deactivate TASK
 ```
 
 **Clip close blocks frame capture.** While the clip close runs (`AviClipSession::close()`) — appending the index and overwriting the placeholder header — no new frames are captured. The next frame is processed after the clip is fully written and (for auto-rotation) the new clip is opened.
+
+### Executor Command Pipeline Sequence Diagram
+
+All pipeline-state mutation is serialized behind the executor token (`m_executor_active`): command tasks (web transport or serial main-loop) never mutate state directly — they post requests into a bounded request ring and wait (bounded) with `m_command_mutex` released, while the capture task, as the single executor, consumes the queue at activation boundaries. The diagram below traces a command through post, execution, and the drain-driven teardown join, plus the two alternative paths: the serve path (a waiting command task claims the token while the capture task is between activations) and fire-and-forget (a command issued from within `on_frame()`).
+
+```plantuml
+@startuml
+title Executor Command Pipeline — Posting, Execution, and Teardown
+
+participant "Command Task\n(transport /\nmain-loop task)" as CMD
+participant "Request Queue\n(fixed ring of 8)" as RING
+participant "Capture Task\n(single executor)" as EXE
+participant "ICaptureScheduler" as CS
+participant "StreamService" as SS
+
+== Post (command side, serialized by m_command_mutex) ==
+
+CMD -> CMD : lock m_command_mutex
+CMD -> RING : write slot + publish\n(m_queue_mutex, handoff only)
+CMD -> RING : m_queued.fetch_add(1)
+CMD -> CMD : unlock m_command_mutex
+CMD -> CMD : wait_for_completion()\n(m_command_mutex RELEASED across the wait)
+note over CMD : polls the shared completion box\n(completion->done, atomic) up to\nREQUEST_COMPLETION_TIMEOUT_MS
+
+note over EXE, RING
+  Two tasks race for the executor token (m_executor_active):
+  the capture task at its next activation boundary, or —
+  only while the capture task is between activations —
+  the waiting command task's serve path (try-acquire).
+end note
+
+== Execute (executor activation boundary) ==
+
+EXE -> EXE : CAS m_executor_active false → true\n(token held for the whole activation)
+EXE -> RING : claim batch: m_queued.exchange(0)\n+ snapshot (m_queue_mutex, handoff only)
+EXE -> EXE : execute each request against\nexecutor-owned state (slot bind/detach,\nclip open/close, sink wiring)
+EXE -> EXE : completion->done = true\n(after the whole batch has run)
+alt batch detached the last consumer
+    EXE -> EXE : m_close_viewers_pending = true\nm_pipeline_drained = true\n(batch-level drain arming)
+end
+EXE -> EXE : release token\n(m_executor_active = false)
+
+== Drain → bounded teardown join (command side) ==
+
+CMD -> CMD : finish_command():\nlock m_command_mutex
+CMD -> CMD : m_pipeline_drained.exchange(false) == true\n→ this task owns the join
+CMD -> CMD : unlock m_command_mutex\n(never join under the mutex)
+CMD -> CS : stop() — bounded task join\n(m_command_mutex still released)
+CMD -> CMD : re-lock m_command_mutex;\nm_loop_active = false
+alt registry refilled / work re-queued during join
+    CMD -> CMD : restart loop; queued subcase closes\nended-session viewers and re-arms\nm_pipeline_drained
+else registry still empty
+    CMD -> SS : stop_all_streams()\n(m_close_viewers_pending consumed once)
+end
+
+== Serve path (rare: capture task between activations) ==
+
+CMD -> CMD : lock m_command_mutex
+CMD -> EXE : try-acquire m_executor_active\n(never blocks the capture task)
+CMD -> RING : process_requests() — serve the\nqueued batch on the command thread
+CMD -> EXE : release token
+CMD -> CMD : unlock m_command_mutex
+
+== Fire-and-forget (command issued from on_frame()) ==
+
+EXE -> RING : post_request() (t_executor_context)\n→ queued, no waiter
+EXE -> SS : no command task to consume the drain:\nexecutor closes viewers itself at the next\nactivation boundary (process_pending_viewer_close);\nm_pipeline_drained stays armed for the\nnext command task
+@enduml
+```
+
+The concurrent primitives the diagram references:
+
+| Primitive | Kind | Access | Role |
+|-----------|------|--------|------|
+| `m_executor_active` | `std::atomic<bool>` | Capture task holds it for its whole activation; a waiting command task try-acquires it for the serve path (never blocking the capture task) | Executor token — mutual exclusion for all pipeline-state mutation |
+| `m_command_mutex` | `std::mutex` | Command tasks only; the capture task never takes it | Serializes posting, scheduler start/stop, the photo gate, and the serve path; released across command waits and the teardown join |
+| `m_queue_mutex` | `std::mutex` | Posters and the executor's batch claim | Ring handoff only (publish a slot / claim-and-snapshot the batch); never held across waits, joins, or request execution |
+| `m_queued` | `std::atomic<int>` | Posters increment; the executor exchanges it to 0 to claim the batch | Publish count of the request ring |
+| `m_loop_active` | `std::atomic<bool>` | Command side, under `m_command_mutex` | Capture scheduler running |
+| `m_pipeline_drained` | `std::atomic<bool>` | Armed by the executor (batch-level drain arming); consumed exactly once by a command task | Signals a drained registry; the consumer drives the bounded teardown join |
+| `m_close_viewers_pending` | `std::atomic<bool>` | Armed by executor paths; read/cleared under `m_command_mutex` or at activation boundaries | Deferred viewer close, consumed exactly once so viewers never hang or get closed twice |
+| `ConsumerSlot::used` / `ConsumerSlot::consumer` | atomics per slot | Mutated only by the executor; read lock-free by command tasks | Registry activity queries without locks |
+| `completion->done` | `std::atomic<bool>` per request | Executor signals after the batch runs; waiter polls | Bounded command completion |
 
 ### Streaming Sequence Diagram
 

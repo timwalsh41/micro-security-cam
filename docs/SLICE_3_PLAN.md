@@ -1,3 +1,5 @@
+> **HISTORICAL — plan of record snapshot.** This document is a historical planning record, not the owner of current facts: it describes the pre-refactor streaming architecture (`StreamWriter` / `AsyncWebStreamWriter`, writer-based `start_stream`, and the design decisions of that era). For the authoritative description of the current system design, see [`docs/SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md).
+
 # Slice 3 — FreeRTOS + Live MJPEG Streaming
 
 ## Overview
