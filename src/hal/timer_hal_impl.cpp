@@ -7,6 +7,16 @@ bool TimerHalImpl::init(uint32_t interval_us, std::function<void()> isr)
 {
     m_isr = isr;
 
+    // The ESP-IDF driver refuses timer_init() on a timer still in use,
+    // so tear down any prior start-cycle configuration (including its
+    // ISR callback) before reconfiguring.
+    if (m_initialized)
+    {
+        timer_isr_callback_remove(TIMER_GROUP_0, TIMER_0);
+        timer_deinit(TIMER_GROUP_0, TIMER_0);
+        m_initialized = false;
+    }
+
     timer_config_t config{};
     config.divider = 80;               // 80 MHz / 80 = 1 MHz
     config.counter_dir = TIMER_COUNT_UP;
@@ -60,6 +70,11 @@ void TimerHalImpl::stop()
         return;
     }
     timer_pause(TIMER_GROUP_0, TIMER_0);
+
+    // Remove the ISR callback along with pausing the counter: pairs
+    // with init()'s timer_isr_callback_add() and guarantees no delayed
+    // alarm dispatch can invoke the callback after stop() returns.
+    timer_isr_callback_remove(TIMER_GROUP_0, TIMER_0);
 }
 
 bool IRAM_ATTR TimerHalImpl::timer_isr_trampoline(void* arg)

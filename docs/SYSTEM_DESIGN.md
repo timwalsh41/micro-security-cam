@@ -320,8 +320,7 @@ package "Services" {
     }
 
     class RealTimeService {
-        -m_unix_offset : uint32_t
-        -m_system_ms_at_offset : uint32_t
+        -m_offset_pair : atomic<uint64_t>
     }
 
     enum LogLevel {
@@ -635,6 +634,7 @@ class SystemOrchestrator {
     -m_camera : CameraController&
     -m_cmd_handler : CommandHandler&
     -m_streams : StreamService&
+    -m_stream_password : char[]
     +init()
     +tick()
     -register_commands()
@@ -814,7 +814,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 |---------------|-------|
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
 | `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/read/close/seek) |
-| `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks |
+| `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks. `stop()` removes the registered ISR callback along with pausing the counter; a repeat `init()` tears down the previous timer configuration before re-arming. |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
@@ -868,7 +868,7 @@ Each request is represented by a per-request `RequestRef` object that provides a
 | `send(code, type, data, len)` | Send a complete response (binary body) |
 | `send_stream_response(channel, boundary, on_end)` | Attach a live multipart streaming response to the request: the transport writes the HTTP headers, pulls pre-formatted multipart parts from `channel` under framework flow control, and fires `on_end` when the response is destroyed (used by the `/stream` MJPEG endpoint) |
 
-**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
+**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Registrations made before the server exists are buffered and attached to the route table before `begin()`, so the server never serves a request with a partial route table. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
 
 **Mock**: `MockWebServerHal` (`test/mocks/native_mocks/mock_web_server_hal.h`) captures route registrations with their `std::function` handlers and provides `simulate_request(uri, method)` to invoke handlers with a configurable `MockRequestRef`.
 
@@ -1164,8 +1164,8 @@ In `main.cpp`, after SD card initialization:
 5. `CameraController::init(ResolvedCameraParams)` initializes the camera with the validated config.
 6. `VideoController::init(config, width, height)` stores the validated dimensions.
 7. `WifiService::init()` connects to STA or falls back to AP.
-8. `WebServerService::init()` starts the HTTP server.
-9. `SystemOrchestrator::init()` registers command handlers.
+8. `SystemOrchestrator::init()` registers command handlers and the `/stream` route.
+9. `WebCommandTransport::register_routes()` wires `/status` and `/control`; `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening (see [Initialization Sequence](#initialization-sequence)).
 
 ### Write Pattern
 
@@ -2100,9 +2100,8 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step. On ESP32, the capture task is created and pinned to CPU0.
 7. **Stream init** — `StreamService::init(max_streams)` configures the concurrent stream slot count; `VideoController::set_stream_service(&stream_service)` wires frame delivery.
 8. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
-9. **Web server init** — `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. The `WebCommandTransport` is added to the `CommandHandler`.
+9. **Web route registration** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route, `SerialCommandTransport` is added to the `CommandHandler`, and `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. `WebServerService::init()` then registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening: `WebServerHalImpl` buffers registrations made before the server exists and attaches them before `begin()`.
 10. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
-11. **Orchestrator init** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route.
 
 ### Main Loop
 

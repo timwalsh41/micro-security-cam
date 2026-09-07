@@ -34,29 +34,34 @@ void RealTimeService::delay_us(millis_t us)
 
 void RealTimeService::set_unix_offset(uint32_t unix_time, uint32_t system_ms)
 {
-    m_unix_offset = unix_time;
-    m_system_ms_at_offset = system_ms;
+    // Publish the (offset, system-ms) pair as one 64-bit value: two
+    // separate stores would let a concurrent unix_now() reader between
+    // them compute a timestamp skewed by the full system-uptime delta.
+    uint64_t packed =
+        (static_cast<uint64_t>(unix_time) << 32) |
+        static_cast<uint64_t>(system_ms);
+    // Relaxed suffices — the pair is self-contained and no other
+    // shared state is ordered against this store.
+    m_offset_pair.store(packed, std::memory_order_relaxed);
 }
 
 uint32_t RealTimeService::unix_now() const
 {
-    return m_unix_offset + (now() - m_system_ms_at_offset) / 1000;
+    uint64_t packed = m_offset_pair.load(std::memory_order_relaxed);
+    uint32_t unix_offset = static_cast<uint32_t>(packed >> 32);
+    uint32_t system_ms = static_cast<uint32_t>(packed & 0xFFFFFFFFULL);
+    return unix_offset + (now() - system_ms) / 1000;
 }
 
 std::tm RealTimeService::localtime() const
 {
     std::time_t t = static_cast<std::time_t>(unix_now());
 
-    // Note this is not thread-safe, std::localtime(&t) returns a std::tm* — a pointer to a
-    // statically allocated internal buffer (shared between std::localtime and std::gmtime).
-    // The static buffer that std::localtime writes into is shared with std::gmtime, and a
-    // subsequent call to either function will overwrite it. But since we dereference
-    // immediately (*std::localtime(...)) and return a copy, the buffer is only held
-    // momentarily — no issue here for single-threaded applications. However, on a
-    // multitasking system, if another task calls std::localtime concurrently, the data
-    // could be overwritten between the pointer return and the copy. In practice the window
-    // is tiny, but it's a theoretical non-thread-safety concern with this family of
-    // functions. If that ever becomes an issue, the reentrant variant localtime_r (POSIX)
-    // or std::localtime in C++ with a mutex would be the fix.
-    return *std::localtime(&t);
+    // Reentrant variant: std::localtime() returns a pointer to a
+    // statically allocated internal buffer, so a concurrent call from
+    // another task could overwrite the broken-down time between the
+    // call and the copy.
+    std::tm out{};
+    ::localtime_r(&t, &out);
+    return out;
 }
