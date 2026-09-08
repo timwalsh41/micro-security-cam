@@ -429,8 +429,7 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
     const char* password = m_stream_password;
     if (!check_basic_auth(auth, password))
     {
-        request.send(401, "application/json",
-                     "{\"error\":\"authentication required\"}");
+        request.send_unauthorized();
         return;
     }
 

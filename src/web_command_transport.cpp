@@ -132,8 +132,7 @@ bool WebCommandTransport::check_auth(hal::RequestRef& request)
 
     if (!check_basic_auth(auth, m_password))
     {
-        request.send(401, "application/json",
-                     "{\"error\":\"authentication required\"}");
+        request.send_unauthorized();
         return false;
     }
 

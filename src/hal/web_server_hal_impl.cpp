@@ -96,6 +96,22 @@ void AsyncRequestRef::send(int code, const char* content_type,
     }
 }
 
+void AsyncRequestRef::send_unauthorized()
+{
+    if (m_request != nullptr)
+    {
+        // Browsers require a WWW-Authenticate challenge header to
+        // trigger a credential prompt on a 401; beginResponse +
+        // addHeader attaches it alongside the JSON error body that
+        // scripted clients already expect.
+        AsyncWebServerResponse* response =
+            m_request->beginResponse(401, "application/json",
+                                     "{\"error\":\"authentication required\"}");
+        response->addHeader("WWW-Authenticate", AUTH_CHALLENGE);
+        m_request->send(response);
+    }
+}
+
 bool AsyncRequestRef::send_stream_response(
     std::shared_ptr<StreamFrameChannel> channel,
     const char* boundary,

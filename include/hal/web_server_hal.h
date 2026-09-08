@@ -24,6 +24,9 @@
 
 namespace hal
 {
+/** HTTP Basic auth realm used in authentication challenges. */
+/** WWW-Authenticate challenge value for HTTP Basic authentication. */
+constexpr char AUTH_CHALLENGE[] = "Basic realm=\"micro-security-cam\"";
 
 /** HTTP method identifiers */
 enum class HttpMethod : uint8_t
@@ -100,6 +103,16 @@ class RequestRef
          */
         virtual void send(int code, const char* content_type,
                           const uint8_t* data, size_t len) = 0;
+
+        /**
+         * @brief Sends a 401 response with an HTTP Basic
+         *        authentication challenge.
+         *
+         * Emits a "WWW-Authenticate: Basic realm=<realm>" header with
+         * the standard authentication-required JSON body. Browsers
+         * require the challenge header to trigger a credential prompt.
+         */
+        virtual void send_unauthorized() = 0;
 
         /**
          * @brief Attaches a live multipart streaming response to this
