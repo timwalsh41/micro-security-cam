@@ -144,6 +144,15 @@ class MockRequestRef : public hal::RequestRef
             responses.push_back(rec);
         }
 
+        void send_unauthorized() override
+        {
+            ResponseRecord rec;
+            rec.code = 401;
+            rec.content_type = "application/json";
+            rec.body = "{\"error\":\"authentication required\"}";
+            responses.push_back(rec);
+        }
+
         bool send_stream_response(
             std::shared_ptr<StreamFrameChannel> channel,
             const char* boundary,

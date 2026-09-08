@@ -55,6 +55,8 @@ class AsyncRequestRef : public RequestRef
         void send(int code, const char* content_type,
                   const uint8_t* data, size_t len) override;
 
+        void send_unauthorized() override;
+
         bool send_stream_response(
             std::shared_ptr<StreamFrameChannel> channel,
             const char* boundary,
