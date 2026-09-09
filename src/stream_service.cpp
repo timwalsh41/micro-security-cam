@@ -27,12 +27,6 @@ int StreamService::start_stream(std::shared_ptr<StreamFrameChannel> channel)
         return -1;
     }
 
-    // Seed the multipart opening boundary as the first bytes the
-    // transport response will pull (outside the slot mutex; the channel
-    // is not bound to any slot yet).
-    channel->push_part(reinterpret_cast<const uint8_t*>(OPENING_BOUNDARY),
-                       strlen(OPENING_BOUNDARY));
-
     std::lock_guard<std::mutex> lock(m_slot_mutex);
     // Find a free slot within the configured maximum.
     for (uint8_t i = 0; i < m_max_streams; i++)
