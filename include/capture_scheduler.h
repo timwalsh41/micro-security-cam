@@ -38,7 +38,8 @@ class ICaptureScheduler
          * @param frame_callback  Function to call on each frame capture.
          * @return true if the scheduler was started, false if it is
          *         already running (in which case the callback is not
-         *         overwritten).
+         *         overwritten) or if the scheduler failed to start
+         *         (no producer is running in that case).
          */
         virtual bool start(uint32_t interval_ms,
                            std::function<void()> frame_callback) = 0;
