@@ -1,4 +1,5 @@
 #include "capture_scheduler_esp32.h"
+#include <Arduino.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -28,16 +29,27 @@ bool CaptureSchedulerEsp32::start(uint32_t interval_ms,
 
     m_callback = frame_callback;
     m_stop_requested.store(false, std::memory_order_relaxed);
+    m_interval_ms = interval_ms;
+    m_announce_pending.store(true, std::memory_order_relaxed);
 
-    // Configure timer ISR to call on_frame_capture()
-    m_timer.init(interval_ms * 1000, [this]() { on_frame_capture(); });
+    // Configure timer ISR to call on_frame_capture(). A failure here
+    // would leave a capture task blocked forever on a never-firing
+    // notification, so refuse the start instead.
+    if (!m_timer.init(interval_ms * 1000, [this]() { on_frame_capture(); }))
+    {
+        Serial.printf("[%08lu] [CAPS] [ERROR] Timer init failed; "
+                      "capture loop not started\r\n",
+                      static_cast<unsigned long>(millis()));
+        m_announce_pending.store(false, std::memory_order_relaxed);
+        return false;
+    }
 
     // Create FreeRTOS capture task pinned to CPU0 (PRO_CPU).
     // Arduino setup()/loop() run on APP_CPU (CPU1); pinning the
     // capture task to PRO_CPU keeps CPU1 free for WiFi, web server,
     // and LED management.
     TaskHandle_t task = nullptr;
-    xTaskCreatePinnedToCore(
+    BaseType_t create_result = xTaskCreatePinnedToCore(
         capture_task_entry,
         "capture",
         4096,
@@ -45,6 +57,16 @@ bool CaptureSchedulerEsp32::start(uint32_t interval_ms,
         configMAX_PRIORITIES - 1,
         &task,
         PRO_CPU_NUM);
+    if (create_result != pdPASS || task == nullptr)
+    {
+        Serial.printf("[%08lu] [CAPS] [ERROR] Capture task creation failed "
+                      "(osResult=%d); capture loop not started\r\n",
+                      static_cast<unsigned long>(millis()),
+                      static_cast<int>(create_result));
+        m_announce_pending.store(false, std::memory_order_relaxed);
+        m_timer.stop();
+        return false;
+    }
 
     m_task.store(task, std::memory_order_relaxed);
     m_timer.start();
@@ -119,6 +141,20 @@ void CaptureSchedulerEsp32::capture_task_entry(void* pvParameters)
     {
         // Block until notified by the timer ISR
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        // One-time liveness line at the first activation after a start:
+        // a capture loop that dies silently is then visible by the
+        // absence of this line. Skipped when stop was requested before
+        // the first tick (the loop never actually ran).
+        if (self->m_announce_pending.exchange(false,
+                                               std::memory_order_acq_rel) &&
+            !self->m_stop_requested.load(std::memory_order_relaxed))
+        {
+            Serial.printf("[%08lu] [CAPS] [INFO ] Capture loop started "
+                          "(interval %lu ms)\r\n",
+                          static_cast<unsigned long>(millis()),
+                          static_cast<unsigned long>(self->m_interval_ms));
+        }
 
         // Run the frame callback first — this lets VideoController process
         // any pending clip closure before we check the stop flag.
