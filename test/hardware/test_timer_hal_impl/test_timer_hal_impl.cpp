@@ -114,6 +114,13 @@ void test_repeated_init_start_stop_cycles_rearm_isr()
 
 /**
  * @brief set_frequency() changes the callback rate without reinit.
+ *
+ * set_frequency() only retargets the alarm value; per the TimerHalImpl
+ * attach contract, init() and stop() are the sole toggle points for the
+ * ISR callback (stop() removes it, init() re-arms it). The rate change
+ * is therefore exercised on a running timer, with no stop() between the
+ * two phases — a stop() would detach the callback and start() alone
+ * would not dispatch any callbacks until the next init().
  */
 void test_set_frequency_changes_period()
 {
@@ -123,17 +130,18 @@ void test_set_frequency_changes_period()
     TEST_ASSERT_TRUE(timer.init(50000, on_timer_isr));
     timer.start();
     vTaskDelay(pdMS_TO_TICKS(200));
-    timer.stop();
 
     // ~4 callbacks at 50 ms
     uint32_t slow_count = g_isr_count.load(std::memory_order_relaxed);
     TEST_ASSERT_GREATER_OR_EQUAL(2u, slow_count);
     TEST_ASSERT_LESS_OR_EQUAL(8u, slow_count);
 
-    // Speed up to 10 ms and measure again
+    // Speed up to 10 ms while running and measure again. At most one
+    // residual 50 ms period elapses before the new alarm value takes
+    // effect (the counter reloads at the old alarm before matching the
+    // new one), so ~15-20 callbacks fire over the 200 ms window.
     g_isr_count.store(0, std::memory_order_relaxed);
     timer.set_frequency(10000);
-    timer.start();
     vTaskDelay(pdMS_TO_TICKS(200));
     timer.stop();
 
