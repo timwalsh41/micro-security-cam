@@ -37,6 +37,7 @@ enum class CommandResult : uint8_t
     UNRECOGNIZED = 0x01,
     INVALID_ARGS = 0x02,
     INVALID_STATE = 0x03,
+    SD_UNAVAILABLE = 0x04,   ///< Command requires the SD card, which is absent or unusable
     INTERNAL_ERROR = 0xFF,
 };
 

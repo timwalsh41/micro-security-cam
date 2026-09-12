@@ -53,12 +53,12 @@ void test_defaults_has_empty_subnet_mask()
 }
 
 /**
- * @brief defaults() returns an empty ap ssid.
+ * @brief defaults() returns the compiled-in default AP SSID.
  */
 void test_defaults_has_empty_ap_ssid()
 {
     ConfigData d = IniParser::defaults();
-    TEST_ASSERT_EQUAL_STRING("", d.ap.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", d.ap.ssid);
 }
 
 /**
@@ -360,7 +360,7 @@ void test_missing_keys_retain_defaults()
     ConfigData d = IniParser::parse(ini, strlen(ini));
     TEST_ASSERT_EQUAL_STRING("Test", d.wifi.ssid);
     TEST_ASSERT_EQUAL_STRING("", d.wifi.password);
-    TEST_ASSERT_EQUAL_STRING("", d.ap.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", d.ap.ssid);
     TEST_ASSERT_EQUAL_UINT16(9090, d.web.port);
     TEST_ASSERT_EQUAL_STRING("VGA", d.camera.resolution);
 }
@@ -858,6 +858,91 @@ void test_serialize_all_fields_present()
 }
 
 // ============================================================
+// Overlay
+// ============================================================
+
+/**
+ * @brief overlay() keeps base values for settings absent from the buffer.
+ */
+void test_overlay_missing_keys_retain_base()
+{
+    ConfigData base = IniParser::defaults();
+    strcpy(base.wifi.ssid, "Home");
+    strcpy(base.ap.ssid, "BaseCam");
+
+    const char* ini =
+        "[web]\n"
+        "port=9090\n";
+
+    ConfigData d = IniParser::overlay(base, ini, strlen(ini));
+    TEST_ASSERT_EQUAL_STRING("Home", d.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("BaseCam", d.ap.ssid);
+    TEST_ASSERT_EQUAL_UINT16(9090, d.web.port);
+}
+
+/**
+ * @brief overlay() applies buffer settings over the base.
+ */
+void test_overlay_applies_present_settings()
+{
+    ConfigData base = IniParser::defaults();
+
+    const char* ini =
+        "[wifi]\n"
+        "ssid=Home\n"
+        "password=Secret\n";
+
+    ConfigData d = IniParser::overlay(base, ini, strlen(ini));
+    TEST_ASSERT_EQUAL_STRING("Home", d.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("Secret", d.wifi.password);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", d.ap.ssid);
+}
+
+/**
+ * @brief overlay() lets an explicitly blank value override the base.
+ */
+void test_overlay_explicit_blank_overrides_base()
+{
+    ConfigData base = IniParser::defaults();
+    strcpy(base.wifi.ssid, "Home");
+
+    const char* ini =
+        "[wifi]\n"
+        "ssid=\n";
+
+    ConfigData d = IniParser::overlay(base, ini, strlen(ini));
+    TEST_ASSERT_EQUAL_STRING("", d.wifi.ssid);
+}
+
+/**
+ * @brief overlay() with empty content returns the base unchanged.
+ */
+void test_overlay_empty_content_returns_base()
+{
+    ConfigData base = IniParser::defaults();
+    strcpy(base.wifi.ssid, "Home");
+
+    ConfigData d = IniParser::overlay(base, nullptr, 0);
+    TEST_ASSERT_EQUAL_STRING("Home", d.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", d.ap.ssid);
+}
+
+/**
+ * @brief overlay() never mutates the base config.
+ */
+void test_overlay_leaves_base_unchanged()
+{
+    ConfigData base = IniParser::defaults();
+
+    const char* ini =
+        "[wifi]\n"
+        "ssid=Home\n";
+
+    IniParser::overlay(base, ini, strlen(ini));
+    TEST_ASSERT_EQUAL_STRING("", base.wifi.ssid);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -912,6 +997,12 @@ int main(int argc, char** argv)
     RUN_TEST(test_malformed_line_without_equals_skipped);
 
     RUN_TEST(test_no_trailing_newline);
+
+    RUN_TEST(test_overlay_missing_keys_retain_base);
+    RUN_TEST(test_overlay_applies_present_settings);
+    RUN_TEST(test_overlay_explicit_blank_overrides_base);
+    RUN_TEST(test_overlay_empty_content_returns_base);
+    RUN_TEST(test_overlay_leaves_base_unchanged);
     RUN_TEST(test_section_header_only);
     RUN_TEST(test_value_contains_equals);
     RUN_TEST(test_long_value_truncated_to_field_size);

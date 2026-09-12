@@ -2,6 +2,7 @@
 #include "stream_service.h"
 #include "web_auth_util.h"
 #include "time_formatter.h"
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -15,7 +16,9 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        ConfigService& config,
                                        LoggingService& log,
                                        StreamService& streams,
-                                       hal::WebServerHal& web)
+                                       hal::WebServerHal& web,
+                                       SdController& sd,
+                                       hal::NvsHal& nvs)
     : m_video(video)
     , m_camera(camera)
     , m_cmd_handler(cmd_handler)
@@ -24,14 +27,32 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
     , m_log(log)
     , m_streams(streams)
     , m_web(web)
+    , m_sd(sd)
+    , m_nvs(nvs)
 {
 }
 
 void SystemOrchestrator::init()
 {
+    // Latch SD availability once at initialization: a missing card and
+    // a failed card initialization both latch streaming-only mode.
+    // Recovery is insert-card-then-power-cycle (late insertion is not
+    // re-detected at runtime).
+    m_sd_available = m_sd.is_card_available();
+    if (!m_sd_available)
+    {
+        m_log.warn(SUBSYSTEM, "SD unavailable - streaming-only mode "
+                   "(recording and photo capture disabled)");
+    }
+
     register_commands();
     register_stream_route();
     m_log.info(SUBSYSTEM, "SystemOrchestrator initialized");
+}
+
+bool SystemOrchestrator::is_sd_available() const
+{
+    return m_sd_available;
 }
 
 void SystemOrchestrator::tick()
@@ -92,6 +113,14 @@ void SystemOrchestrator::register_commands()
         });
 
     m_cmd_handler.register_handler(
+        CommandCode::GET_CONFIG,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_get_config(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
         CommandCode::GET_CONFIG_VALUE,
         [this](const uint8_t* payload, size_t len,
                uint8_t* response, size_t& responseLen) -> CommandResult
@@ -145,11 +174,12 @@ CommandResult SystemOrchestrator::handle_get_status(
     int written = snprintf(
         reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE,
-        "{\"recording\":%s,\"streaming\":%s,\"frames\":%lu,"
+        "{\"recording\":%s,\"streaming\":%s,\"sd\":%s,\"frames\":%lu,"
         "\"file_size\":%lu,"
         "\"connected_streams\":%u}",
         recording ? "true" : "false",
         streaming ? "true" : "false",
+        m_sd_available ? "true" : "false",
         static_cast<unsigned long>(frames),
         static_cast<unsigned long>(file_size),
         static_cast<unsigned int>(active_stream_slot_count)
@@ -169,9 +199,17 @@ CommandResult SystemOrchestrator::handle_start_recording(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* /* response */, size_t& /* responseLen */)
 {
+    // SD availability takes precedence over state-machine checks: the
+    // card is a precondition of the command being meaningful at all.
+    if (!m_sd_available)
+    {
+        m_log.warn(SUBSYSTEM, "Start recording rejected - SD unavailable");
+        return CommandResult::SD_UNAVAILABLE;
+    }
+
     if (m_video.is_recording())
     {
-        m_log.warn(SUBSYSTEM, "Start recording rejected — already recording");
+        m_log.warn(SUBSYSTEM, "Start recording rejected - already recording");
         return CommandResult::INVALID_STATE;
     }
 
@@ -198,10 +236,20 @@ CommandResult SystemOrchestrator::handle_take_photo(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* response, size_t& responseLen)
 {
+    // SD availability takes precedence over state-machine checks: the
+    // card is a precondition of the command being meaningful, and the
+    // gate avoids wasting a camera capture that could not be stored.
+    if (!m_sd_available)
+    {
+        m_log.warn(SUBSYSTEM, "Take photo rejected - SD unavailable");
+        return CommandResult::SD_UNAVAILABLE;
+    }
+
     // Photo capture posts TAKE_PHOTO into the capture executor and is
     // served at an activation boundary, so photos work while recording
     // and/or streaming are active; camera and SD failures surface
     // synchronously to this caller as INTERNAL_ERROR.
+
     // Build photo path from unix timestamp (UTC)
     uint32_t seconds = m_time.unix_now();
 
@@ -272,11 +320,80 @@ CommandResult SystemOrchestrator::handle_set_time(
 }
 
 CommandResult SystemOrchestrator::handle_set_config(
-    const uint8_t* /* payload */, size_t /* len */,
+    const uint8_t* payload, size_t len,
     uint8_t* /* response */, size_t& /* responseLen */)
 {
-    // Placeholder - config update deferred
-    return CommandResult::INVALID_STATE;
+    if (payload == nullptr || len == 0)
+    {
+        m_log.warn(SUBSYSTEM, "SET_CONFIG: missing destination argument");
+        return CommandResult::INVALID_ARGS;
+    }
+
+    // Payload is a null-terminated destination string: "nvs" or "sd"
+    // (case-insensitive).
+    char dest_buf[8];
+    size_t dest_len = len < sizeof(dest_buf) - 1 ? len : sizeof(dest_buf) - 1;
+    memcpy(dest_buf, payload, dest_len);
+    dest_buf[dest_len] = '\0';
+    for (char* c = dest_buf; *c != '\0'; ++c)
+    {
+        *c = static_cast<char>(std::tolower(
+            static_cast<unsigned char>(*c)));
+    }
+
+    if (strcmp(dest_buf, "nvs") == 0)
+    {
+        if (!m_config.save_nvs(m_nvs))
+        {
+            m_log.error(SUBSYSTEM, "Config save to NVS failed");
+            return CommandResult::INTERNAL_ERROR;
+        }
+        m_log.info(SUBSYSTEM, "Config saved to NVS");
+        return CommandResult::SUCCESS;
+    }
+
+    if (strcmp(dest_buf, "sd") == 0)
+    {
+        // SD availability takes precedence over any other check.
+        if (!m_sd_available)
+        {
+            m_log.warn(SUBSYSTEM, "Config save rejected - SD unavailable");
+            return CommandResult::SD_UNAVAILABLE;
+        }
+
+        if (!m_config.save_sd(m_sd))
+        {
+            m_log.error(SUBSYSTEM, "Config save to SD failed");
+            return CommandResult::INTERNAL_ERROR;
+        }
+        m_log.info(SUBSYSTEM, "Config saved to SD");
+        return CommandResult::SUCCESS;
+    }
+
+    m_log.warn(SUBSYSTEM, "SET_CONFIG: unknown destination '%s'", dest_buf);
+    return CommandResult::INVALID_ARGS;
+}
+
+CommandResult SystemOrchestrator::handle_get_config(
+    const uint8_t* /* payload */, size_t /* len */,
+    uint8_t* response, size_t& responseLen)
+{
+    char buf[CommandHandler::MAX_RESPONSE_SIZE];
+    size_t serialized_len = m_config.serialize(buf, sizeof(buf));
+
+    // Serialize always reports the full size needed. A config that
+    // exceeds the response buffer (i.e. exceeds the storage buffer
+    // limit) cannot be transferred intact.
+    if (serialized_len >= CommandHandler::MAX_RESPONSE_SIZE)
+    {
+        m_log.error(SUBSYSTEM, "Serialized config too large (%zu bytes)",
+                    serialized_len);
+        return CommandResult::INTERNAL_ERROR;
+    }
+
+    memcpy(response, buf, serialized_len);
+    responseLen = serialized_len;
+    return CommandResult::SUCCESS;
 }
 
 CommandResult SystemOrchestrator::handle_get_config_value(

@@ -383,6 +383,20 @@ void test_response_error()
 }
 
 /**
+ * @brief SD_UNAVAILABLE renders as "ERR 04\n" on the serial wire.
+ */
+void test_response_sd_unavailable()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    f.transport.send_response(CommandResult::SD_UNAVAILABLE, nullptr, 0);
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING("ERR 04\n", output);
+}
+
+/**
  * @brief tick() drives the full cycle: read request → dispatch → send response.
  */
 void test_tick_full_cycle()
@@ -590,6 +604,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_response_ok_with_data);
     RUN_TEST(test_response_ok_no_data);
     RUN_TEST(test_response_error);
+    RUN_TEST(test_response_sd_unavailable);
     RUN_TEST(test_tick_full_cycle);
     RUN_TEST(test_multiple_commands_sequence);
     RUN_TEST(test_leading_spaces);

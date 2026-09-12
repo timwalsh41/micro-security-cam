@@ -63,21 +63,27 @@ bool AviClipSession::open()
     strncpy(m_clip_path, m_file_path, sizeof(m_clip_path) - 1);
     m_clip_path[sizeof(m_clip_path) - 1] = '\0';
 
-    // Open AVI writer (generates header in memory). While a clip is
-    // open it awaits finalization, so latch the close-pending guard
-    // here; close() clears it once finalization completes.
+    // Open AVI writer (generates header in memory).
     if (!m_avi_writer.open(m_file_path, m_config.fps, m_width, m_height))
     {
         return false;
     }
-    m_close_pending = true;
 
-    // Write placeholder header to SD at position 0
+    // Write placeholder header to SD at position 0. This is the real
+    // card probe: a failing write means no clip can be recorded, so
+    // the open fails before the close-pending guard is latched and
+    // before any frame could be silently discarded.
     AviBytes hdr = m_avi_writer.header();
-    if (hdr.data && hdr.len > 0)
+    if (hdr.data && hdr.len > 0 && !write_to_sd(hdr.data, hdr.len))
     {
-        write_to_sd(hdr.data, hdr.len);
+        m_log.error(SUBSYSTEM, "Clip header write failed: %s", m_file_path);
+        m_avi_writer = AviWriter();  // Reset writer state: no clip is open
+        return false;
     }
+
+    // The clip awaits finalization from this point on; close() clears
+    // the guard once finalization completes.
+    m_close_pending = true;
 
     // Reset clip state
     m_frames_recorded = 0;
@@ -92,16 +98,16 @@ void AviClipSession::close()
 
     // Append index to the file
     AviBytes idx = m_avi_writer.index();
-    if (idx.data && idx.len > 0)
+    if (idx.data && idx.len > 0 && !write_to_sd(idx.data, idx.len))
     {
-        write_to_sd(idx.data, idx.len);
+        m_log.error(SUBSYSTEM, "Clip index write failed: %s", m_clip_path);
     }
 
     // Seek to position 0 and overwrite the placeholder header
     AviBytes hdr = m_avi_writer.patched_header();
-    if (hdr.data && hdr.len > 0)
+    if (hdr.data && hdr.len > 0 && !write_at_offset(m_clip_path, 0, hdr.data, hdr.len))
     {
-        write_at_offset(m_clip_path, 0, hdr.data, hdr.len);
+        m_log.error(SUBSYSTEM, "Clip header patch write failed: %s", m_clip_path);
     }
 
     m_log.info(SUBSYSTEM, "Clip closed: %s (%u frames, %u bytes)",
@@ -127,8 +133,12 @@ void AviClipSession::append_frame(const uint8_t* data, size_t len)
     AviBytes chunk = m_avi_writer.last_frame_chunk();
     if (chunk.data && chunk.len > 0)
     {
-        write_to_sd(chunk.data, chunk.len);
-        m_file_size += static_cast<uint32_t>(chunk.len);
+        // Count only bytes actually written so the reported file size
+        // stays truthful when writes fail (e.g. card removed mid-recording).
+        if (write_to_sd(chunk.data, chunk.len))
+        {
+            m_file_size += static_cast<uint32_t>(chunk.len);
+        }
     }
 
     m_frames_recorded++;

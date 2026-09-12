@@ -1,8 +1,12 @@
 #include "config_service.h"
+#include "ini_parser.h"
 #include <cstring>
 
-// Out-of-class definition for ODR-use (C++11 constexpr string member)
+// Out-of-class definitions for ODR-use (C++11 constexpr string members)
 constexpr char ConfigService::DEFAULT_CONFIG_PATH[];
+constexpr char ConfigService::NVS_NAMESPACE[];
+constexpr char ConfigService::NVS_KEY[];
+constexpr char ConfigService::NVS_SCHEMA_KEY[];
 
 // ============================================================
 // Anonymous helpers — "section.key" to ConfigData field mapping
@@ -120,6 +124,21 @@ bool ConfigService::load(const uint8_t* data, size_t length)
     return true;
 }
 
+bool ConfigService::overlay(const uint8_t* data, size_t length)
+{
+    if (!data || length == 0)
+    {
+        m_logger.warn(SUBSYSTEM, "Overlay: no config content, config unchanged");
+        return false;
+    }
+
+    m_config = IniParser::overlay(
+        m_config, reinterpret_cast<const char*>(data), length);
+
+    m_logger.info(SUBSYSTEM, "Config overlay applied: %zu bytes", length);
+    return true;
+}
+
 const ConfigData& ConfigService::config() const
 {
     return m_config;
@@ -156,4 +175,168 @@ bool ConfigService::get_config_value(
 bool ConfigService::set_config_value(const char* key, const char* value)
 {
     return write_field(m_config, key, value);
+}
+
+// ============================================================
+// Serialization and persistence
+// ============================================================
+
+size_t ConfigService::serialize(char* buffer, size_t buffer_size) const
+{
+    return IniParser::serialize(m_config, buffer, buffer_size);
+}
+
+bool ConfigService::load_nvs(hal::NvsHal& nvs)
+{
+    if (!nvs.begin(NVS_NAMESPACE))
+    {
+        m_logger.warn(SUBSYSTEM, "NVS not available, config overlay skipped");
+        return false;
+    }
+
+    uint8_t buf[CONFIG_BUFFER_SIZE];
+    size_t bytes_read = nvs.read_blob(NVS_KEY, buf, sizeof(buf));
+    if (bytes_read == 0)
+    {
+        m_logger.info(SUBSYSTEM, "No saved config in NVS");
+        return false;
+    }
+
+    // Schema gate: a saved config without a readable schema version or
+    // with a version other than the firmware's is incompatible. It is
+    // erased (no migration) and the current config - the compiled-in
+    // defaults at boot - is kept.
+    uint32_t saved_version = 0;
+    size_t version_len = nvs.read_blob(
+        NVS_SCHEMA_KEY,
+        reinterpret_cast<uint8_t*>(&saved_version),
+        sizeof(saved_version));
+    if (version_len != sizeof(saved_version))
+    {
+        m_logger.warn(SUBSYSTEM,
+                      "Discarded NVS config: no schema version "
+                      "(expected %u)",
+                      static_cast<unsigned>(NVS_SCHEMA_VERSION));
+        nvs.erase_key(NVS_KEY);
+        nvs.erase_key(NVS_SCHEMA_KEY);
+        return false;
+    }
+    if (saved_version != NVS_SCHEMA_VERSION)
+    {
+        m_logger.warn(SUBSYSTEM,
+                      "Discarded NVS config with schema version %u "
+                      "(expected %u)",
+                      static_cast<unsigned>(saved_version),
+                      static_cast<unsigned>(NVS_SCHEMA_VERSION));
+        nvs.erase_key(NVS_KEY);
+        nvs.erase_key(NVS_SCHEMA_KEY);
+        return false;
+    }
+
+    m_logger.info(SUBSYSTEM, "NVS config read: %zu bytes", bytes_read);
+    return overlay(buf, bytes_read);
+}
+
+bool ConfigService::save_nvs(hal::NvsHal& nvs)
+{
+    // Serialize and validate first: commit only a config that fits the
+    // storage buffer. Serialization reads the live config without
+    // modifying it, so a failure here leaves the RAM config intact.
+    uint8_t buf[CONFIG_BUFFER_SIZE];
+    size_t serialized_len = serialize(reinterpret_cast<char*>(buf), sizeof(buf));
+    if (serialized_len >= sizeof(buf))
+    {
+        m_logger.error(SUBSYSTEM,
+                       "Serialized config too large for NVS (%zu bytes)",
+                       serialized_len);
+        return false;
+    }
+
+    if (!nvs.begin(NVS_NAMESPACE))
+    {
+        m_logger.error(SUBSYSTEM, "NVS not available, config save failed");
+        return false;
+    }
+
+    if (!nvs.write_blob(NVS_KEY, buf, serialized_len))
+    {
+        m_logger.error(SUBSYSTEM, "NVS config write failed");
+        return false;
+    }
+
+    uint32_t schema_version = NVS_SCHEMA_VERSION;
+    if (!nvs.write_blob(NVS_SCHEMA_KEY,
+                        reinterpret_cast<uint8_t*>(&schema_version),
+                        sizeof(schema_version)))
+    {
+        m_logger.error(SUBSYSTEM, "NVS schema version write failed");
+        return false;
+    }
+
+    // Verify the committed blob by read-back comparison.
+    uint8_t verify_buf[CONFIG_BUFFER_SIZE];
+    size_t verify_len = nvs.read_blob(NVS_KEY, verify_buf, sizeof(verify_buf));
+    if (verify_len != serialized_len ||
+        memcmp(verify_buf, buf, serialized_len) != 0)
+    {
+        m_logger.error(SUBSYSTEM, "NVS config read-back verification failed");
+        return false;
+    }
+
+    m_logger.info(SUBSYSTEM, "Config saved to NVS (%zu bytes)", serialized_len);
+    return true;
+}
+
+bool ConfigService::load_sd(SdController& sd)
+{
+    uint8_t buf[CONFIG_BUFFER_SIZE];
+    size_t bytes_read = sd.read_sync(DEFAULT_CONFIG_PATH, buf, sizeof(buf));
+    if (bytes_read == 0)
+    {
+        m_logger.warn(SUBSYSTEM, "No config file read from SD");
+        return false;
+    }
+
+    m_logger.info(SUBSYSTEM, "SD config read: %zu / %zu bytes",
+                  bytes_read, CONFIG_BUFFER_SIZE);
+    return overlay(buf, bytes_read);
+}
+
+bool ConfigService::save_sd(SdController& sd)
+{
+    // Serialize and validate first: commit only a config that fits the
+    // storage buffer. Serialization reads the live config without
+    // modifying it, so a failure here leaves the RAM config intact.
+    uint8_t buf[CONFIG_BUFFER_SIZE];
+    size_t serialized_len = serialize(reinterpret_cast<char*>(buf), sizeof(buf));
+    if (serialized_len >= sizeof(buf))
+    {
+        m_logger.error(SUBSYSTEM,
+                       "Serialized config too large for SD (%zu bytes)",
+                       serialized_len);
+        return false;
+    }
+
+    // WRITE mode truncates any existing config file.
+    if (!sd.write_sync(DEFAULT_CONFIG_PATH, buf, serialized_len,
+                       hal::FileOpenMode::WRITE))
+    {
+        m_logger.error(SUBSYSTEM, "SD config file write failed");
+        return false;
+    }
+
+    // Verify the committed file by read-back comparison.
+    uint8_t verify_buf[CONFIG_BUFFER_SIZE];
+    size_t verify_len = sd.read_sync(DEFAULT_CONFIG_PATH, verify_buf,
+                                     sizeof(verify_buf));
+    if (verify_len != serialized_len ||
+        memcmp(verify_buf, buf, serialized_len) != 0)
+    {
+        m_logger.error(SUBSYSTEM, "SD config read-back verification failed");
+        return false;
+    }
+
+    m_logger.info(SUBSYSTEM, "Config saved to SD: %s (%zu bytes)",
+                  DEFAULT_CONFIG_PATH, serialized_len);
+    return true;
 }

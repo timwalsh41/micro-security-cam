@@ -1,6 +1,9 @@
 #include <unity.h>
 #include "config_service.h"
 #include "mock_log_backend.h"
+#include "mock_sd_card_hal.h"
+#include "mock_nvs_hal.h"
+#include "sd_controller.h"
 #include "time_service.h"
 #include <Arduino.h>
 #include <string>
@@ -50,7 +53,7 @@ void test_config_has_defaults_before_load()
 
     TEST_ASSERT_EQUAL_STRING("", cfg.wifi.ssid);
     TEST_ASSERT_EQUAL_STRING("", cfg.wifi.password);
-    TEST_ASSERT_EQUAL_STRING("", cfg.ap.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", cfg.ap.ssid);
     TEST_ASSERT_EQUAL_STRING("", cfg.ap.password);
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
     TEST_ASSERT_EQUAL_STRING("", cfg.web.password);
@@ -321,6 +324,217 @@ void test_mutable_config_persists_across_loads()
 }
 
 // ============================================================
+// NVS / SD persistence
+// ============================================================
+
+/**
+ * @brief Fixture wiring ConfigService to mock NVS and SD storage.
+ */
+struct PersistenceFixture
+{
+    MockSdCardHal sd_hal;
+    SdController sd_controller;
+    LoggingService log;
+    ConfigService svc;
+    MockNvsHal nvs;
+
+    PersistenceFixture()
+        : sd_controller(real_time, sd_hal)
+        , log(mock_backend, real_time)
+        , svc(log)
+    {
+        sd_hal.init_result = hal::SdInitResult::SUCCESS;
+        sd_controller.init_card();
+    }
+
+    /** Serializes the service's live config to an INI byte vector. */
+    std::vector<uint8_t> serialized() const
+    {
+        char buf[ConfigService::CONFIG_BUFFER_SIZE];
+        size_t len = svc.serialize(buf, sizeof(buf));
+        return std::vector<uint8_t>(buf, buf + len);
+    }
+};
+
+/** Little-endian bytes of a schema version integer. */
+static std::vector<uint8_t> version_bytes(uint32_t v)
+{
+    return std::vector<uint8_t>{
+        static_cast<uint8_t>(v & 0xFFU),
+        static_cast<uint8_t>((v >> 8) & 0xFFU),
+        static_cast<uint8_t>((v >> 16) & 0xFFU),
+        static_cast<uint8_t>((v >> 24) & 0xFFU)};
+}
+
+/**
+ * @brief save_nvs() then load_nvs() on a fresh service round-trips values.
+ */
+void test_save_nvs_then_load_nvs_round_trip()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Home");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    // Fresh service over the same NVS backing store (boot simulation).
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("Home", fresh.config().wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", fresh.config().ap.ssid);
+}
+
+/**
+ * @brief load_nvs() overlays setting-by-setting: absent keys retain values.
+ */
+void test_load_nvs_overlays_setting_by_setting()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.password", "Secret");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("Secret", fresh.config().wifi.password);
+    TEST_ASSERT_EQUAL_STRING("", fresh.config().wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", fresh.config().ap.ssid);
+}
+
+/**
+ * @brief load_nvs() with no saved config returns false and changes nothing.
+ */
+void test_load_nvs_without_saved_config()
+{
+    PersistenceFixture f;
+
+    TEST_ASSERT_FALSE(f.svc.load_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("", f.svc.config().wifi.ssid);
+}
+
+/**
+ * @brief A saved config with a mismatched schema version is erased and
+ *        the compiled-in defaults are kept.
+ */
+void test_load_nvs_schema_version_mismatch_discards()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Stale");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    // Corrupt the stored schema version to simulate an older firmware.
+    f.nvs.seed_blob(ConfigService::NVS_SCHEMA_KEY,
+                    version_bytes(ConfigService::NVS_SCHEMA_VERSION + 1));
+
+    // A fresh service (compiled-in defaults) must not pick up the
+    // stale config; the stale data is erased.
+    ConfigService fresh(f.log);
+    TEST_ASSERT_FALSE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_TRUE(f.nvs.blobs.find(ConfigService::NVS_KEY) ==
+                     f.nvs.blobs.end());
+    TEST_ASSERT_TRUE(f.nvs.blobs.find(ConfigService::NVS_SCHEMA_KEY) ==
+                     f.nvs.blobs.end());
+    TEST_ASSERT_TRUE(any_log_contains("schema version"));
+    TEST_ASSERT_EQUAL_STRING("", fresh.config().wifi.ssid);
+}
+
+/**
+ * @brief A saved config with no readable schema version is discarded.
+ */
+void test_load_nvs_missing_schema_version_discards()
+{
+    PersistenceFixture f;
+    f.nvs.seed_blob(ConfigService::NVS_KEY,
+                    {static_cast<uint8_t>('[')});
+
+    TEST_ASSERT_FALSE(f.svc.load_nvs(f.nvs));
+    TEST_ASSERT_TRUE(f.nvs.blobs.find(ConfigService::NVS_KEY) ==
+                     f.nvs.blobs.end());
+    TEST_ASSERT_EQUAL_STRING("", f.svc.config().wifi.ssid);
+}
+
+/**
+ * @brief A failed NVS write leaves the RAM config intact.
+ */
+void test_save_nvs_failure_leaves_ram_config_intact()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Home");
+    f.nvs.write_result = false;
+
+    TEST_ASSERT_FALSE(f.svc.save_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("Home", f.svc.config().wifi.ssid);
+}
+
+/**
+ * @brief save_sd() then load_sd() on a fresh service round-trips values.
+ */
+void test_save_sd_then_load_sd_round_trip()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Home");
+    TEST_ASSERT_TRUE(f.svc.save_sd(f.sd_controller));
+
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_sd(f.sd_controller));
+    TEST_ASSERT_EQUAL_STRING("Home", fresh.config().wifi.ssid);
+}
+
+/**
+ * @brief Boot overlay order: defaults < NVS < SD config file.
+ */
+void test_overlay_order_defaults_then_nvs_then_sd()
+{
+    PersistenceFixture f;
+
+    // Defaults: wifi.ssid blank, ap.ssid "MicroCam".
+    f.svc.set_config_value("wifi.ssid", "Home");
+    f.svc.set_config_value("wifi.password", "Secret");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    // SD file overrides wifi.ssid and web.port, leaves the rest.
+    const char* ini =
+        "[wifi]\n"
+        "ssid=Camp\n";
+    f.sd_hal.files[ConfigService::DEFAULT_CONFIG_PATH] =
+        std::vector<uint8_t>(ini, ini + strlen(ini));
+
+    // Simulate the boot sequence on a defaults-fresh service sharing
+    // the same NVS and SD backing stores.
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_TRUE(fresh.load_sd(f.sd_controller));
+
+    // SD wins over NVS on conflict.
+    TEST_ASSERT_EQUAL_STRING("Camp", fresh.config().wifi.ssid);
+    // NVS value survives where the SD file is silent.
+    TEST_ASSERT_EQUAL_STRING("Secret", fresh.config().wifi.password);
+    // Defaults survive where neither source speaks.
+    TEST_ASSERT_EQUAL_STRING("MicroCam", fresh.config().ap.ssid);
+}
+
+/**
+ * @brief Serialization round-trips every value through parse().
+ */
+void test_serialize_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    svc.set_config_value("wifi.ssid", "Home");
+    svc.set_config_value("wifi.password", "Secret");
+    svc.set_config_value("web.password", "WebPass");
+    svc.set_config_value("camera.resolution", "HD");
+
+    char buf[ConfigService::CONFIG_BUFFER_SIZE];
+    size_t len = svc.serialize(buf, sizeof(buf));
+
+    ConfigData parsed = IniParser::parse(buf, len);
+    TEST_ASSERT_EQUAL_STRING("Home", parsed.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("Secret", parsed.wifi.password);
+    TEST_ASSERT_EQUAL_STRING("WebPass", parsed.web.password);
+    TEST_ASSERT_EQUAL_STRING("HD", parsed.camera.resolution);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", parsed.ap.ssid);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -368,6 +582,17 @@ int main(int argc, char** argv)
     RUN_TEST(test_mutable_config_same_as_config_before_modify);
     RUN_TEST(test_mutable_config_modify_visible_through_config);
     RUN_TEST(test_mutable_config_persists_across_loads);
+
+    // NVS / SD persistence
+    RUN_TEST(test_save_nvs_then_load_nvs_round_trip);
+    RUN_TEST(test_load_nvs_overlays_setting_by_setting);
+    RUN_TEST(test_load_nvs_without_saved_config);
+    RUN_TEST(test_load_nvs_schema_version_mismatch_discards);
+    RUN_TEST(test_load_nvs_missing_schema_version_discards);
+    RUN_TEST(test_save_nvs_failure_leaves_ram_config_intact);
+    RUN_TEST(test_save_sd_then_load_sd_round_trip);
+    RUN_TEST(test_overlay_order_defaults_then_nvs_then_sd);
+    RUN_TEST(test_serialize_round_trip);
 
     return UNITY_END();
 }

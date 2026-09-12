@@ -204,6 +204,18 @@ class SdController
          */
         hal::SdInitResult init_card();
 
+        /**
+         * @brief Returns whether the SD card is currently usable.
+         *
+         * True only after init_card() returned SUCCESS. Any failure
+         * (no card present or initialization failure) latches this to
+         * false until a subsequent successful init_card() call. Before
+         * the first init_card() call the card is reported unavailable.
+         *
+         * @return true if the card was successfully initialized.
+         */
+        bool is_card_available() const;
+
         // ============================================================
         // Timing constants (public so tests can reference them)
         // ============================================================
@@ -301,6 +313,9 @@ class SdController
         TimeService& m_time;
         hal::SdCardHal& m_sd_hal;
         CsSignalFn m_cs_signal_fn;
+
+        /** Result of the most recent init_card() call. */
+        hal::SdInitResult m_init_result{hal::SdInitResult::NO_SD_CARD};
 
         SdState m_state{SdState::IDLE};
         hal::millis_t m_last_state_change_ms{0};

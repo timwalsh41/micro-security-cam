@@ -301,6 +301,29 @@ bool SerialCommandTransport::parse_command(
         payload_len = arg_len;
         return true;
     }
+    else if (strcmp(cmd, "CONFIG_SAVE") == 0)
+    {
+        if (args == nullptr)
+        {
+            return false;
+        }
+        // Payload is the destination string: "nvs" or "sd".
+        size_t arg_len = strnlen(args, LINE_BUFFER_SIZE - 1);
+        memcpy(payload_buffer, args, arg_len);
+        payload_buffer[arg_len] = '\0';
+        code = CommandCode::SET_CONFIG;
+        payload = payload_buffer;
+        payload_len = arg_len;
+        return true;
+    }
+    else if (strcmp(cmd, "CONFIG_GET") == 0)
+    {
+        // No payload: the response is the full serialized config.
+        code = CommandCode::GET_CONFIG;
+        payload = nullptr;
+        payload_len = 0;
+        return true;
+    }
 
     return false;
 }

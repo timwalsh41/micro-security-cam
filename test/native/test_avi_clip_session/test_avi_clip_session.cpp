@@ -319,6 +319,49 @@ void test_rotation_cycle_finalizes_and_reopens()
 }
 
 /**
+ * @brief open() fails when the placeholder header write to SD fails,
+ *        without latching close-pending.
+ */
+void test_open_fails_when_header_write_fails()
+{
+    TestFixture f;
+    f.sd_hal.write_result = false;
+
+    TEST_ASSERT_FALSE(f.session.open());
+
+    TEST_ASSERT_FALSE(f.session.is_open());
+    TEST_ASSERT_FALSE(f.session.close_pending());
+    TEST_ASSERT_EQUAL_UINT32(0, f.session.frames_recorded());
+    TEST_ASSERT_EQUAL_UINT32(0, f.session.file_size());
+}
+
+/**
+ * @brief The file-size counter counts only bytes actually written, so
+ *        a failed frame write does not inflate the reported size.
+ */
+void test_file_size_counts_only_written_bytes()
+{
+    TestFixture f;
+    TEST_ASSERT_TRUE(f.session.open());
+
+    // Failed write: no bytes counted.
+    f.sd_hal.write_result = false;
+    f.session.append_frame(f.frame(), FAKE_JPEG_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(1, f.session.frames_recorded());
+    TEST_ASSERT_EQUAL_UINT32(0, f.session.file_size());
+
+    // Successful write: the counter grows by exactly the bytes added
+    // to the stored file (frame chunk including chunk header).
+    size_t file_before = f.sd_hal.files[f.session.file_path()].size();
+    f.sd_hal.write_result = true;
+    f.session.append_frame(f.frame(), FAKE_JPEG_SIZE);
+    size_t file_after = f.sd_hal.files[f.session.file_path()].size();
+    TEST_ASSERT_EQUAL_UINT32(2, f.session.frames_recorded());
+    TEST_ASSERT_EQUAL_UINT32(file_after - file_before,
+                             f.session.file_size());
+}
+
+/**
  * @brief close() tolerates SD write failures without crashing and still
  *        clears the latch and counters.
  */
@@ -370,6 +413,8 @@ int main()
     RUN_TEST(test_consume_close_request);
     RUN_TEST(test_rotation_cycle_finalizes_and_reopens);
     RUN_TEST(test_close_with_sd_write_failure);
+    RUN_TEST(test_open_fails_when_header_write_fails);
+    RUN_TEST(test_file_size_counts_only_written_bytes);
     RUN_TEST(test_close_without_open_clip);
 
     return UNITY_END();

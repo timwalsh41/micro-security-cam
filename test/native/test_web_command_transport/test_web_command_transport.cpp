@@ -515,6 +515,35 @@ void test_fallback_error_no_payload()
                              hal.mock_request.responses[0].body.c_str());
 }
 
+/**
+ * @brief SD_UNAVAILABLE (0x04) renders as {"result":"error","code":4}.
+ */
+void test_fallback_error_sd_unavailable()
+{
+    MockWebServerHal hal;
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger(log_backend, time);
+    CommandHandler err_handler(logger);
+    err_handler.register_handler(CommandCode::GET_STATUS,
+                                 [](const uint8_t*, size_t, uint8_t*,
+                                    size_t& responseLen) -> CommandResult
+                                 {
+                                     responseLen = 0;
+                                     return CommandResult::SD_UNAVAILABLE;
+                                 });
+    WebCommandTransport err_transport(hal, err_handler);
+    err_transport.register_routes("");
+
+    hal.simulate_request("/status", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, hal.mock_request.responses[0].code);
+    // SD_UNAVAILABLE = 0x04
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":4}",
+                             hal.mock_request.responses[0].body.c_str());
+}
+
 // ============================================================
 // main
 // ============================================================
@@ -554,6 +583,7 @@ int main()
     // Fallback JSON response path
     RUN_TEST(test_fallback_success_no_payload);
     RUN_TEST(test_fallback_error_no_payload);
+    RUN_TEST(test_fallback_error_sd_unavailable);
 
     return UNITY_END();
 }

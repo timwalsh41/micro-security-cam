@@ -6,6 +6,7 @@
 #include "hal/sd_card_hal_impl.h"
 #include "hal/wifi_hal_impl.h"
 #include "hal/web_server_hal_impl.h"
+#include "hal/nvs_hal_impl.h"
 #include "hal/timer_hal_impl.h"
 #include "hal/gpio_hal.h"
 #include "camera_controller.h"
@@ -47,6 +48,7 @@ LoggingService logger{log_backend, real_time};
 hal::SdCardHalImpl sd_hal{hal::SD_CS_PIN};
 hal::CameraHalImpl camera_hal;
 hal::TimerHalImpl timer_hal;
+hal::NvsHalImpl nvs_hal_impl;
 
 // --- FreeRTOS mutex for shared GPIO 21 (LED / SD CS) ---
 SemaphoreHandle_t sd_active_mutex = nullptr;
@@ -70,7 +72,8 @@ StreamService stream_service{logger};
 SystemOrchestrator system_orchestrator{
     video_controller, camera_ctrl, command_handler,
     real_time, config_service, logger,
-    stream_service, web_server_hal_impl};
+    stream_service, web_server_hal_impl,
+    sd_controller, nvs_hal_impl};
 
 
 // --- Global state variables ---
@@ -165,22 +168,29 @@ void setup()
     led_sm.set_mode(LedMode::OFF);
     update_led();
 
-    // --- Initialize SD card ---
-    if (sd_controller.init_card() != hal::SdInitResult::SUCCESS)
+    // --- Initialize SD card (optional at boot) ---
+    // A missing card or a failed card initialization latches the system
+    // into streaming-only mode: camera, WiFi, web server, streaming and
+    // command dispatch all come up, but recording and photo capture are
+    // unavailable. Recovery is insert-card-then-power-cycle.
+    hal::SdInitResult sd_result = sd_controller.init_card();
+    if (sd_result == hal::SdInitResult::NO_SD_CARD)
     {
-        logger.error("MAIN", "SD initialization failed");
-        return;
+        logger.warn("MAIN", "No SD card detected - "
+                    "entering streaming-only mode");
     }
-    logger.info("MAIN", "SD initialized");
+    else if (sd_result != hal::SdInitResult::SUCCESS)
+    {
+        logger.error("MAIN", "SD initialization failed (%u) - "
+                     "entering streaming-only mode",
+                     static_cast<unsigned>(sd_result));
+    }
 
-    // --- Load config (needs SD card) ---
-    uint8_t config_buf[ConfigService::CONFIG_BUFFER_SIZE];
-    size_t bytes_read = sd_controller.read_sync(
-        ConfigService::DEFAULT_CONFIG_PATH,
-        config_buf, sizeof(config_buf));
-    logger.info("MAIN", "Config read: %zu / %zu bytes",
-                bytes_read, ConfigService::CONFIG_BUFFER_SIZE);
-    config_service.load(config_buf, bytes_read);
+    // --- Load config: compiled-in defaults overlaid from NVS, then ---
+    // --- from the SD card config file when the card is readable.  ---
+    // Precedence: defaults < NVS < SD file.
+    config_service.load_nvs(nvs_hal_impl);
+    config_service.load_sd(sd_controller);
 
     // --- Initialize camera with config-driven settings ---
     CameraImageConfig cam_image_config;

@@ -8,6 +8,8 @@
 #include "config_service.h"
 #include "ini_parser.h"
 #include "logging_service.h"
+#include "sd_controller.h"
+#include "hal/nvs_hal.h"
 #include "hal/web_server_hal.h"
 
 /** Forward declarations. */
@@ -34,6 +36,9 @@ class SystemOrchestrator
          * @param log        Reference to LoggingService for logging.
          * @param streams    Reference to StreamService for MJPEG stream control.
          * @param web        Reference to WebServerHal for /stream route registration.
+         * @param sd         Reference to SdController for SD availability and
+         *                   config persistence to the SD card.
+         * @param nvs        Reference to NvsHal for config persistence to NVS.
          */
         SystemOrchestrator(VideoController& video,
                            CameraController& camera,
@@ -42,7 +47,9 @@ class SystemOrchestrator
                            ConfigService& config,
                            LoggingService& log,
                            StreamService& streams,
-                           hal::WebServerHal& web);
+                           hal::WebServerHal& web,
+                           SdController& sd,
+                           hal::NvsHal& nvs);
 
         /**
          * @brief Initializes the orchestrator.
@@ -51,6 +58,19 @@ class SystemOrchestrator
          * Must be called after all dependent services are initialized.
          */
         void init();
+
+        /**
+         * @brief Returns whether the SD card was available at initialization.
+         *
+         * The availability is latched from the SD controller at init()
+         * time: both a missing card and a failed card initialization
+         * latch the system into streaming-only mode (photo capture and
+         * recording gated with SD_UNAVAILABLE). Recovery is to insert
+         * a card (if missing) and power-cycle.
+         *
+         * @return true if the SD card was usable when init() ran.
+         */
+        bool is_sd_available() const;
 
         /**
          * @brief Periodic tick for future schedule evaluation.
@@ -69,6 +89,11 @@ class SystemOrchestrator
         LoggingService& m_log;
         StreamService& m_streams;
         hal::WebServerHal& m_web;
+        SdController& m_sd;
+        hal::NvsHal& m_nvs;
+
+        /** Latched SD availability snapshot from init(). */
+        bool m_sd_available{false};
 
         /** Register-time snapshot of the web password for /stream auth. */
         char m_stream_password[CONFIG_FIELD_MAX_LENGTH]{};
@@ -92,6 +117,8 @@ class SystemOrchestrator
         CommandResult handle_set_time(const uint8_t* payload, size_t len,
                                       uint8_t* response, size_t& responseLen);
         CommandResult handle_set_config(const uint8_t* payload, size_t len,
+                                        uint8_t* response, size_t& responseLen);
+        CommandResult handle_get_config(const uint8_t* payload, size_t len,
                                         uint8_t* response, size_t& responseLen);
         CommandResult handle_get_config_value(const uint8_t* payload, size_t len,
                                               uint8_t* response, size_t& responseLen);

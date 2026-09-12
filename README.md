@@ -61,7 +61,11 @@ pio test -e seeed_xiao_esp32s3_test
 
 ## Configuration
 
-The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used. The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
+The firmware ships with sensible defaults compiled in. At startup, the defaults are overlaid setting-by-setting from NVS (non-volatile flash storage, if a config was saved there), and then from the INI-style config file (`/config.ini`) on the SD card if present — **precedence: defaults < NVS < SD file**; a setting mentioned in a later source overrides earlier ones, settings not mentioned keep their earlier value.
+
+Compiled-in defaults: WiFi settings blank (STA connection is skipped and the fallback AP starts immediately), AP SSID `MicroCam` with no password (open network), web port 80 with no password, and the camera/video defaults listed in the table below.
+
+The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
 
 ### Example Config File
 
@@ -74,7 +78,7 @@ gateway=192.168.1.1
 subnet_mask=255.255.255.0
 
 [ap]
-ssid=ESP32-Cam
+ssid=MicroCam
 password=FallbackPass
 ap_ip=192.168.4.1
 ap_gateway=192.168.4.1
@@ -110,7 +114,7 @@ mic_gain=2
 | `[wifi]` | `static_ip` | string | `""` | Static IP address for station mode |
 | `[wifi]` | `gateway` | string | `""` | Gateway address (required with static_ip) |
 | `[wifi]` | `subnet_mask` | string | `""` | Subnet mask (required with static_ip) |
-| `[ap]` | `ssid` | string | `""` | Access point name (fallback) |
+| `[ap]` | `ssid` | string | `MicroCam` | Access point name (fallback) |
 | `[ap]` | `password` | string | `""` | Access point password |
 | `[ap]` | `ap_ip` | string | `""` | Static IP for AP mode (requires ap_gateway & ap_subnet_mask) |
 | `[ap]` | `ap_gateway` | string | `""` | Gateway address for AP mode |
@@ -133,6 +137,19 @@ mic_gain=2
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
 
 Boolean keys accept `true` or `false` (case-insensitive); any other value is parsed as `false`.
+
+## SD Card & Degraded Mode
+
+The SD card is optional at boot. If no card is present, or card initialization fails, the system still comes up fully in **streaming-only degraded mode**: camera, WiFi, web server, live streaming, and command dispatch all work; recording and photo capture are unavailable.
+
+In degraded mode:
+
+- `TAKE_PHOTO` and `RECORD_START` fail with return code `SD_UNAVAILABLE` (`0x04`; serial `ERR 04`, web `{"result":"error","code":4}`). This check takes precedence over other error conditions.
+- `RECORD_STOP` remains a successful no-op.
+- `GET /status` (and serial `STATUS`) reports the latched card state in the additive `"sd": false` field.
+- `CONFIG_SAVE sd` fails with `SD_UNAVAILABLE`; use `CONFIG_SAVE nvs` instead.
+
+Late SD insertion is **not** detected at runtime. To recover from degraded mode, insert a card (if missing) and power-cycle the device.
 
 ### Adding a New Config Section
 
@@ -186,8 +203,8 @@ When WiFi is configured, the camera provides a web interface for status and cont
 
 ### Connection
 
-1. The camera first attempts to connect to the configured STA (station) WiFi network.
-2. If STA connection fails within 30 seconds, it falls back to AP (access point) mode with the configured AP SSID/password.
+1. If a STA (station) SSID is configured, the camera first attempts to connect to that network.
+2. With no STA SSID (the default) or when STA connection fails within 30 seconds, it falls back to AP (access point) mode with the configured AP SSID/password (default: `MicroCam`, open network).
 3. The IP address is logged at startup and available via the serial monitor.
 
 ### Endpoints
@@ -195,13 +212,15 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/` | No | Built-in HTML status page |
-| GET | `/status` | Yes | JSON status (recording and streaming activity, frame count, file size) |
+| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |
 | GET | `/control?cmd=stream_start` | Yes | Start live preview (capture loop on) |
 | GET | `/control?cmd=stream_stop` | Yes | Stop live preview |
 | GET | `/control?cmd=stream_list` | Yes | List connected stream clients (JSON) |
+| GET | `/control?cmd=config` | Yes | Full live config as INI text |
+| GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |
 
 ### Live Streaming

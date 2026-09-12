@@ -30,7 +30,13 @@ using CommandHandlerFn = std::function<CommandResult(
 class CommandHandler
 {
     public:
-        static constexpr size_t MAX_RESPONSE_SIZE = 256;
+        /**
+         * @brief Maximum size of a command response payload in bytes.
+         *
+         * Sized to carry a full serialized configuration
+         * (ConfigService::CONFIG_BUFFER_SIZE).
+         */
+        static constexpr size_t MAX_RESPONSE_SIZE = 512;
 
         explicit CommandHandler(LoggingService& log);
 

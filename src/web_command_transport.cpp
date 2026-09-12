@@ -72,6 +72,10 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     {
         return CommandCode::GET_CONFIG;
     }
+    if (std::strcmp(cmd, "config_save") == 0)
+    {
+        return CommandCode::SET_CONFIG;
+    }
     if (std::strcmp(cmd, "set_time") == 0)
     {
         return CommandCode::SET_TIME;
@@ -166,6 +170,24 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
     }
 
     CommandCode code = map_cmd_string(cmd);
+
+    // SET_CONFIG needs a destination from the "dest" query parameter.
+    if (code == CommandCode::SET_CONFIG)
+    {
+        const char* dest = request.arg("dest");
+        if (dest == nullptr || dest[0] == '\0')
+        {
+            request.send(400, "application/json",
+                         "{\"error\":\"missing 'dest' parameter\"}");
+            return;
+        }
+
+        // Payload is the destination string: "nvs" or "sd".
+        dispatch_and_respond(request, code,
+                             reinterpret_cast<const uint8_t*>(dest),
+                             strlen(dest));
+        return;
+    }
 
     // SET_TIME needs a Unix timestamp from the "ts" query parameter.
     if (code == CommandCode::SET_TIME)
