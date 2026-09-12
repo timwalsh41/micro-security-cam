@@ -23,6 +23,7 @@
 #include "serial_command_transport.h"
 #include "system_orchestrator.h"
 #include "stream_service.h"
+#include "version.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -133,6 +134,7 @@ void setup()
     // Add delay for PlatformIO terminal to connect
     real_time.delay_ms(5000);
 
+    logger.info("MAIN", "Microcam %s", version::version_string);
     logger.info("MAIN", "Starting initialization");
 
     // --- Create FreeRTOS mutex for shared GPIO pin ---

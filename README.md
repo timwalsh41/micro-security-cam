@@ -1,6 +1,6 @@
-# ESP32 Photo Camera
+# ESP32 Security Camera
 
-A still photo and MJPEG video camera for the **Seeed XIAO ESP32S3 Sense**, capturing JPEG images and recording video to a MicroSD card. An LED provides visual status feedback.
+A still photo and MJPEG video camera built on the Seeed XIAO ESP32S3 Sense. Provides video streaming, as well as JPEG images and MPEG video capture to a MicroSD card.
 
 Built with the Arduino framework and PlatformIO.
 
@@ -26,9 +26,9 @@ script/           Build helper scripts
 
 ## Prerequisites
 
-- [PlatformIO CLI](https://docs.platformio.org/en/latest/core/installation.html) (`pio` command)
-- Python 3 with [uv](https://docs.astral.sh/uv/) (for the IntelliSense workaround scripts)
-- Activate the PlatformIO environment before running commands:
+- [PlatformIO CLI](https://docs.platformio.org/en/latest/core/installation.html)
+- Python 3 with [uv](https://docs.astral.sh/uv/)
+- Activate the PlatformIO environment before running commands, e.g.:
   ```bash
   source ~/.platformio/penv/bin/activate
   ```
@@ -42,7 +42,7 @@ pio run -e seeed_xiao_esp32s3
 # Flash to the connected board
 pio run -e seeed_xiao_esp32s3 --target upload
 
-# Open serial monitor (115200 baud)
+# Open serial monitor
 pio device monitor
 ```
 
@@ -225,10 +225,6 @@ The number of concurrent viewers is limited by `max_streams` (1–4).
 
 If a web password is configured in `config.ini`, all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled.
 
-## Debugging
-
-The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/DEBUGGING.md](docs/DEBUGGING.md) for the full GDB workflow and PlatformIO debug configuration.
-
 ## Video Recording
 
 The firmware records MJPEG video to the SD card in standard AVI containers.
@@ -288,6 +284,10 @@ uv run script/python/camera_cli.py set-time
 
 Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.
 
+## Debugging
+
+The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/DEBUGGING.md](docs/DEBUGGING.md) for the full GDB workflow and PlatformIO debug configuration.
+
 ## VSCode IntelliSense for Tests
 
 ### The Problem
@@ -321,44 +321,6 @@ pio test -e native
 ```
 
 Since PlatformIO regularly rewrites the `c_cpp_properties.json` (e.g. on project changes, updates to `platformio.ini`, etc.), **the `fix_test_intellisense.sh` script must be re-run as needed** to ensure the configurations are up to date.
-
-## Video Recording
-
-The firmware records MJPEG video to the SD card in standard AVI containers.
-
-### How It Works
-
-- Frames are captured from the camera at the configured FPS and written to an AVI file.
-- Clips are automatically rotated when `clip_duration_s` or `max_file_size_mb` is reached.
-- Files are stored in date-stamped directories: `/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`.
-- Frames are written to SD incrementally, one AVI chunk per frame; at clip end the header is patched in place.
-
-### LED Feedback During Recording
-
-| State | LED Pattern | Meaning |
-|-------|-------------|---------|
-| Recording | Fast blink (200ms on / 200ms off) | Video being recorded |
-| Stopping | Single pulse (500ms) | Clip boundary — old clip closing, new clip opening |
-| Idle | Photo capture pulse or off | Not recording video |
-
-## CLI Tool
-
-The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints.
-
-Edit the `HOST`, `PORT`, and `PASSWORD` variables at the top of the script to match your device configuration.
-
-```bash
-# Get camera status (JSON)
-uv run script/python/camera_cli.py status
-
-# Send a control command
-uv run script/python/camera_cli.py control [start | stop | photo | stream_start | stream_stop | stream_list]
-
-# Set camera clock to current system time
-uv run script/python/camera_cli.py set-time
-```
-
-Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.
 
 ## Documentation
 
