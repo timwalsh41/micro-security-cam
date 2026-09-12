@@ -1,6 +1,7 @@
 #include "hal/timer_hal_impl.h"
 
 #include <Arduino.h>
+#include <esp_err.h>
 
 namespace hal
 {
@@ -35,6 +36,9 @@ bool TimerHalImpl::init(uint32_t interval_us, std::function<void()> isr)
     esp_err_t err = timer_init(TIMER_GROUP_0, TIMER_0, &config);
     if (err != ESP_OK)
     {
+        Serial.printf("[%08lu] [TMRL] [ERROR] timer_init failed: %s (0x%x)\r\n",
+                      static_cast<unsigned long>(millis()),
+                      esp_err_to_name(err), static_cast<unsigned int>(err));
         return false;
     }
 
@@ -46,6 +50,10 @@ bool TimerHalImpl::init(uint32_t interval_us, std::function<void()> isr)
                                   timer_isr_trampoline, this, 0);
     if (err != ESP_OK)
     {
+        Serial.printf("[%08lu] [TMRL] [ERROR] timer_isr_callback_add failed: "
+                      "%s (0x%x)\r\n",
+                      static_cast<unsigned long>(millis()),
+                      esp_err_to_name(err), static_cast<unsigned int>(err));
         return false;
     }
     m_callback_attached = true;

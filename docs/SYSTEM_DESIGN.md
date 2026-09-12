@@ -1614,7 +1614,7 @@ Lifecycle rules:
 
 On ESP32, `CaptureSchedulerEsp32` implements the scheduler using a hardware timer (`TimerHalImpl`) and a FreeRTOS capture task pinned to CPU0 (APP_CPU). The timer ISR sends a task notification to wake the capture task, which invokes the frame callback. This keeps the main loop (CPU1) free for WiFi, web server, and LED management.
 
-`start()` returns `false` if the scheduler is already running (no second task is created), and `stop()` is synchronous: it sets a stop flag, stops the timer, wakes the task, and joins it with a bounded wait (`STOP_JOIN_TIMEOUT_MS`). The task runs one final callback (to process any pending clip closure) before exiting. Cross-task state (`TaskHandle_t`, stop flag) is `std::atomic` so the ISR and task never act on a dangling handle.
+`start()` returns `false` if the scheduler is already running (no second task is created), if the timer fails to initialize, or if the capture task cannot be created — every failure is logged and no task handle is stored, so callers fail loudly instead of reporting a producer that will never tick. `stop()` is synchronous: it sets a stop flag, stops the timer, wakes the task, and joins it with a bounded wait (`STOP_JOIN_TIMEOUT_MS`). The task runs one final callback (to process any pending clip closure) before exiting. Cross-task state (`TaskHandle_t`, stop flag) is `std::atomic` so the ISR and task never act on a dangling handle. At the capture task's first activation after a start, a one-time liveness line ("Capture loop started") is logged; its absence after a start identifies a silently dead producer.
 
 ### Recording Sequence Diagram
 

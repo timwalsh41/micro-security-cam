@@ -40,10 +40,16 @@ class CaptureSchedulerEsp32 : public ICaptureScheduler
          * notifications. Configures the timer ISR to call
          * on_frame_capture() at the given interval.
          *
+         * On success, the capture task logs a one-time liveness line at its
+         * first activation ("Capture loop started"), so a start that dies
+         * silently is visible by the absence of that line.
+         *
          * @param interval_ms  Capture interval in milliseconds.
          * @param frame_callback  Function to call on each frame capture.
          * @return true if started, false if the scheduler is already
-         *         running (no second task is created).
+         *         running, if the timer fails to initialize, or if the
+         *         capture task cannot be created (no task handle is
+         *         stored in any failure case).
          */
         bool start(uint32_t interval_ms,
                    std::function<void()> frame_callback) override;
@@ -84,6 +90,8 @@ class CaptureSchedulerEsp32 : public ICaptureScheduler
         static constexpr uint32_t STOP_JOIN_TIMEOUT_MS = 1000;
 
         hal::TimerHal& m_timer;
+        uint32_t m_interval_ms{0};
+        std::atomic<bool> m_announce_pending{false};
         std::function<void()> m_callback;
         std::atomic<TaskHandle_t> m_task{nullptr};
         std::atomic<bool> m_stop_requested{false};

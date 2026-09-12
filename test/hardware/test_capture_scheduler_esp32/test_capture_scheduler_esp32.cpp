@@ -2,9 +2,11 @@
 #include <unity.h>
 #include "capture_scheduler_esp32.h"
 #include "hal/timer_hal_impl.h"
+#include "hal/timer_hal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <atomic>
+#include <functional>
 
 /**
  * @file test_capture_scheduler_esp32.cpp
@@ -26,6 +28,67 @@ static void on_frame_callback()
 {
     g_callback_count.fetch_add(1, std::memory_order_relaxed);
 }
+
+// ============================================================
+// Timer mock (failure injection)
+// ============================================================
+
+/**
+ * @brief Configurable hal::TimerHal mock for failure-path tests.
+ *
+ * Records init/start/stop calls and optionally fails init(), which is
+ * the injectable seam for the scheduler's timer collaborator. The ISR
+ * callback is stored but never fires on its own; tests invoke it
+ * manually to model timer activations.
+ */
+class MockTimerHal : public hal::TimerHal
+{
+    public:
+        bool init_result{true};
+        int init_call_count{0};
+        int start_call_count{0};
+        int stop_call_count{0};
+        std::function<void()> isr;
+
+        bool init(uint32_t interval_us,
+                  std::function<void()> callback) override
+        {
+            (void)interval_us;
+            init_call_count++;
+            if (!init_result)
+            {
+                return false;
+            }
+            isr = callback;
+            return true;
+        }
+
+        void set_frequency(uint32_t interval_us) override
+        {
+            (void)interval_us;
+        }
+
+        void start() override
+        {
+            start_call_count++;
+        }
+
+        void stop() override
+        {
+            stop_call_count++;
+        }
+
+        /**
+         * @brief Fires the registered ISR callback once (models a timer tick).
+         */
+        void fire_isr()
+        {
+            if (isr)
+            {
+                isr();
+            }
+        }
+};
 
 // ============================================================
 // Interval pacing
@@ -141,6 +204,46 @@ void test_restart_after_stop()
 }
 
 // ============================================================
+// Timer-init failure propagation
+// ============================================================
+
+/**
+ * @brief A timer init failure propagates as a start failure.
+ *
+ * start() must return false without creating a capture task or starting
+ * the timer — otherwise the task would block forever on a never-firing
+ * notification while the caller reports success. Also proves the failure
+ * leaves no wedged state: after the timer recovers, a fresh start()
+ * succeeds and ticks.
+ */
+void test_start_fails_when_timer_init_fails()
+{
+    MockTimerHal timer;
+    CaptureSchedulerEsp32 scheduler(timer);
+
+    timer.init_result = false;
+    g_callback_count.store(0, std::memory_order_relaxed);
+    TEST_ASSERT_FALSE(scheduler.start(50, on_frame_callback));
+
+    // The timer was configured but never started and no task was
+    // created: scheduler stop() is a no-op and does not touch the timer.
+    TEST_ASSERT_EQUAL_INT(1, timer.init_call_count);
+    TEST_ASSERT_EQUAL_INT(0, timer.start_call_count);
+    scheduler.stop();
+    TEST_ASSERT_EQUAL_INT(0, timer.stop_call_count);
+
+    // Recovery: once the timer initializes again, start succeeds and
+    // a manual ISR fire runs the frame callback.
+    timer.init_result = true;
+    TEST_ASSERT_TRUE(scheduler.start(50, on_frame_callback));
+    timer.fire_isr();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    scheduler.stop();
+    TEST_ASSERT_GREATER_OR_EQUAL(1u,
+        g_callback_count.load(std::memory_order_relaxed));
+}
+
+// ============================================================
 // Test runner (Arduino entry point)
 // ============================================================
 
@@ -156,6 +259,7 @@ int runUnityTests()
     RUN_TEST(test_stop_runs_final_callback_and_joins);
     RUN_TEST(test_double_start_rejected);
     RUN_TEST(test_restart_after_stop);
+    RUN_TEST(test_start_fails_when_timer_init_fails);
     return UNITY_END();
 }
 
