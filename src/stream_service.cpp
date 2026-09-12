@@ -3,6 +3,13 @@
 #include <cstdio>
 #include <cstring>
 
+// C++11 requires an out-of-class definition for constexpr static data
+// members that are odr-used; C++17 makes the in-class initializer
+// sufficient.
+#if __cplusplus < 201703L
+constexpr uint8_t StreamService::PLACEHOLDER_JPEG[];
+#endif
+
 StreamService::StreamService(LoggingService& log)
     : m_log(log)
 {
@@ -25,6 +32,38 @@ int StreamService::start_stream(std::shared_ptr<StreamFrameChannel> channel)
     {
         m_log.warn(SUBSYSTEM, "start_stream rejected: null channel");
         return -1;
+    }
+
+    // Seed the stream with a small, well-formed placeholder JPEG part
+    // so the channel holds bytes before the slot bind. The transport
+    // response attached to the viewer's request then finds data ready
+    // at its first fill, which keeps the response's head-plus-content
+    // write inside its send-buffer reservation; with an empty channel
+    // the head is deferred into a later content write and overflows
+    // the socket buffer, silently truncating the first chunk. The
+    // placeholder is framed like any delivered frame, so strict
+    // multipart parsers accept the stream opening (a standalone empty
+    // opening boundary is what they reject) and render it until the
+    // first real frame replaces it.
+    uint8_t part[PART_HEADER_CAPACITY + PLACEHOLDER_JPEG_LEN + 2];
+    size_t header_len =
+        format_part_header(reinterpret_cast<char*>(part),
+                           PART_HEADER_CAPACITY, PLACEHOLDER_JPEG_LEN);
+    if (header_len > 0)
+    {
+        std::memcpy(part + header_len, PLACEHOLDER_JPEG,
+                    PLACEHOLDER_JPEG_LEN);
+        part[header_len + PLACEHOLDER_JPEG_LEN] = PART_FOOTER[0];
+        part[header_len + PLACEHOLDER_JPEG_LEN + 1] = PART_FOOTER[1];
+
+        // Push outside the slot mutex: the channel is not bound to any
+        // slot yet, so no producer can race this push.
+        size_t part_len = header_len + PLACEHOLDER_JPEG_LEN + 2;
+        channel->push_part(part, part_len);
+    }
+    else
+    {
+        m_log.warn(SUBSYSTEM, "Placeholder part header overflow");
     }
 
     std::lock_guard<std::mutex> lock(m_slot_mutex);
@@ -143,12 +182,9 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
     }
 
     // Build the per-frame part header with the actual Content-Length.
-    // PART_HEADER is ~64 bytes; add room for the decimal length
-    // (up to 10 digits) plus the trailing CRLFCRLF.
-    char header[96];
-    int n = snprintf(header, sizeof(header), "%s%u\r\n\r\n",
-                     PART_HEADER, static_cast<unsigned int>(len));
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(header))
+    char header[PART_HEADER_CAPACITY];
+    size_t header_len = format_part_header(header, sizeof(header), len);
+    if (header_len == 0)
     {
         m_log.warn(SUBSYSTEM, "Frame header overflow");
         return;
@@ -176,10 +212,10 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
     // frame: every viewer receives identical bytes and push_part()
     // copies anyway.
     m_part_scratch.clear();
-    m_part_scratch.reserve(n + len + strlen(PART_FOOTER));
+    m_part_scratch.reserve(header_len + len + strlen(PART_FOOTER));
     m_part_scratch.insert(m_part_scratch.end(),
                           reinterpret_cast<uint8_t*>(header),
-                          reinterpret_cast<uint8_t*>(header) + n);
+                          reinterpret_cast<uint8_t*>(header) + header_len);
     m_part_scratch.insert(m_part_scratch.end(), data, data + len);
     m_part_scratch.insert(m_part_scratch.end(),
                           reinterpret_cast<const uint8_t*>(PART_FOOTER),
@@ -208,4 +244,16 @@ uint8_t StreamService::active_slot_count() const
         }
     }
     return count;
+}
+
+size_t StreamService::format_part_header(char* buf, size_t cap,
+                                         size_t payload_len)
+{
+    int n = snprintf(buf, cap, "%s%u\r\n\r\n",
+                     PART_HEADER, static_cast<unsigned int>(payload_len));
+    if (n < 0 || static_cast<size_t>(n) >= cap)
+    {
+        return 0;
+    }
+    return static_cast<size_t>(n);
 }

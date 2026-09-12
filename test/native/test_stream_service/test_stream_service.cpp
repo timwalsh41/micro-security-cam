@@ -33,6 +33,30 @@ struct TestFixture
 static const uint8_t FAKE_JPEG[8] = {0xFF, 0xD8, 0x01, 0x02, 0x03, 0x04, 0xFF, 0xD9};
 
 /**
+ * @brief Expected placeholder JPEG payload (the PLACEHOLDER_JPEG array
+ *        in stream_service.h); kept local so the wire bytes are pinned
+ *        by the test.
+ */
+static const uint8_t EXPECTED_PLACEHOLDER_JPEG[159] = {
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+    0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+    0xFF, 0xDB, 0x00, 0x43, 0x00, 0x28, 0x1C, 0x1E, 0x23, 0x1E,
+    0x19, 0x28, 0x23, 0x21, 0x23, 0x2D, 0x2B, 0x28, 0x30, 0x3C,
+    0x64, 0x41, 0x3C, 0x37, 0x37, 0x3C, 0x7B, 0x58, 0x5D, 0x49,
+    0x64, 0x91, 0x80, 0x99, 0x96, 0x8F, 0x80, 0x8C, 0x8A, 0xA0,
+    0xB4, 0xE6, 0xC3, 0xA0, 0xAA, 0xDA, 0xAD, 0x8A, 0x8C, 0xC8,
+    0xFF, 0xCB, 0xDA, 0xEE, 0xF5, 0xFF, 0xFF, 0xFF, 0x9B, 0xC1,
+    0xFF, 0xFF, 0xFF, 0xFA, 0xFF, 0xE6, 0xFD, 0xFF, 0xF8, 0xFF,
+    0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01,
+    0x11, 0x00, 0xFF, 0xC4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xFF, 0xC4, 0x00, 0x14, 0x10, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xDA, 0x00, 0x08,
+    0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x3F, 0xFF, 0xD9
+};
+
+/**
  * @brief Drains the whole pending part from a channel.
  */
 static std::string drain(StreamFrameChannel& channel)
@@ -50,6 +74,82 @@ static std::string drain(StreamFrameChannel& channel)
 // ============================================================
 // Tests
 // ============================================================
+
+/**
+ * @brief Strict multipart/x-mixed-replace wire parser.
+ *
+ * Consumes a sequence of complete parts exactly as a strict client
+ * parser would: each part must be a boundary line, the two standard
+ * headers with a decimal Content-Length, a blank line, exactly that
+ * many payload bytes, and the CRLF footer; the sequence may end only
+ * with the closing boundary. Any slack, truncation, or framing
+ * deviation fails the parse (ok == false).
+ */
+struct StrictPartParser
+{
+    bool ok{true};
+    std::vector<std::string> payloads;
+
+    void parse(const std::string& wire)
+    {
+        size_t pos = 0;
+        payloads.clear();
+        ok = true;
+        while (ok && pos < wire.size())
+        {
+            if (consume(wire, pos, "--CAM_BOUNDARY--\r\n"))
+            {
+                break;
+            }
+            if (!consume(wire, pos, "--CAM_BOUNDARY\r\n") ||
+                !consume(wire, pos, "Content-Type: image/jpeg\r\n") ||
+                !consume(wire, pos, "Content-Length: "))
+            {
+                ok = false;
+                break;
+            }
+
+            size_t len = 0;
+            bool have_digit = false;
+            while (pos < wire.size() && wire[pos] >= '0' && wire[pos] <= '9')
+            {
+                len = len * 10 + static_cast<size_t>(wire[pos] - '0');
+                have_digit = true;
+                pos++;
+            }
+            if (!have_digit || !consume(wire, pos, "\r\n\r\n") ||
+                pos + len > wire.size())
+            {
+                ok = false;
+                break;
+            }
+            payloads.push_back(wire.substr(pos, len));
+            pos += len;
+            if (!consume(wire, pos, "\r\n"))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok || pos != wire.size())
+        {
+            ok = false;
+        }
+    }
+
+    private:
+        static bool consume(const std::string& wire, size_t& pos,
+                            const char* token)
+        {
+            size_t len = strlen(token);
+            if (wire.compare(pos, len, token) != 0)
+            {
+                return false;
+            }
+            pos += len;
+            return true;
+        }
+};
 
 /**
  * @brief init() allocates the configured number of slots.
@@ -88,12 +188,13 @@ void test_deliver_frame_no_slots()
 }
 
 /**
- * @brief start_stream() pushes no bytes of its own: the channel stays
- *        empty until the first real multipart part is delivered, so the
- *        stream never begins with a standalone (empty) opening boundary
- *        part that strict multipart parsers reject.
+ * @brief start_stream() seeds the channel with a well-formed placeholder
+ *        JPEG part: boundary line, image/jpeg content type, a
+ *        Content-Length matching the payload, the payload, and the CRLF
+ *        footer. The channel is never empty when the transport response
+ *        attaches.
  */
-void test_start_stream_pushes_no_bytes()
+void test_start_stream_seeds_placeholder_part()
 {
     TestFixture f;
     f.service.init(4);
@@ -104,13 +205,128 @@ void test_start_stream_pushes_no_bytes()
 
     TEST_ASSERT_GREATER_OR_EQUAL(0, slot);
     TEST_ASSERT_EQUAL_UINT8(1, f.service.active_slot_count());
+    TEST_ASSERT_TRUE(raw->has_pending_part());
+
+    std::string part = drain(*raw);
+    // The part is exactly: boundary line, image/jpeg content type,
+    // Content-Length matching the payload, blank line, the placeholder
+    // JPEG bytes, and the footer.
+    static const char EXPECTED_HEADER[] =
+        "--CAM_BOUNDARY\r\n"
+        "Content-Type: image/jpeg\r\n"
+        "Content-Length: 159\r\n\r\n";
+    const size_t header_len = sizeof(EXPECTED_HEADER) - 1;
+    TEST_ASSERT_EQUAL_size_t(
+        header_len + sizeof(EXPECTED_PLACEHOLDER_JPEG) + 2, part.size());
+    TEST_ASSERT_EQUAL_MEMORY(EXPECTED_HEADER, part.c_str(), header_len);
+    TEST_ASSERT_EQUAL_MEMORY(EXPECTED_PLACEHOLDER_JPEG,
+                             part.c_str() + header_len,
+                             sizeof(EXPECTED_PLACEHOLDER_JPEG));
+    TEST_ASSERT_EQUAL_UINT8(0x0D, part[part.size() - 2]);
+    TEST_ASSERT_EQUAL_UINT8(0x0A, part[part.size() - 1]);
     TEST_ASSERT_FALSE(raw->has_pending_part());
-    TEST_ASSERT_EQUAL_size_t(0, drain(*raw).size());
+}
+
+/**
+ * @brief The seeded placeholder part is consumable by a strict
+ *        multipart wire parser with no slack and the declared
+ *        Content-Length exactly matching the payload.
+ */
+void test_start_stream_placeholder_is_strict_parser_consumable()
+{
+    TestFixture f;
+    f.service.init(4);
+
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    f.service.start_stream(channel);
+
+    StrictPartParser parser;
+    parser.parse(drain(*raw));
+
+    TEST_ASSERT_TRUE(parser.ok);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.payloads.size());
+    TEST_ASSERT_EQUAL_size_t(sizeof(EXPECTED_PLACEHOLDER_JPEG),
+                             parser.payloads[0].size());
+    TEST_ASSERT_EQUAL_MEMORY(EXPECTED_PLACEHOLDER_JPEG,
+                             parser.payloads[0].data(),
+                             parser.payloads[0].size());
+}
+
+/**
+ * @brief A full wire sequence — placeholder prime, real frames, closing
+ *        boundary — is consumed end to end by the strict parser: every
+ *        part is well-formed and payload counts line up.
+ */
+void test_stream_sequence_is_strict_parser_consumable()
+{
+    TestFixture f;
+    f.service.init(4);
+
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    int slot = f.service.start_stream(channel);
+
+    // Model the transport pulling each part in order as it is pushed.
+    std::string wire = drain(*raw);
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    wire += drain(*raw);
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    wire += drain(*raw);
+    f.service.stop_stream(static_cast<uint8_t>(slot));
+    wire += drain(*raw);
+
+    StrictPartParser parser;
+    parser.parse(wire);
+
+    TEST_ASSERT_TRUE(parser.ok);
+    TEST_ASSERT_EQUAL_UINT32(3, parser.payloads.size());
+    TEST_ASSERT_EQUAL_size_t(sizeof(EXPECTED_PLACEHOLDER_JPEG),
+                             parser.payloads[0].size());
+    TEST_ASSERT_EQUAL_size_t(sizeof(FAKE_JPEG), parser.payloads[1].size());
+    TEST_ASSERT_EQUAL_size_t(sizeof(FAKE_JPEG),
+                             parser.payloads[2].size());
+}
+
+/**
+ * @brief The seeded placeholder part follows the freshest-frame mailbox
+ *        semantics: a real frame pushed while it is still pending is
+ *        dropped (the oldest part is kept), and once the placeholder is
+ *        drained the next real frame goes through and replaces it.
+ */
+void test_real_frame_replaces_placeholder()
+{
+    TestFixture f;
+    f.service.init(4);
+
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    f.service.start_stream(channel);
+    TEST_ASSERT_TRUE(raw->has_pending_part());
+
+    // The placeholder occupies the mailbox: a frame pushed before the
+    // transport has pulled it is dropped.
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    TEST_ASSERT_TRUE(raw->has_pending_part());
+    std::string part = drain(*raw);
+    TEST_ASSERT_NOT_NULL(strstr(part.c_str(), "Content-Length: 159"));
+    TEST_ASSERT_EQUAL_size_t(16 + 26 + 23 + sizeof(EXPECTED_PLACEHOLDER_JPEG) + 2,
+                             part.size());
+
+    // Once the placeholder is consumed, the next frame goes through
+    // and becomes the pending part.
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    TEST_ASSERT_TRUE(raw->has_pending_part());
+    part = drain(*raw);
+    TEST_ASSERT_NOT_NULL(strstr(part.c_str(), "Content-Length: 8"));
+    TEST_ASSERT_EQUAL_MEMORY(FAKE_JPEG,
+                             part.c_str() + part.size() - sizeof(FAKE_JPEG) - 2,
+                             sizeof(FAKE_JPEG));
 }
 
 /**
  * @brief deliver_frame() pushes a complete multipart JPEG part into the
- *        channel.
+ *        channel (after the seeded placeholder part is drained).
  */
 void test_deliver_frame_single_stream()
 {
@@ -120,6 +336,7 @@ void test_deliver_frame_single_stream()
     auto channel = std::make_shared<StreamFrameChannel>();
     StreamFrameChannel* raw = channel.get();
     f.service.start_stream(channel);
+    drain(*raw);  // seeded placeholder part
 
     f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
 
@@ -175,6 +392,7 @@ void test_deliver_frame_drops_for_slow_viewer()
     auto channel = std::make_shared<StreamFrameChannel>();
     StreamFrameChannel* raw = channel.get();
     f.service.start_stream(channel);
+    drain(*raw);  // seeded placeholder part
 
     f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
     TEST_ASSERT_TRUE(raw->has_pending_part());
@@ -208,6 +426,7 @@ void test_stop_stream_closes_and_frees()
     StreamFrameChannel* raw = channel.get();
     int slot = f.service.start_stream(channel);
     TEST_ASSERT_GREATER_OR_EQUAL(0, slot);
+    drain(*raw);  // seeded placeholder part
 
     f.service.stop_stream(static_cast<uint8_t>(slot));
 
@@ -298,6 +517,7 @@ void test_deliver_frame_empty()
     auto channel = std::make_shared<StreamFrameChannel>();
     StreamFrameChannel* raw = channel.get();
     f.service.start_stream(channel);
+    drain(*raw);  // seeded placeholder part
 
     f.service.deliver_frame(nullptr, 0);
 
@@ -441,7 +661,9 @@ int main()
     RUN_TEST(test_init_allocates_slots);
     RUN_TEST(test_init_clamps_max_streams);
     RUN_TEST(test_deliver_frame_no_slots);
-    RUN_TEST(test_start_stream_pushes_no_bytes);
+    RUN_TEST(test_start_stream_seeds_placeholder_part);
+    RUN_TEST(test_start_stream_placeholder_is_strict_parser_consumable);
+    RUN_TEST(test_real_frame_replaces_placeholder);
     RUN_TEST(test_deliver_frame_single_stream);
     RUN_TEST(test_deliver_frame_multiple_streams);
     RUN_TEST(test_deliver_frame_drops_for_slow_viewer);
@@ -453,6 +675,7 @@ int main()
     RUN_TEST(test_deliver_frame_empty);
     RUN_TEST(test_stream_end_frees_slot);
     RUN_TEST(test_stream_end_after_stop_is_noop);
+    RUN_TEST(test_stream_sequence_is_strict_parser_consumable);
     RUN_TEST(test_concurrent_slot_mutation_and_delivery);
 
     return UNITY_END();

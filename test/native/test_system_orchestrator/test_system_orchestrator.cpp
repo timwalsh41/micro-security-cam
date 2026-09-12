@@ -729,13 +729,17 @@ void test_stream_route_rejects_without_streaming_mode()
     TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
 
     // The viewer connects through the transport response: the channel
-    // starts empty (no standalone opening boundary part) — the first
-    // bytes on the wire are the first real multipart part.
+    // is primed with the placeholder JPEG part, so the first bytes on
+    // the wire are a well-formed multipart part (never a bare opening
+    // boundary, which strict multipart parsers reject).
     std::shared_ptr<StreamFrameChannel> viewer =
         f.web_hal.mock_request.stream_responses[0].channel;
-    TEST_ASSERT_FALSE(viewer->has_pending_part());
+    TEST_ASSERT_TRUE(viewer->has_pending_part());
     uint8_t buf[64];
-    TEST_ASSERT_EQUAL_size_t(0, viewer->pull(buf, sizeof(buf)));
+    size_t n = viewer->pull(buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, n);
+    TEST_ASSERT_TRUE(strstr(
+        reinterpret_cast<const char*>(buf), "--CAM_BOUNDARY") != nullptr);
 
     // When the transport ends the response (client disconnect), the end
     // callback frees the viewer slot.

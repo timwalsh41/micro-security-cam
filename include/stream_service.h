@@ -115,13 +115,24 @@ class StreamService : public IStreamService
         void init(uint8_t max_streams);
 
         /**
-         * @brief Registers a new viewer.
+         * @brief Registers a new viewer and seeds its multipart stream.
          *
-         * Binds the channel to a free slot. The HTTP 200 response
-         * headers are written by the transport response attached to
-         * the request; the first multipart part is pushed by
-         * deliver_frame(), so the stream begins directly with the
-         * first real part (no standalone opening boundary).
+         * Pushes a well-formed placeholder JPEG part (the
+         * PLACEHOLDER_JPEG payload framed like a delivered frame) as
+         * the first channel bytes and binds the channel to a free slot.
+         * The channel therefore always holds bytes when the transport
+         * response attaches, which keeps the response's first
+         * head-plus-content write within its send-buffer reservation;
+         * with an empty channel the transport framework defers the HTTP
+         * head into a later content write and overflows the socket
+         * buffer, silently truncating the first chunk. The seeded part
+         * is a legal multipart part, so strict multipart parsers accept
+         * the stream opening (a standalone empty opening boundary is
+         * what they reject). The HTTP 200 response headers are written
+         * by the transport response attached to the request; subsequent
+         * parts are pushed by deliver_frame() and the placeholder is
+         * replaced on screen by the first real frame per the channel's
+         * freshest-frame mailbox semantics.
          *
          * @param channel Per-viewer frame channel; ownership is shared
          *                with the transport response attached to the
@@ -198,6 +209,44 @@ class StreamService : public IStreamService
         /** Suffix closing a frame part. */
         static constexpr const char* PART_FOOTER = "\r\n";
 
+        /**
+         * Capacity of a formatted part header: the fixed PART_HEADER
+         * text plus the largest 32-bit decimal Content-Length and the
+         * blank-line terminator.
+         */
+        static constexpr size_t PART_HEADER_CAPACITY = 80;
+
+        /**
+         * Valid 1x1 grayscale JPEG pushed as the first part of every
+         * stream. Framed with the standard part header and footer it
+         * forms a well-formed multipart part (a bare opening boundary
+         * is rejected by strict multipart parsers), and it guarantees
+         * the channel holds bytes at the moment the transport response
+         * attaches. Clients render it as a placeholder frame until the
+         * first real frame replaces it.
+         */
+        static constexpr uint8_t PLACEHOLDER_JPEG[] = {
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+            0xFF, 0xDB, 0x00, 0x43, 0x00, 0x28, 0x1C, 0x1E, 0x23, 0x1E,
+            0x19, 0x28, 0x23, 0x21, 0x23, 0x2D, 0x2B, 0x28, 0x30, 0x3C,
+            0x64, 0x41, 0x3C, 0x37, 0x37, 0x3C, 0x7B, 0x58, 0x5D, 0x49,
+            0x64, 0x91, 0x80, 0x99, 0x96, 0x8F, 0x80, 0x8C, 0x8A, 0xA0,
+            0xB4, 0xE6, 0xC3, 0xA0, 0xAA, 0xDA, 0xAD, 0x8A, 0x8C, 0xC8,
+            0xFF, 0xCB, 0xDA, 0xEE, 0xF5, 0xFF, 0xFF, 0xFF, 0x9B, 0xC1,
+            0xFF, 0xFF, 0xFF, 0xFA, 0xFF, 0xE6, 0xFD, 0xFF, 0xF8, 0xFF,
+            0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01,
+            0x11, 0x00, 0xFF, 0xC4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0xFF, 0xC4, 0x00, 0x14, 0x10, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xDA, 0x00, 0x08,
+            0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x3F, 0xFF, 0xD9
+        };
+
+        /** Length of the placeholder JPEG payload in bytes. */
+        static constexpr size_t PLACEHOLDER_JPEG_LEN = sizeof(PLACEHOLDER_JPEG);
+
         static constexpr const char* SUBSYSTEM = "STREAM";
 
         /** A single viewer slot. */
@@ -222,6 +271,20 @@ class StreamService : public IStreamService
          * under this mutex and operate on the copies outside it.
          */
         mutable std::mutex m_slot_mutex;
+
+        /**
+         * @brief Formats the fixed part header for a payload length.
+         *
+         * Writes PART_HEADER, the decimal @p payload_len, and the
+         * blank-line terminator into @p buf.
+         *
+         * @param buf         Output buffer.
+         * @param cap         Output buffer capacity.
+         * @param payload_len Payload length to declare.
+         * @return The number of bytes written, or 0 on overflow.
+         */
+        static size_t format_part_header(char* buf, size_t cap,
+                                         size_t payload_len);
 
         /**
          * Scratch buffer used by deliver_frame() to assemble a complete

@@ -1008,7 +1008,7 @@ Slot bookkeeping is serialized by an internal slot mutex across task contexts: `
 | Method | Purpose |
 |--------|---------|
 | `init(max_streams)` | Sets the maximum concurrent stream slots (clamped to `MAX_STREAMS = 8`). |
-| `start_stream(channel)` | Binds the channel to a free slot (`-1` if full or null). The HTTP 200 response headers are written by the transport response; the stream begins directly with the first real multipart part delivered by `deliver_frame()` (no standalone opening boundary — strict multipart parsers reject the empty first part). |
+| `start_stream(channel)` | Seeds a well-formed placeholder JPEG part as the first channel bytes and binds the channel to a free slot (`-1` if full or null). The HTTP 200 response headers are written by the transport response; the placeholder prime guarantees the channel holds bytes when the response attaches (keeping the transport's first head-plus-content write within its send-buffer reservation) and is a legal multipart part, so strict parsers accept the stream opening (a standalone empty opening boundary is what they reject). The first real multipart part delivered by `deliver_frame()` replaces the placeholder on screen per the channel's freshest-frame mailbox semantics. |
 | `stop_stream(slot)` | Pushes the closing boundary (best effort — dropped when a frame part is still pending), marks the channel closed, and frees the slot. The transport response drains the pending bytes and completes. |
 | `stop_all_streams()` | Stops every active stream via `stop_stream()`. Invoked by `VideoController` whenever streaming mode turns off and when the capture pipeline is torn down, so viewers never outlive frame delivery. During recording, the close is executed by the capture task at the next dispatch boundary so it cannot interleave with an in-flight `deliver_frame()`. |
 | `deliver_frame(data, len)` | Formats a complete multipart JPEG part and pushes it into every active slot's channel (dropped for viewers still draining). |
@@ -1920,7 +1920,8 @@ ORCH -> ORCH : is_streaming()? (yes)
 ORCH -> CH : new StreamFrameChannel()
 ORCH -> SS : start_stream(channel)
 activate SS
-SS -> CH : new channel (empty; no\nstandalone opening boundary)
+SS -> CH : push_part(placeholder JPEG part
+note right: well-formed first part; the channel\nholds bytes at response attach (primed)
 SS --> ORCH : slot index
 deactivate SS
 ORCH -> RESP : send_stream_response(channel, boundary, on_end)
