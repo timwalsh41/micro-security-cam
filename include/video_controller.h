@@ -562,7 +562,9 @@ class VideoController
          * @brief Executes one request (executor-only); results are
          *        stored on the request and signaled by the caller after
          *        the whole claimed batch has run. Sets @p detached when
-         *        the request unsubscribed a consumer.
+         *        the request unsubscribed a consumer, and @p photo_served
+         *        when the request was a served TAKE_PHOTO (both feed the
+         *        batch-level drain decision).
          */
         void execute_request(PipelineRequest& req, bool* detached,
                              bool* photo_served);
