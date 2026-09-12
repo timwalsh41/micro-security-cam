@@ -1,5 +1,9 @@
 #include "config_service.h"
 #include "ini_parser.h"
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
 #include <cstring>
 
 // Out-of-class definitions for ODR-use (C++11 constexpr string members)
@@ -80,6 +84,255 @@ bool write_field(ConfigData& cfg, const char* key, const char* value)
     return true;
 }
 
+/**
+ * @brief Case-insensitive string equality.
+ */
+bool ci_equals(const char* a, const char* b)
+{
+    while (*a != '\0' && *b != '\0')
+    {
+        if (tolower(static_cast<unsigned char>(*a)) !=
+            tolower(static_cast<unsigned char>(*b)))
+        {
+            return false;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+/**
+ * @brief Parses a decimal unsigned integer, rejecting trailing garbage.
+ */
+bool parse_uint_value(const char* value, uint32_t& out)
+{
+    if (value == nullptr || value[0] == '\0')
+    {
+        return false;
+    }
+    char* end = nullptr;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == nullptr || *end != '\0')
+    {
+        return false;
+    }
+    out = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+/**
+ * @brief Parses a hexadecimal unsigned integer, rejecting trailing garbage.
+ */
+bool parse_hex_value(const char* value, uint32_t& out)
+{
+    if (value == nullptr || value[0] == '\0')
+    {
+        return false;
+    }
+    char* end = nullptr;
+    unsigned long parsed = strtoul(value, &end, 16);
+    if (end == nullptr || *end != '\0')
+    {
+        return false;
+    }
+    out = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+/**
+ * @brief Parses a boolean ("true"/"false", case-insensitive).
+ */
+bool parse_bool_value(const char* value, bool& out)
+{
+    if (ci_equals(value, "true"))
+    {
+        out = true;
+        return true;
+    }
+    if (ci_equals(value, "false"))
+    {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Formats a numeric/boolean "section.key" setting into a string
+ *        exactly as serialized INI text would render it. Returns false
+ *        if the key is not a typed setting.
+ */
+bool read_typed_field(const ConfigData& cfg, const char* key,
+                      char* value_out, size_t max_len)
+{
+    if (value_out == nullptr || max_len == 0)
+    {
+        return false;
+    }
+
+    if (strcmp(key, "web.port") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.web.port);
+        return true;
+    }
+    if (strcmp(key, "web.max_streams") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.web.max_streams);
+        return true;
+    }
+    if (strcmp(key, "camera.jpeg_quality") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.camera.jpeg_quality);
+        return true;
+    }
+    if (strcmp(key, "camera.grab_mode") == 0)
+    {
+        snprintf(value_out, max_len, "%02x", cfg.camera.grab_mode);
+        return true;
+    }
+    if (strcmp(key, "video.fps") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.video.fps);
+        return true;
+    }
+    if (strcmp(key, "video.clip_duration_s") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.video.clip_duration_s);
+        return true;
+    }
+    if (strcmp(key, "video.max_file_size_mb") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.video.max_file_size_mb);
+        return true;
+    }
+    if (strcmp(key, "video.jpeg_quality") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.video.jpeg_quality);
+        return true;
+    }
+    if (strcmp(key, "video.audio_enabled") == 0)
+    {
+        snprintf(value_out, max_len, "%s",
+                 cfg.video.audio_enabled ? "true" : "false");
+        return true;
+    }
+    if (strcmp(key, "video.mic_gain") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.video.mic_gain);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Parses a value string and writes it into the typed
+ *        "section.key" setting, applying the same constraints as the
+ *        INI parser. Returns false if the key is unknown or the value
+ *        is rejected, leaving the config unchanged.
+ */
+bool write_typed_field(ConfigData& cfg, const char* key, const char* value)
+{
+    uint32_t parsed = 0;
+    bool parsed_bool = false;
+
+    if (strcmp(key, "web.port") == 0)
+    {
+        if (!parse_uint_value(value, parsed) ||
+            parsed < 1 || parsed > UINT16_MAX)
+        {
+            return false;
+        }
+        cfg.web.port = static_cast<uint16_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "web.max_streams") == 0)
+    {
+        if (!parse_uint_value(value, parsed) ||
+            parsed < 1 || parsed > 4)
+        {
+            return false;
+        }
+        cfg.web.max_streams = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "camera.jpeg_quality") == 0)
+    {
+        if (!parse_uint_value(value, parsed) || parsed > 63)
+        {
+            return false;
+        }
+        cfg.camera.jpeg_quality = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "camera.grab_mode") == 0)
+    {
+        if (!parse_hex_value(value, parsed) || parsed > UINT8_MAX)
+        {
+            return false;
+        }
+        cfg.camera.grab_mode = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "video.fps") == 0)
+    {
+        if (!parse_uint_value(value, parsed) ||
+            parsed < 1 || parsed > 30)
+        {
+            return false;
+        }
+        cfg.video.fps = static_cast<uint16_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "video.clip_duration_s") == 0)
+    {
+        if (!parse_uint_value(value, parsed) || parsed > UINT16_MAX)
+        {
+            return false;
+        }
+        cfg.video.clip_duration_s = static_cast<uint16_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "video.max_file_size_mb") == 0)
+    {
+        if (!parse_uint_value(value, parsed) || parsed > UINT16_MAX)
+        {
+            return false;
+        }
+        cfg.video.max_file_size_mb = static_cast<uint16_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "video.jpeg_quality") == 0)
+    {
+        if (!parse_uint_value(value, parsed) || parsed > 63)
+        {
+            return false;
+        }
+        cfg.video.jpeg_quality = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "video.audio_enabled") == 0)
+    {
+        if (!parse_bool_value(value, parsed_bool))
+        {
+            return false;
+        }
+        cfg.video.audio_enabled = parsed_bool;
+        return true;
+    }
+    if (strcmp(key, "video.mic_gain") == 0)
+    {
+        if (!parse_uint_value(value, parsed) ||
+            parsed < 1 || parsed > 8)
+        {
+            return false;
+        }
+        cfg.video.mic_gain = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    return false;
+}
+
 } // anonymous namespace
 
 // ============================================================
@@ -98,6 +351,7 @@ ConfigService::ConfigService(LoggingService& logger)
 
 bool ConfigService::load(const uint8_t* data, size_t length)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_logger.info(SUBSYSTEM, "Parsing config: %zu bytes", length);
 
     if (!data || length == 0)
@@ -132,6 +386,7 @@ bool ConfigService::overlay(const uint8_t* data, size_t length)
         return false;
     }
 
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_config = IniParser::overlay(
         m_config, reinterpret_cast<const char*>(data), length);
 
@@ -156,6 +411,13 @@ ConfigData& ConfigService::mutable_config()
 bool ConfigService::get_config_value(
     const char* key, char* value_out, size_t max_len) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (read_typed_field(m_config, key, value_out, max_len))
+    {
+        return true;
+    }
+
     const char* src = field_ptr(m_config, key);
     if (src == nullptr)
     {
@@ -174,6 +436,12 @@ bool ConfigService::get_config_value(
 
 bool ConfigService::set_config_value(const char* key, const char* value)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (write_typed_field(m_config, key, value))
+    {
+        return true;
+    }
     return write_field(m_config, key, value);
 }
 
@@ -183,6 +451,7 @@ bool ConfigService::set_config_value(const char* key, const char* value)
 
 size_t ConfigService::serialize(char* buffer, size_t buffer_size) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return IniParser::serialize(m_config, buffer, buffer_size);
 }
 

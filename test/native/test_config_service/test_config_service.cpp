@@ -535,6 +535,220 @@ void test_serialize_round_trip()
 }
 
 // ============================================================
+// Typed config values (numeric and boolean settings)
+// ============================================================
+
+/**
+ * @brief Numeric and boolean settings read back formatted as in
+ *        serialized INI text.
+ */
+void test_get_numeric_fields_formatted()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.get_config_value("web.port", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("80", value);
+
+    TEST_ASSERT_TRUE(svc.get_config_value("web.max_streams", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("4", value);
+
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.grab_mode", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("ff", value);
+
+    TEST_ASSERT_TRUE(svc.get_config_value("video.audio_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("false", value);
+}
+
+/**
+ * @brief Numeric settings set/get round-trip through the live config.
+ */
+void test_set_get_numeric_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("web.port", "8080"));
+    TEST_ASSERT_TRUE(svc.get_config_value("web.port", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("8080", value);
+    TEST_ASSERT_EQUAL_UINT16(8080, svc.config().web.port);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("web.max_streams", "2"));
+    TEST_ASSERT_TRUE(svc.get_config_value("web.max_streams", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("2", value);
+    TEST_ASSERT_EQUAL_UINT8(2, svc.config().web.max_streams);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.fps", "15"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.fps", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("15", value);
+    TEST_ASSERT_EQUAL_UINT16(15, svc.config().video.fps);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.clip_duration_s", "120"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.clip_duration_s", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("120", value);
+    TEST_ASSERT_EQUAL_UINT16(120, svc.config().video.clip_duration_s);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.max_file_size_mb", "100"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.max_file_size_mb", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("100", value);
+    TEST_ASSERT_EQUAL_UINT16(100, svc.config().video.max_file_size_mb);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.jpeg_quality", "20"));
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.jpeg_quality", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("20", value);
+    TEST_ASSERT_EQUAL_UINT8(20, svc.config().camera.jpeg_quality);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.jpeg_quality", "25"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.jpeg_quality", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("25", value);
+    TEST_ASSERT_EQUAL_UINT8(25, svc.config().video.jpeg_quality);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.mic_gain", "5"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.mic_gain", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("5", value);
+    TEST_ASSERT_EQUAL_UINT8(5, svc.config().video.mic_gain);
+}
+
+/**
+ * @brief Boolean settings round-trip as "true"/"false" text.
+ */
+void test_set_get_bool_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.audio_enabled", "true"));
+    TEST_ASSERT_TRUE(svc.config().video.audio_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("video.audio_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("true", value);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.audio_enabled", "false"));
+    TEST_ASSERT_FALSE(svc.config().video.audio_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("video.audio_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("false", value);
+
+    // Case-insensitive, matching the INI parser.
+    TEST_ASSERT_TRUE(svc.set_config_value("video.audio_enabled", "TRUE"));
+    TEST_ASSERT_TRUE(svc.config().video.audio_enabled);
+}
+
+/**
+ * @brief Hexadecimal grab_mode round-trips through get/set.
+ */
+void test_set_get_grab_mode_hex_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.grab_mode", "1a"));
+    TEST_ASSERT_EQUAL_HEX8(0x1A, svc.config().camera.grab_mode);
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.grab_mode", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("1a", value);
+}
+
+/**
+ * @brief Out-of-range numeric values are rejected and leave the
+ *        setting unchanged.
+ */
+void test_set_numeric_out_of_range_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    svc.set_config_value("web.port", "8080");
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", "0"));
+    TEST_ASSERT_EQUAL_UINT16(8080, svc.config().web.port);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", "65536"));
+    TEST_ASSERT_EQUAL_UINT16(8080, svc.config().web.port);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.max_streams", "5"));
+    TEST_ASSERT_EQUAL_UINT8(4, svc.config().web.max_streams);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.max_streams", "0"));
+    TEST_ASSERT_EQUAL_UINT8(4, svc.config().web.max_streams);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("video.fps", "31"));
+    TEST_ASSERT_EQUAL_UINT16(10, svc.config().video.fps);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("video.mic_gain", "9"));
+    TEST_ASSERT_EQUAL_UINT8(2, svc.config().video.mic_gain);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.jpeg_quality", "64"));
+    TEST_ASSERT_EQUAL_UINT8(10, svc.config().camera.jpeg_quality);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("video.jpeg_quality", "64"));
+    TEST_ASSERT_EQUAL_UINT8(10, svc.config().video.jpeg_quality);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.grab_mode", "1ff"));
+    TEST_ASSERT_EQUAL_HEX8(0xFF, svc.config().camera.grab_mode);
+}
+
+/**
+ * @brief Unparseable numeric/boolean values are rejected.
+ */
+void test_set_numeric_unparseable_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    svc.set_config_value("video.fps", "15");
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", "abc"));
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", ""));
+    TEST_ASSERT_FALSE(svc.set_config_value("video.fps", "12x"));
+    TEST_ASSERT_FALSE(svc.set_config_value("video.audio_enabled", "yes"));
+
+    // Rejected writes leave the live config unchanged.
+    TEST_ASSERT_EQUAL_UINT16(15, svc.config().video.fps);
+    TEST_ASSERT_EQUAL_UINT16(80, svc.config().web.port);
+    TEST_ASSERT_FALSE(svc.config().video.audio_enabled);
+}
+
+/**
+ * @brief Unknown keys are rejected by set and get.
+ */
+void test_unknown_typed_key_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_FALSE(svc.set_config_value("web.bogus", "1"));
+    TEST_ASSERT_FALSE(svc.get_config_value("web.bogus", value, sizeof(value)));
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.bogus", "1"));
+    TEST_ASSERT_FALSE(svc.get_config_value("camera.bogus", value, sizeof(value)));
+}
+
+/**
+ * @brief A typed set survives a serialize/parse round trip.
+ */
+void test_typed_set_serialize_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    svc.set_config_value("web.port", "8080");
+    svc.set_config_value("video.fps", "15");
+    svc.set_config_value("video.audio_enabled", "true");
+
+    char buf[ConfigService::CONFIG_BUFFER_SIZE];
+    size_t len = svc.serialize(buf, sizeof(buf));
+
+    ConfigData parsed = IniParser::parse(buf, len);
+    TEST_ASSERT_EQUAL_UINT16(8080, parsed.web.port);
+    TEST_ASSERT_EQUAL_UINT16(15, parsed.video.fps);
+    TEST_ASSERT_TRUE(parsed.video.audio_enabled);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -593,6 +807,14 @@ int main(int argc, char** argv)
     RUN_TEST(test_save_sd_then_load_sd_round_trip);
     RUN_TEST(test_overlay_order_defaults_then_nvs_then_sd);
     RUN_TEST(test_serialize_round_trip);
+    RUN_TEST(test_get_numeric_fields_formatted);
+    RUN_TEST(test_set_get_numeric_round_trip);
+    RUN_TEST(test_set_get_bool_round_trip);
+    RUN_TEST(test_set_get_grab_mode_hex_round_trip);
+    RUN_TEST(test_set_numeric_out_of_range_rejected);
+    RUN_TEST(test_set_numeric_unparseable_rejected);
+    RUN_TEST(test_unknown_typed_key_rejected);
+    RUN_TEST(test_typed_set_serialize_round_trip);
 
     return UNITY_END();
 }

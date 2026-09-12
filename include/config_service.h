@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include "ini_parser.h"
 #include "logging_service.h"
 #include "sd_controller.h"
@@ -88,6 +89,11 @@ class ConfigService
         /**
          * @brief Reads a configuration value by "section.key" path.
          *
+         * String settings are returned verbatim. Numeric and boolean
+         * settings are formatted as they appear in serialized INI text
+         * (decimal, with `camera.grab_mode` in two-digit hex and
+         * `video.audio_enabled` as "true"/"false").
+         *
          * @param key       Dot-separated section and key name (e.g. "wifi.ssid").
          * @param value_out Buffer to receive the value string.
          * @param max_len   Size of the output buffer.
@@ -98,6 +104,16 @@ class ConfigService
 
         /**
          * @brief Writes a configuration value by "section.key" path.
+         *
+         * String settings accept any value that fits the field buffer.
+         * Numeric and boolean settings are parsed from the string and
+         * must satisfy the same constraints as the INI parser (for
+         * example `web.port` 1–65535, `web.max_streams` 1–4,
+         * `video.fps` 1–30, `video.mic_gain` 1–8, jpeg quality ≤ 63,
+         * `camera.grab_mode` as hexadecimal ≤ 0xFF); out-of-range or
+         * unparseable values are rejected and leave the config
+         * unchanged. The change applies to the live in-RAM config only
+         * and is not persisted.
          *
          * @param key   Dot-separated section and key name (e.g. "wifi.ssid").
          * @param value New value string.
@@ -222,6 +238,16 @@ class ConfigService
         static constexpr const char* SUBSYSTEM = "CONF";
         LoggingService& m_logger;
         ConfigData m_config;
+
+        /**
+         * @brief Guards m_config against cross-task concurrent access.
+         *
+         * Command handlers run on different tasks (serial commands on
+         * the main loop task, web command handlers on the async server
+         * task), so every accessor that reads or writes m_config locks
+         * this mutex.
+         */
+        mutable std::mutex m_mutex;
 };
 
 #endif // CONFIG_SERVICE_H
