@@ -504,6 +504,7 @@ package "Command dispatch framework" {
         INVALID_ARGS = 0x02
         INVALID_STATE = 0x03
         SD_UNAVAILABLE = 0x04
+        UNAUTHORIZED = 0x05
         INTERNAL_ERROR = 0xFF
     }
 
@@ -1450,6 +1451,7 @@ Every command returns a `CommandResult` enum value:
 | `0x02` | `INVALID_ARGS` | Payload was missing, too short, or malformed |
 | `0x03` | `INVALID_STATE` | Command cannot be executed in the current system state |
 | `0x04` | `SD_UNAVAILABLE` | Command requires the SD card, which was absent or failed to initialize at boot |
+| `0x05` | `UNAUTHORIZED` | Command refused by the transport's access policy (web config commands without a configured web password) |
 | `0xFF` | `INTERNAL_ERROR` | Hardware or unexpected failure |
 
 #### Command Details
@@ -1463,8 +1465,8 @@ Every command returns a `CommandResult` enum value:
 | `0x13` | `START_STREAM` | None | None | Begins live preview: marks streaming active and starts the capture loop if not already running (reused during recording). No-op success if already active. |
 | `0x14` | `STOP_STREAM` | None | None | Clears streaming mode; all connected viewers are closed (within one frame period when recording continues), and when no other consumer remains the capture pipeline is torn down as well. Idempotent no-op if not active. |
 | `0x15` | `LIST_STREAMS` | None | JSON string: `{"active_streams":uint8}` | Returns the number of currently connected stream viewers. |
-| `0x20` | `SET_CONFIG` | Null-terminated string: destination, `"nvs"` or `"sd"` (case-insensitive) | None | Persists the live (in-RAM) configuration to the destination storage: NVS or the SD card config file (`/config.ini`). Values set via `SET_CONFIG_VALUE` are NOT persisted until this command runs. Returns `INVALID_ARGS` if the destination is missing or unknown, `SD_UNAVAILABLE` when the `sd` destination is requested with no usable card, `INTERNAL_ERROR` if the validated write fails (the live RAM config is left intact in that case). |
-| `0x21` | `GET_CONFIG` | None | Full configuration as serialized INI text | Returns the live (in-RAM) configuration serialized via `IniParser::serialize()`; re-parsing the response reproduces the same values. Returns `INTERNAL_ERROR` if the serialized config exceeds the response buffer. |
+| `0x20` | `SET_CONFIG` | Null-terminated string: destination, `"nvs"` or `"sd"` (case-insensitive) | None | Persists the live (in-RAM) configuration to the destination storage: NVS or the SD card config file (`/config.ini`). Values set via `SET_CONFIG_VALUE` are NOT persisted until this command runs. Returns `INVALID_ARGS` if the destination is missing or unknown, `SD_UNAVAILABLE` when the `sd` destination is requested with no usable card, `INTERNAL_ERROR` if the validated write fails (the live RAM config is left intact in that case). The web transport refuses this command with `UNAUTHORIZED` while no web password is configured; the serial transport is unrestricted. |
+| `0x21` | `GET_CONFIG` | None | Full configuration as serialized INI text | Returns the live (in-RAM) configuration serialized via `IniParser::serialize()`; re-parsing the response reproduces the same values. Returns `INTERNAL_ERROR` if the serialized config exceeds the response buffer. The web transport serves this response as `text/plain` and refuses the command with `UNAUTHORIZED` while no web password is configured; the serial transport is unrestricted. |
 | `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). Returns `INVALID_ARGS` if the key is unknown. |
 | `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value in the live (in-RAM) config. The string contains both the key path and the new value separated by `=`. Returns `INVALID_ARGS` if the key is unknown. The change is NOT persisted; run `SET_CONFIG` to commit it to NVS or the SD card. |
 | `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |

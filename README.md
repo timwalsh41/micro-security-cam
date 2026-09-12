@@ -67,6 +67,17 @@ Compiled-in defaults: WiFi settings blank (STA connection is skipped and the fal
 
 The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
 
+### Managing configuration
+
+Config changes made at runtime (`GET`/`SET` serial commands or their web/`GET_CONFIG_VALUE`/`SET_CONFIG_VALUE` equivalents) apply to the **live in-RAM config only** — they are not persisted automatically. To commit the current config, use `CONFIG_SAVE <dest>` (serial) or `config_save` with a `dest` parameter (web), where `dest` is `nvs` or `sd` (case-insensitive):
+
+- `CONFIG_SAVE nvs` — writes the live config to NVS flash (survives reboots, no SD card needed).
+- `CONFIG_SAVE sd` — writes the live config to `/config.ini` on the SD card.
+
+`CONFIG_GET` (serial) or `cmd=config` (web) returns the full live config as INI text for inspection or editing. Until the slice 5 web UI lands, config editing on initial device bringup is managed via the serial interface; web config commands are refused (`{"result":"error","code":5}`) until a web password is configured. NVS saves are tagged with a schema version; a saved config written by an incompatible firmware version is discarded at boot (no migration) and defaults are used instead.
+
+A failed persistence write leaves the live RAM config intact, so the running configuration is never corrupted by a storage failure.
+
 ### Example Config File
 
 ```ini
@@ -219,8 +230,8 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/control?cmd=stream_start` | Yes | Start live preview (capture loop on) |
 | GET | `/control?cmd=stream_stop` | Yes | Stop live preview |
 | GET | `/control?cmd=stream_list` | Yes | List connected stream clients (JSON) |
-| GET | `/control?cmd=config` | Yes | Full live config as INI text |
-| GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card |
+| GET | `/control?cmd=config` | Yes | Full live config as INI text (requires a configured web password) |
+| GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card (requires a configured web password) |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |
 
 ### Live Streaming
@@ -243,6 +254,8 @@ The number of concurrent viewers is limited by `max_streams` (1–4).
 ### Authentication
 
 If a web password is configured in `config.ini`, all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled.
+
+Config commands (`cmd=config`, `cmd=config_save`) require a configured web password regardless: with no password set, the web interface refuses them with `UNAUTHORIZED` (web `{"result":"error","code":5}`), and config access stays on the serial interface (`CONFIG_GET`/`CONFIG_SAVE`), which is always available.
 
 ## Video Recording
 

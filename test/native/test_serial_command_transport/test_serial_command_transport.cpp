@@ -427,6 +427,67 @@ void test_response_sd_unavailable()
 }
 
 /**
+ * @brief Serial CONFIG_GET dispatches GET_CONFIG and emits the full config.
+ *
+ * The serial interface is unaffected by the web transport's
+ * blank-password refusal of config commands.
+ */
+void test_config_get_serial_unaffected()
+{
+    TestFixture f;
+    f.handler.register_handler(
+        CommandCode::GET_CONFIG,
+        [](const uint8_t*, size_t, uint8_t* response,
+           size_t& responseLen) -> CommandResult
+        {
+            const char* ini = "[camera]\nframesize=10\n";
+            responseLen = strlen(ini);
+            std::memcpy(response, ini, responseLen);
+            return CommandResult::SUCCESS;
+        });
+
+    f.serial.clear_buffers();
+    f.inject_line("CONFIG_GET\n");
+    f.handler.tick();
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] CONFIG_GET\r\nOK [camera]\nframesize=10\n\n",
+        output);
+}
+
+/**
+ * @brief Serial CONFIG_SAVE dispatches SET_CONFIG with the destination
+ *        payload and succeeds without any password gate.
+ */
+void test_config_save_serial_unaffected()
+{
+    TestFixture f;
+    f.handler.register_handler(
+        CommandCode::SET_CONFIG,
+        [](const uint8_t* payload, size_t len,
+           uint8_t*, size_t&) -> CommandResult
+        {
+            if (payload == nullptr || len != 3)
+            {
+                return CommandResult::INVALID_ARGS;
+            }
+            return std::memcmp(payload, "nvs", 3) == 0
+                       ? CommandResult::SUCCESS
+                       : CommandResult::INVALID_ARGS;
+        });
+
+    f.serial.clear_buffers();
+    f.inject_line("CONFIG_SAVE nvs\n");
+    f.handler.tick();
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_EQUAL_STRING(
+        "[00000000] [ECHO] [INFO ] CONFIG_SAVE nvs\r\nOK\n",
+        output);
+}
+
+/**
  * @brief tick() drives the full cycle: read request → dispatch → send response.
  */
 void test_tick_full_cycle()
@@ -636,6 +697,8 @@ int main(int argc, char** argv)
     RUN_TEST(test_response_ok_large_data_not_truncated);
     RUN_TEST(test_response_error);
     RUN_TEST(test_response_sd_unavailable);
+    RUN_TEST(test_config_get_serial_unaffected);
+    RUN_TEST(test_config_save_serial_unaffected);
     RUN_TEST(test_tick_full_cycle);
     RUN_TEST(test_multiple_commands_sequence);
     RUN_TEST(test_leading_spaces);

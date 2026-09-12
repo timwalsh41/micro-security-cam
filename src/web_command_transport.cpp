@@ -103,19 +103,29 @@ void WebCommandTransport::dispatch_and_respond(
     CommandResult result = m_handler.dispatch(code, payload, payload_len,
                                               response_buf, response_len);
 
-    // If the handler wrote response data, forward it directly.
+    // If the handler wrote response data, forward it directly. The
+    // full serialized config (GET_CONFIG) is INI text, not JSON.
     if (response_len > 0)
     {
         if (response_len < CommandHandler::MAX_RESPONSE_SIZE)
         {
             response_buf[response_len] = '\0';
         }
-        request.send(200, "application/json",
+        const char* content_type =
+            code == CommandCode::GET_CONFIG ? "text/plain" : "application/json";
+        request.send(200, content_type,
                      reinterpret_cast<const char*>(response_buf));
         return;
     }
 
     // Fall back to basic result for commands with no response payload.
+    send_result(request, result);
+}
+
+void WebCommandTransport::send_result(
+    hal::RequestRef& request,
+    CommandResult result)
+{
     char json[128];
     if (result == CommandResult::SUCCESS)
     {
@@ -128,6 +138,12 @@ void WebCommandTransport::dispatch_and_respond(
     }
 
     request.send(200, "application/json", json);
+}
+
+bool WebCommandTransport::is_config_command(CommandCode code)
+{
+    return code == CommandCode::GET_CONFIG ||
+           code == CommandCode::SET_CONFIG;
 }
 
 bool WebCommandTransport::check_auth(hal::RequestRef& request)
@@ -170,6 +186,15 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
     }
 
     CommandCode code = map_cmd_string(cmd);
+
+    // Config commands carry credentials and the full config body, so
+    // they are only served over the web when a password is configured;
+    // the serial interface is unrestricted.
+    if (m_password[0] == '\0' && is_config_command(code))
+    {
+        send_result(request, CommandResult::UNAUTHORIZED);
+        return;
+    }
 
     // SET_CONFIG needs a destination from the "dest" query parameter.
     if (code == CommandCode::SET_CONFIG)

@@ -112,6 +112,7 @@ struct TestFixture
         cmd_handler.register_handler(CommandCode::STOP_RECORDING, capture_handler);
         cmd_handler.register_handler(CommandCode::TAKE_PHOTO, capture_handler);
         cmd_handler.register_handler(CommandCode::GET_CONFIG, capture_handler);
+        cmd_handler.register_handler(CommandCode::SET_CONFIG, capture_handler);
         cmd_handler.register_handler(CommandCode::SET_TIME, capture_handler);
     }
 };
@@ -342,9 +343,12 @@ void test_control_take_photo()
 }
 
 /**
- * @brief /control maps cmd=config to GET_CONFIG.
+ * @brief /control refuses cmd=config while no web password is configured.
+ *
+ * Config commands carry credentials and the full config body, so the
+ * web transport refuses them instead of serving them unauthenticated.
  */
-void test_control_get_config()
+void test_control_config_refused_without_password()
 {
     TestFixture f;
     f.transport.register_routes("");
@@ -353,7 +357,80 @@ void test_control_get_config()
     f.hal.mock_request.set_arg("cmd", "config");
     f.hal.simulate_request("/control", hal::HttpMethod::GET);
 
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("application/json",
+                             f.hal.mock_request.responses[0].content_type.c_str());
+    // UNAUTHORIZED = 0x05
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control refuses cmd=config_save while no web password is
+ *        configured, even with credentials supplied.
+ */
+void test_control_config_save_refused_without_password()
+{
+    TestFixture f;
+    f.transport.register_routes("");
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "config_save");
+    f.hal.mock_request.set_arg("dest", "nvs");
+    f.hal.mock_request.set_auth("admin", "anything");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control serves cmd=config with correct auth behind a
+ *        configured password, as INI text.
+ */
+void test_control_config_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("text/plain",
+                             f.hal.mock_request.responses[0].content_type.c_str());
+    TEST_ASSERT(f.hal.mock_request.responses[0].body.find("captured") !=
+                std::string::npos);
+}
+
+/**
+ * @brief /control dispatches cmd=config_save with the dest payload
+ *        when a password is configured and auth passes.
+ */
+void test_control_config_save_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config_save");
+    f.hal.mock_request.set_arg("dest", "nvs");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(3, g_last_payload_len);
+    TEST_ASSERT_EQUAL_UINT8('n', g_last_payload[0]);
+    TEST_ASSERT_EQUAL_UINT8('v', g_last_payload[1]);
+    TEST_ASSERT_EQUAL_UINT8('s', g_last_payload[2]);
 }
 
 /**
@@ -571,7 +648,10 @@ int main()
     RUN_TEST(test_control_start_recording);
     RUN_TEST(test_control_stop_recording);
     RUN_TEST(test_control_take_photo);
-    RUN_TEST(test_control_get_config);
+    RUN_TEST(test_control_config_refused_without_password);
+    RUN_TEST(test_control_config_save_refused_without_password);
+    RUN_TEST(test_control_config_succeeds_with_password);
+    RUN_TEST(test_control_config_save_succeeds_with_password);
     RUN_TEST(test_control_unknown_cmd_falls_back_to_get_status);
 
     // SET_TIME
