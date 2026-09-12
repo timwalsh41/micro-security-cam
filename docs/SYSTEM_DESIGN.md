@@ -111,6 +111,13 @@ package "HAL interfaces" as HAL_IF {
         +is_initialized() : bool
     }
 
+    interface NvsHal {
+        +begin(namespace_name : const char*) : bool
+        +read_blob(key, buffer, buffer_size) : size_t
+        +write_blob(key, data, len) : bool
+        +erase_key(key) : bool
+    }
+
     interface SerialHal {
         +available() : int
         +read() : int
@@ -179,6 +186,11 @@ package "ESP32 implementations" as HAL_IMPL {
     class SerialHalImpl {
         -m_write_mutex : SemaphoreHandle_t
         write() serialised via mutex
+    }
+
+    class NvsHalImpl {
+        -m_prefs : Preferences
+        -m_open : bool
     }
 
     class TimerHalImpl {
@@ -269,6 +281,9 @@ together {
 }
 together {
     HAL_IF.SerialHal   -[hidden]down- HAL_IMPL.SerialHalImpl
+}
+together {
+    HAL_IF.NvsHal      -[hidden]down- HAL_IMPL.NvsHalImpl
 }
 together {
     HAL_IF.TimerHal    -[hidden]down- HAL_IMPL.TimerHalImpl
@@ -380,6 +395,7 @@ package "Services" {
         +start_write(path, data, len, mode)
         +start_read(path, buffer, buffer_size)
         +init_card() : SdInitResult
+        +is_card_available() : bool
         +write_sync(path, data, len, mode) : bool
         +read_sync(path, buffer, size) : size_t
         +write_at_sync(path, offset, data, len) : bool
@@ -408,11 +424,18 @@ package "Services" {
     class ConfigService {
         -m_logger : LoggingService&
         -m_config : ConfigData
+        -m_mutex : std::mutex
         +load(data : const uint8_t*, length : size_t) : bool
+        +overlay(data : const uint8_t*, length : size_t) : bool
         +config() : const ConfigData&
         +mutable_config() : ConfigData&
         +get_config_value(key, value_out, max_len) : bool
         +set_config_value(key, value) : bool
+        +serialize(buffer, buffer_size) : size_t
+        +load_nvs(nvs : NvsHal&) : bool
+        +save_nvs(nvs : NvsHal&) : bool
+        +load_sd(sd : SdController&) : bool
+        +save_sd(sd : SdController&) : bool
     }
 
     class WifiService {
@@ -421,6 +444,7 @@ package "Services" {
         +init(sta : WifiConfig, ap : ApConfig, timeout_secs : uint16_t)
         +is_connected() : bool
         +local_ip() : const char*
+        -start_ap(ap : ApConfig)
     }
 
     class WebServerService {
@@ -435,6 +459,7 @@ package "Services" {
 package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface LogBackend_ext as "LogBackend"
     interface SdCardHal_ext as "SdCardHal"
+    interface NvsHal_ext as "NvsHal"
     interface WifiHal_ext as "WifiHal"
     interface WebServerHal_ext as "WebServerHal"
     interface RequestRef_ext as "RequestRef"
@@ -461,7 +486,9 @@ StreamService *-- "0..8" StreamFrameChannel_ext : stream slots
 StreamService --> LoggingService : diagnostics
 ConfigService --> LoggingService : diagnostics
 ConfigService *-- "1" ConfigData_ext : owns
-ConfigService ..> IniParser_ext : load() parses via parse()
+ConfigService ..> IniParser_ext : load()/overlay() parse via IniParser
+ConfigService ..> NvsHal_ext : load_nvs()/save_nvs()
+ConfigService ..> SdController : load_sd()/save_sd()
 WifiService --> WifiHal_ext : connection
 WifiService --> TimeService : timeouts
 WifiService --> LoggingService : diagnostics
@@ -538,7 +565,7 @@ package "Command dispatch framework" {
     }
 
     class CommandHandler {
-        +MAX_RESPONSE_SIZE = 256
+        +MAX_RESPONSE_SIZE = 512
         -m_log : LoggingService&
         -m_handlers : HandlerEntry[16]
         -m_transports : CommandTransport*[4]
@@ -649,8 +676,12 @@ class SystemOrchestrator {
     -m_cmd_handler : CommandHandler&
     -m_streams : StreamService&
     -m_stream_password : char[]
+    -m_sd : SdController&
+    -m_nvs : NvsHal&
+    -m_sd_available : bool
     +init()
     +tick()
+    +is_sd_available() : bool
     -register_commands()
     -register_stream_route()
     -handle_get_status()
@@ -658,6 +689,8 @@ class SystemOrchestrator {
     -handle_stop_recording()
     -handle_take_photo()
     -handle_set_time()
+    -handle_set_config()
+    -handle_get_config()
     -handle_get_config_value()
     -handle_set_config_value()
     -handle_start_stream()
@@ -671,6 +704,7 @@ package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface SerialHal_ext as "SerialHal"
     interface TimerHal_ext as "TimerHal"
     interface WebServerHal_ext as "WebServerHal"
+    interface NvsHal_ext as "NvsHal"
 }
 
 package "External (see Diagram 2 - Services)" <<Frame>> {
@@ -703,6 +737,8 @@ SystemOrchestrator --> VideoController : record control
 SystemOrchestrator --> VideoController : photo capture
 SystemOrchestrator --> CommandHandler : register handlers
 SystemOrchestrator --> ConfigService_ext : config access
+SystemOrchestrator --> SdController_ext : SD availability + config save
+SystemOrchestrator --> NvsHal_ext : config save
 SystemOrchestrator --> LoggingService_ext : diagnostics
 SystemOrchestrator --> StreamService_ext : stream control
 SystemOrchestrator --> TimeService_ext : time ops
@@ -740,6 +776,7 @@ package "Utilities" {
     class IniParser <<utility>> {
         +{static} defaults() : ConfigData
         +{static} parse(content, length) : ConfigData
+        +{static} overlay(base, content, length) : ConfigData
         +{static} serialize(data, buffer, buffer_size) : size_t
     }
 
@@ -1068,7 +1105,7 @@ Provides convenience methods (`debug()`, `info()`, `warn()`, `error()`) with pri
 
 ### Responsibility
 
-A stateless, single-pass INI file parser. Parses a character buffer into a `ConfigData` struct containing all firmware configuration.
+A stateless, single-pass INI file parser. Parses a character buffer into a `ConfigData` struct containing all firmware configuration, overlays recognized settings from a buffer onto a base config setting-by-setting, and serializes a `ConfigData` back to INI text.
 
 ### INI Format
 
@@ -1109,8 +1146,9 @@ jpeg_quality=10
 
 ### API
 
-- `IniParser::defaults()` — returns a `ConfigData` populated with defaults (port 80, empty strings).
+- `IniParser::defaults()` — returns a `ConfigData` populated with the compiled-in defaults (member initializers in `ConfigData`: web port 80, AP SSID `MicroCam`, camera/video defaults per the README configuration section; WiFi and web passwords blank).
 - `IniParser::parse(const char* content, size_t length)` — parses the given buffer and returns a `ConfigData`. Malformed lines are skipped gracefully. Unknown fields retain their defaults.
+- `IniParser::overlay(const ConfigData& base, const char* content, size_t length)` — parses the buffer and applies only the recognized settings on top of `base`; settings not mentioned in the buffer retain their base values. Used for the boot-time NVS/SD overlays.
 - `IniParser::serialize(const ConfigData& data, char* buffer, size_t buffer_size)` — serializes a `ConfigData` into INI-format text written to `buffer`. Returns the number of bytes written (excluding null terminator). If the buffer is null or too small, returns the number of bytes that would have been needed. The output is round-trip compatible with `parse()` — serializing and re-parsing yields identical values. All fields are always written, including empty strings.
 
 ### ConfigData Structure
@@ -1183,6 +1221,7 @@ The composition root loads the config at boot in a fixed precedence order; each 
 - `serialize(char* buffer, size_t buffer_size)` — serializes the live config to INI text (all fields, including empty ones, so a serialize/overlay round trip preserves every setting).
 - `load_nvs(hal::NvsHal&)` / `save_nvs(hal::NvsHal&)` — read/overlay and validated-write against the NVS namespace. `save_nvs()` serializes first, validates the serialized size against `CONFIG_BUFFER_SIZE`, writes the blob plus a schema version key, and verifies by read-back comparison. A failed save never modifies the live RAM config.
 - `load_sd(SdController&)` / `save_sd(SdController&)` — read/overlay and validated write of the SD card config file. `save_sd()` serializes first, validates the size, writes (truncating any existing file), and verifies by read-back comparison. A failed write never modifies the live RAM config.
+- `load()`, `overlay()`, `get_config_value()`, `set_config_value()`, and `serialize()` are guarded by an internal mutex: web command handlers run on the AsyncTCP task while serial commands run in the main loop task, so these accessors serialize cross-task access to the live config. `config()`/`mutable_config()` return direct references and are intended for single-threaded boot-time use only.
 
 ### Constants
 
@@ -1252,7 +1291,7 @@ The `cmd` query parameter on `/control` selects the command to dispatch — see 
 
 #### Responsibility
 
-Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls back to AP (access point) mode on timeout. Reconnection strategy is encapsulated here for future evolution.
+Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls back to AP (access point) mode on timeout. With no STA SSID configured, the STA attempt is skipped and AP mode starts directly. Reconnection strategy is encapsulated here for future evolution.
 
 #### Dependencies
 
@@ -1263,12 +1302,15 @@ Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls b
 
 ```
 init(sta_config, ap_config, timeout_secs)
-  → mode(STA)
-  → if static_ip + gateway + subnet_mask all set:
-       config_static(ip, gateway, subnet)  ← on failure, log warning and continue with DHCP
-  → begin_sta(ssid, password)
-  → poll status() every 1s until connected or timeout
-  → if timeout: mode(AP), begin_ap(ssid, password)
+  → if sta.ssid is blank:
+       start_ap(ap)  ← no STA attempt (the default, unconfigured state)
+  → else:
+       mode(STA)
+       if static_ip + gateway + subnet_mask all set:
+            config_static(ip, gateway, subnet)  ← on failure, log warning and continue with DHCP
+       begin_sta(ssid, password)
+       poll status() every 1s until connected or timeout
+       if timeout: start_ap(ap)
 ```
 
 If all three static IP fields (`static_ip`, `gateway`, `subnet_mask`) are present and non-empty in the config, `config_static()` is called before `begin_sta()`. If `config_static()` returns `false` (e.g. malformed address), a warning is logged and the system falls back to DHCP — `begin_sta()` is always called.
@@ -1279,7 +1321,7 @@ Static IP applies only to STA mode. AP mode always uses its own addressing via `
 
 #### Key Methods
 
-- `init(sta, ap, timeout_secs)` — connects to the configured STA network. If not connected within `timeout_secs`, falls back to AP mode.
+- `init(sta, ap, timeout_secs)` — with a blank STA SSID (the compiled-in default), starts AP mode directly. Otherwise connects to the configured STA network; if not connected within `timeout_secs`, falls back to AP mode.
 - `is_connected()` — returns `true` if connected as a station.
 - `local_ip()` — returns the current IP address (STA or AP).
 
@@ -1488,7 +1530,7 @@ Every command returns a `CommandResult` enum value:
 | `config_save` | `SET_CONFIG` | Requires a `dest` query parameter: `nvs` or `sd` (case-insensitive) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 
-The web transport sends a JSON response body for all commands:
+The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
 
 - Success: `{"result":"ok"}`
 - Error: `{"result":"error","code":<uint>}`
@@ -1758,7 +1800,7 @@ alt streaming also subscribed
 end
 
 VC -> CAM : release_frame()
-ACS -> ACS : frames_recorded++\nfile_size += chunk.len
+ACS -> ACS : frames_recorded++\nfile_size += chunk.len (written bytes only)
 
 ACS -> ACS : check clip limits\n(duration, file size)
 
@@ -2143,12 +2185,12 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 
 1. **Platform init** — `PlatformInitializer::init()` configures ESP-IDF and basic hardware.
 2. **LED init** — GPIO 21 configured as output, LED set to OFF via `LedStateMachine`.
-3. **SD card init** — `SdController::init_card()` mounts the SD card. If this fails, `setup()` returns early.
-4. **Config load** — Reads `/config.ini` from SD into a stack buffer via `SdController::read_sync()`, then calls `ConfigService::load()`. Missing or empty files result in sensible defaults.
+3. **SD card init (optional)** — `SdController::init_card()` mounts the SD card. A missing card (`NO_SD_CARD`) or a failed initialization (`HW_INIT_FAILURE`) does not abort boot: the failure is logged and the system proceeds in streaming-only degraded mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
+4. **Config load** — Compiled-in defaults are overlaid from NVS (`ConfigService::load_nvs()`, using a saved config blob when its schema version matches), then from `/config.ini` on the SD card when readable (`ConfigService::load_sd()`). Precedence: defaults < NVS < SD file.
 5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step. On ESP32, the capture task is created and pinned to CPU0.
 7. **Stream init** — `StreamService::init(max_streams)` configures the concurrent stream slot count; `VideoController::set_stream_service(&stream_service)` wires frame delivery.
-8. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
+8. **WiFi init** — `WifiService::init()` connects to STA when an SSID is configured (with a timeout); with the blank default SSID it starts AP mode directly.
 9. **Web route registration** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route, `SerialCommandTransport` is added to the `CommandHandler`, and `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. `WebServerService::init()` then registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening: `WebServerHalImpl` buffers registrations made before the server exists and attaches them before `begin()`.
 10. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
 
