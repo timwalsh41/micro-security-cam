@@ -1,4 +1,5 @@
 #include "serial_command_transport.h"
+#include "command_handler.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -158,7 +159,9 @@ void SerialCommandTransport::send_response(
     const uint8_t* data,
     size_t len)
 {
-    char buf[LINE_BUFFER_SIZE + 16];
+    // Data responses carry up to CommandHandler::MAX_RESPONSE_SIZE
+    // bytes (e.g. a full serialized config from GET_CONFIG).
+    char buf[CommandHandler::MAX_RESPONSE_SIZE + 8];
 
     if (code == CommandResult::SUCCESS)
     {

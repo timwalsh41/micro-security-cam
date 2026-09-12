@@ -369,6 +369,36 @@ void test_response_ok_no_data()
 }
 
 /**
+ * @brief Data responses up to MAX_RESPONSE_SIZE bytes are sent intact.
+ *
+ * GET_CONFIG returns a full serialized config (up to
+ * CommandHandler::MAX_RESPONSE_SIZE bytes); the wire output must
+ * carry the whole payload, not just the first line-buffer's worth.
+ */
+void test_response_ok_large_data_not_truncated()
+{
+    TestFixture f;
+    f.serial.clear_buffers();
+
+    uint8_t data[CommandHandler::MAX_RESPONSE_SIZE];
+    for (size_t i = 0; i < sizeof(data); i++)
+    {
+        data[i] = static_cast<uint8_t>('a' + (i % 26));
+    }
+
+    f.transport.send_response(CommandResult::SUCCESS, data, sizeof(data));
+
+    std::string expected = "OK ";
+    expected.append(reinterpret_cast<const char*>(data), sizeof(data));
+    expected += "\n";
+
+    TEST_ASSERT_EQUAL(expected.size(), f.serial.output_buffer.size());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(
+        reinterpret_cast<const uint8_t*>(expected.data()),
+        f.serial.output_buffer.data(), expected.size());
+}
+
+/**
  * @brief Error response sends "ERR <code>\n".
  */
 void test_response_error()
@@ -603,6 +633,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_empty_line_skipped);
     RUN_TEST(test_response_ok_with_data);
     RUN_TEST(test_response_ok_no_data);
+    RUN_TEST(test_response_ok_large_data_not_truncated);
     RUN_TEST(test_response_error);
     RUN_TEST(test_response_sd_unavailable);
     RUN_TEST(test_tick_full_cycle);

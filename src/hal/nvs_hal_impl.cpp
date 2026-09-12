@@ -11,8 +11,13 @@ namespace hal
 
 bool NvsHalImpl::begin(const char* namespace_name)
 {
-    // begin() on an already-open namespace is allowed: Preferences
-    // re-opens the handle. Track state only for reporting purposes.
+    // Preferences::begin() fails while a namespace is already open,
+    // so close the prior handle before re-opening.
+    if (m_open)
+    {
+        m_prefs.end();
+        m_open = false;
+    }
     m_open = m_prefs.begin(namespace_name, false);
     return m_open;
 }
