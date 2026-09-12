@@ -88,10 +88,12 @@ void test_deliver_frame_no_slots()
 }
 
 /**
- * @brief start_stream() seeds the multipart opening boundary into the
- *        channel.
+ * @brief start_stream() pushes no bytes of its own: the channel stays
+ *        empty until the first real multipart part is delivered, so the
+ *        stream never begins with a standalone (empty) opening boundary
+ *        part that strict multipart parsers reject.
  */
-void test_start_stream_seeds_opening_boundary()
+void test_start_stream_pushes_no_bytes()
 {
     TestFixture f;
     f.service.init(4);
@@ -102,9 +104,8 @@ void test_start_stream_seeds_opening_boundary()
 
     TEST_ASSERT_GREATER_OR_EQUAL(0, slot);
     TEST_ASSERT_EQUAL_UINT8(1, f.service.active_slot_count());
-
-    std::string opening = drain(*raw);
-    TEST_ASSERT_NOT_NULL(strstr(opening.c_str(), "--CAM_BOUNDARY\r\n"));
+    TEST_ASSERT_FALSE(raw->has_pending_part());
+    TEST_ASSERT_EQUAL_size_t(0, drain(*raw).size());
 }
 
 /**
@@ -119,12 +120,11 @@ void test_deliver_frame_single_stream()
     auto channel = std::make_shared<StreamFrameChannel>();
     StreamFrameChannel* raw = channel.get();
     f.service.start_stream(channel);
-    drain(*raw);  // consume the opening boundary
 
     f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
 
     std::string part = drain(*raw);
-    // The part is exactly: opening boundary, image/jpeg content type,
+    // The part is exactly: boundary line, image/jpeg content type,
     // Content-Length, blank line, the raw JPEG bytes, and the footer.
     static const char EXPECTED_HEADER[] =
         "--CAM_BOUNDARY\r\n"
@@ -154,8 +154,6 @@ void test_deliver_frame_multiple_streams()
     StreamFrameChannel* raw2 = c2.get();
     f.service.start_stream(c1);
     f.service.start_stream(c2);
-    drain(*raw1);
-    drain(*raw2);
 
     f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
 
@@ -177,7 +175,6 @@ void test_deliver_frame_drops_for_slow_viewer()
     auto channel = std::make_shared<StreamFrameChannel>();
     StreamFrameChannel* raw = channel.get();
     f.service.start_stream(channel);
-    drain(*raw);
 
     f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
     TEST_ASSERT_TRUE(raw->has_pending_part());
@@ -211,7 +208,6 @@ void test_stop_stream_closes_and_frees()
     StreamFrameChannel* raw = channel.get();
     int slot = f.service.start_stream(channel);
     TEST_ASSERT_GREATER_OR_EQUAL(0, slot);
-    drain(*raw);  // consume the opening boundary
 
     f.service.stop_stream(static_cast<uint8_t>(slot));
 
@@ -302,7 +298,6 @@ void test_deliver_frame_empty()
     auto channel = std::make_shared<StreamFrameChannel>();
     StreamFrameChannel* raw = channel.get();
     f.service.start_stream(channel);
-    drain(*raw);
 
     f.service.deliver_frame(nullptr, 0);
 
@@ -446,7 +441,7 @@ int main()
     RUN_TEST(test_init_allocates_slots);
     RUN_TEST(test_init_clamps_max_streams);
     RUN_TEST(test_deliver_frame_no_slots);
-    RUN_TEST(test_start_stream_seeds_opening_boundary);
+    RUN_TEST(test_start_stream_pushes_no_bytes);
     RUN_TEST(test_deliver_frame_single_stream);
     RUN_TEST(test_deliver_frame_multiple_streams);
     RUN_TEST(test_deliver_frame_drops_for_slow_viewer);

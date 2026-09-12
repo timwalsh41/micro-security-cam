@@ -115,12 +115,13 @@ class StreamService : public IStreamService
         void init(uint8_t max_streams);
 
         /**
-         * @brief Registers a new viewer and seeds its multipart stream.
+         * @brief Registers a new viewer.
          *
-         * Seeds the multipart boundary opening as the first bytes of
-         * the channel (the HTTP 200 response headers are written by the
-         * transport response attached to the request) and binds the
-         * channel to a free slot.
+         * Binds the channel to a free slot. The HTTP 200 response
+         * headers are written by the transport response attached to
+         * the request; the first multipart part is pushed by
+         * deliver_frame(), so the stream begins directly with the
+         * first real part (no standalone opening boundary).
          *
          * @param channel Per-viewer frame channel; ownership is shared
          *                with the transport response attached to the
@@ -184,10 +185,6 @@ class StreamService : public IStreamService
         uint8_t active_slot_count() const;
 
     private:
-        /** Multipart opening written once per stream, before the first part. */
-        static constexpr const char* OPENING_BOUNDARY =
-            "--" STREAM_BOUNDARY_TOKEN "\r\n";
-
         /** Best-effort multipart closing token. */
         static constexpr const char* CLOSING_BOUNDARY =
             "--" STREAM_BOUNDARY_TOKEN "--\r\n";
