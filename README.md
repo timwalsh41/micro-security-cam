@@ -196,7 +196,7 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/status` | Yes | JSON status (recording and streaming activity, frame count, file size) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
-| GET | `/control?cmd=photo` | Yes | Capture a still photo |
+| GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |
 | GET | `/control?cmd=stream_start` | Yes | Start live preview (capture loop on) |
 | GET | `/control?cmd=stream_stop` | Yes | Stop live preview |
 | GET | `/control?cmd=stream_list` | Yes | List connected stream clients (JSON) |

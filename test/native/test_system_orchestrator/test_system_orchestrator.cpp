@@ -161,13 +161,13 @@ void test_get_status_returns_json()
 }
 
 /**
- * @brief TAKE_PHOTO is rejected during streaming-only preview.
+ * @brief TAKE_PHOTO succeeds during streaming-only preview.
  *
- * The gate must reject whenever the capture loop is running for any
- * consumer, not just recording, and return INVALID_STATE (not the
- * INTERNAL_ERROR a controller-level rejection would produce).
+ * Photos ride the capture executor, so the loop being up for any
+ * consumer no longer refuses a photo; the response still carries the
+ * saved path and streaming continues afterwards.
  */
-void test_take_photo_rejected_during_streaming_only()
+void test_take_photo_succeeds_during_streaming_only()
 {
     TestFixture f;
     f.setup_fake_frame();
@@ -182,8 +182,11 @@ void test_take_photo_rejected_during_streaming_only()
         response, &response_len);
 
     TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(CommandResult::INVALID_STATE),
+        static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
+    TEST_ASSERT_GREATER_THAN(0u, response_len);
+    TEST_ASSERT_TRUE(f.sd_hal.files.size() == 1);
+    TEST_ASSERT_TRUE(f.video.is_streaming());
 }
 
 /**
@@ -370,12 +373,15 @@ void test_take_photo_captures_frame()
 }
 
 /**
- * @brief TAKE_PHOTO returns INVALID_STATE when recording.
+ * @brief TAKE_PHOTO succeeds while recording; the response carries the
+ *        saved path and the recording continues afterwards.
  */
-void test_take_photo_fails_when_recording()
+void test_take_photo_succeeds_while_recording()
 {
     TestFixture f;
     set_mock_millis(1000);
+
+    f.setup_fake_frame();
 
     dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
     TEST_ASSERT_TRUE(f.video.is_recording());
@@ -387,8 +393,100 @@ void test_take_photo_fails_when_recording()
         CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
 
     TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(CommandResult::INVALID_STATE),
+        static_cast<uint8_t>(CommandResult::SUCCESS),
         static_cast<uint8_t>(result));
+    TEST_ASSERT_GREATER_THAN(0u, response_len);
+
+    // The response body is the saved photo path, and the file exists.
+    std::string photo_path(reinterpret_cast<char*>(response), response_len);
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    TEST_ASSERT_TRUE(f.video.is_recording());
+}
+
+/**
+ * @brief TAKE_PHOTO succeeds while recording and streaming are both
+ *        active, and both activities continue afterwards.
+ */
+void test_take_photo_succeeds_while_recording_and_streaming()
+{
+    TestFixture f;
+    set_mock_millis(1000);
+
+    f.setup_fake_frame();
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_RECORDING);
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_GREATER_THAN(0u, response_len);
+
+    std::string photo_path(reinterpret_cast<char*>(response), response_len);
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+}
+
+/**
+ * @brief TAKE_PHOTO when idle is unchanged: same response shape, and
+ *        the photo-request drain tears the loop back down afterwards.
+ */
+void test_take_photo_when_idle_unchanged()
+{
+    TestFixture f;
+    set_mock_millis(1000);
+
+    f.setup_fake_frame();
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_GREATER_THAN(0u, response_len);
+    TEST_ASSERT_TRUE(f.sd_hal.files.size() == 1);
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief TAKE_PHOTO returns INTERNAL_ERROR and no path when the camera
+ *        capture fails — synchronously, also while streaming is active.
+ */
+void test_take_photo_camera_failure()
+{
+    TestFixture f;
+    set_mock_millis(1234567890u);
+
+    // No frame configured: capture_frame() fails.
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.cmd_handler.dispatch(
+        CommandCode::TAKE_PHOTO, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INTERNAL_ERROR),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_UINT32(0, response_len);
+    TEST_ASSERT_TRUE(f.sd_hal.files.empty());
 }
 
 /**
@@ -817,7 +915,10 @@ int main()
     RUN_TEST(test_stop_recording_closes_connected_viewers);
     RUN_TEST(test_stop_recording_keeps_streams_when_streaming_active);
     RUN_TEST(test_take_photo_captures_frame);
-    RUN_TEST(test_take_photo_fails_when_recording);
+    RUN_TEST(test_take_photo_succeeds_while_recording);
+    RUN_TEST(test_take_photo_succeeds_while_recording_and_streaming);
+    RUN_TEST(test_take_photo_when_idle_unchanged);
+    RUN_TEST(test_take_photo_camera_failure);
     RUN_TEST(test_take_photo_sd_write_failure);
     RUN_TEST(test_take_photo_uniquifies_same_second_collision);
     RUN_TEST(test_set_time_sets_offset);
@@ -829,7 +930,7 @@ int main()
     RUN_TEST(test_stop_stream_closes_active_streams);
     RUN_TEST(test_stop_stream_closes_viewers_while_recording);
     RUN_TEST(test_list_streams_returns_count);
-    RUN_TEST(test_take_photo_rejected_during_streaming_only);
+    RUN_TEST(test_take_photo_succeeds_during_streaming_only);
     RUN_TEST(test_stream_route_registered);
     RUN_TEST(test_stream_route_rejects_without_streaming_mode);
     RUN_TEST(test_stream_route_rejects_bad_credentials);
