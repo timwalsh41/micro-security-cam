@@ -155,7 +155,7 @@ The SD card is optional at boot. If no card is present, or card initialization f
 
 In degraded mode:
 
-- `TAKE_PHOTO` and `RECORD_START` fail with return code `SD_UNAVAILABLE` (`0x04`; serial `ERR 04`, web `{"result":"error","code":4}`). This check takes precedence over other error conditions.
+- `TAKE_PHOTO` and `START_RECORDING` fail with return code `SD_UNAVAILABLE` (`0x04`; serial `ERR 04`, web `{"result":"error","code":4}`). This check takes precedence over other error conditions.
 - `RECORD_STOP` remains a successful no-op.
 - `GET /status` (and serial `STATUS`) reports the latched card state in the additive `"sd": false` field.
 - `CONFIG_SAVE sd` fails with `SD_UNAVAILABLE`; use `CONFIG_SAVE nvs` instead.
