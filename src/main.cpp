@@ -132,10 +132,19 @@ void setup()
     platform_init.init();
 
     // Add delay for PlatformIO terminal to connect
-    real_time.delay_ms(5000);
+    real_time.delay_ms(10000);
 
-    logger.info("MAIN", "Microcam %s", version::version_string);
     logger.info("MAIN", "Starting initialization");
+    
+    char version_string[32] = "unknown";
+    if (version::get_version_string(version_string, 32))
+    {
+        logger.info("MAIN", "MicroCam %s", version_string);
+    }
+    else
+    {
+        logger.warn("MAIN", "MicroCam: Unable to retrieve version");
+    }
 
     // --- Create FreeRTOS mutex for shared GPIO pin ---
     sd_active_mutex = xSemaphoreCreateMutex();
