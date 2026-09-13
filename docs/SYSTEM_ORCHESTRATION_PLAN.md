@@ -941,18 +941,9 @@ In Slice 7, `resolution` and `jpeg_quality` are migrated to `[camera_photo]` / `
 
 ##### Resolution string → framesize_t mapping
 
-A utility function (free function or static method) maps resolution names to `esp_camera.h` `framesize_t` enum values. This is the **authoritative** mapping — `VideoController::map_resolution()` is retired in favor of this:
+A utility function (free function or static method) maps resolution names to `esp_camera.h` `framesize_t` enum values. `VideoController::map_resolution()` is retired in favor of this.
 
-```
-"QQVGA" → FRAMESIZE_QQVGA (0),  160×120
-"QVGA"  → FRAMESIZE_QVGA  (1),  320×240
-"VGA"   → FRAMESIZE_VGA   (2),  640×480
-"SVGA"  → FRAMESIZE_SVGA  (3),  800×600
-"XGA"   → FRAMESIZE_XGA   (4), 1024×768
-"HD"    → FRAMESIZE_HD    (6), 1280×720
-"UXGA"  → FRAMESIZE_UXGA  (5), 1600×1200
-unknown → FRAMESIZE_VGA   (2),  640×480 (fallback, logged as warning)
-```
+> The authoritative resolution-to-framesize mapping now lives in `build_camera_config()`; see [`docs/SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md#resolution-mapping) for the current mapping table.
 
 The same function also returns the pixel dimensions `{width, height}` so consumers don't need a second mapping.
 
