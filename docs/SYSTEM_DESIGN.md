@@ -1429,7 +1429,7 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"frames":uint32,"file_size":uint32}` | Returns current recording and streaming subscription state, frame count, and accumulated file size. No side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8}` | Returns current recording and streaming subscription state, frame count, and accumulated file size. No side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |

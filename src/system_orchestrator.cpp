@@ -140,16 +140,20 @@ CommandResult SystemOrchestrator::handle_get_status(
     bool streaming = m_video.is_streaming();
     uint32_t frames = m_video.frames_recorded();
     uint32_t file_size = m_video.file_size();
+    uint8_t active_stream_slot_count = m_streams.active_slot_count();
 
     int written = snprintf(
         reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE,
         "{\"recording\":%s,\"streaming\":%s,\"frames\":%lu,"
-        "\"file_size\":%lu}",
+        "\"file_size\":%lu,"
+        "\"connected_streams\":%u}",
         recording ? "true" : "false",
         streaming ? "true" : "false",
         static_cast<unsigned long>(frames),
-        static_cast<unsigned long>(file_size));
+        static_cast<unsigned long>(file_size),
+        static_cast<unsigned int>(active_stream_slot_count)
+    );
 
     if (written < 0 || static_cast<size_t>(written) >= CommandHandler::MAX_RESPONSE_SIZE)
     {

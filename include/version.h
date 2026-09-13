@@ -6,7 +6,7 @@
 namespace version
 {
     constexpr const char* base_version_string = "v0.0.1";
-    constexpr const char* git_hash = "77b0bb";
+    constexpr const char* git_hash = "12f30b";
 
     bool get_version_string(char* buffer, size_t buffer_size);
 }
