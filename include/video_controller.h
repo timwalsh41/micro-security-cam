@@ -47,9 +47,13 @@ class IStreamService;
  *   immediately (while recording remains subscribed).
  *
  * Photo capture:
- *   capture_photo(path) captures a single JPEG frame and writes
- *   it directly to the given SD card path; it is rejected whenever
- *   the capture loop is running for any consumer.
+ *   capture_photo(path) posts a TAKE_PHOTO request into the executor
+ *   queue; the photo is captured and written to the given SD card
+ *   path at an activation boundary (in the capture task, or on a
+ *   command task via the serve path under the executor token). Photos
+ *   work while recording and/or streaming are active — the executor
+ *   serializes the photo against lifecycle changes and frame
+ *   activations by construction.
  *
  * File naming:
  *   /YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi
@@ -69,8 +73,8 @@ class IStreamService;
  * AviClipSession member.
  *
  * Executor model: lifecycle commands (start/stop of recording and
- * streaming, consumer registration/unregistration) do not mutate
- * pipeline state directly. They post requests into a small bounded
+ * streaming, consumer registration/unregistration, one-shot photo
+ * capture) do not mutate pipeline state directly. They post requests into a small bounded
  * queue; requests are executed only by the holder of the executor
  * token: the capture task claims it for each frame activation and
  * executes queued requests at the activation boundary, and a waiting
@@ -82,7 +86,7 @@ class IStreamService;
  * frame activation regardless of which task executed the request.
  *
  * Command tasks hold m_command_mutex around request posting, scheduler
- * start/stop, the photo gate, and the serve path (the token claim plus
+ * start/stop, and the serve path (the token claim plus
  * process_requests(), mutually exclusive with the post-join teardown
  * section), and wait for completion with the mutex released across the
  * wait loop iterations. The bounded scheduler join runs on the
@@ -170,14 +174,19 @@ class VideoController
         /**
          * @brief Captures a single JPEG photo and writes it to SD.
          *
-         * Captures one frame from the camera, writes the JPEG data
-         * to the given path, and releases the frame buffer. Will
-         * fail while the capture loop is running (the loop's closing
-         * activation still touches the camera after the last consumer
-         * detaches).
+         * Posts a TAKE_PHOTO request into the executor queue; the
+         * photo is captured and written at an activation boundary,
+         * so it works while recording and/or streaming are active
+         * (the executor serializes the photo against lifecycle
+         * changes and frame activations). The SD write runs in
+         * executor context, preserving the single-capture-task SD
+         * writer discipline. From within on_frame() (executor
+         * context) the request is fire-and-forget and the result is
+         * not knowable synchronously.
          *
          * @param path Full SD card path for the photo file.
-         * @return true if the photo was captured and written successfully.
+         * @return true if the photo was captured and written
+         *         successfully (fire-and-forget in executor context).
          */
         bool capture_photo(const char* path);
 
@@ -210,9 +219,6 @@ class VideoController
         /**
          * @brief Returns whether the capture loop is running for any
          *        consumer.
-         *
-         * While this returns true, single-frame photo capture is
-         * rejected because the camera/frame buffers are in use.
          *
          * @return true if at least one frame consumer is subscribed.
          */
@@ -321,6 +327,7 @@ class VideoController
             STOP_STREAMING,
             REGISTER_CONSUMER,
             UNREGISTER_CONSUMER,
+            TAKE_PHOTO,
         };
 
         /**
@@ -337,6 +344,9 @@ class VideoController
             int id{-1};
         };
 
+        /** Maximum photo path length carried by a request (bytes). */
+        static constexpr size_t MAX_PHOTO_PATH = 64;
+
         /**
          * @brief One queued executor request.
          */
@@ -345,6 +355,7 @@ class VideoController
             PipelineRequestType type{};
             IFrameConsumer* consumer{nullptr};  ///< REGISTER/UNREGISTER
             int slot_id{-1};                    ///< UNREGISTER target slot
+            char photo_path[MAX_PHOTO_PATH]{};  ///< TAKE_PHOTO target path
             std::shared_ptr<CommandCompletion> completion;
             bool result_ok{false};              ///< Filled by the executor
             int result_id{-1};                  ///< Filled by the executor
@@ -455,11 +466,13 @@ class VideoController
          * @param type     Command to execute.
          * @param consumer Consumer for REGISTER/UNREGISTER requests.
          * @param slot_id  Target slot for UNREGISTER requests.
+         * @param photo_path Target path for TAKE_PHOTO requests.
          * @return Completion box, or nullptr when the request could not
          *         be queued/served.
          */
         std::shared_ptr<CommandCompletion> post_request(
-            PipelineRequestType type, IFrameConsumer* consumer, int slot_id);
+            PipelineRequestType type, IFrameConsumer* consumer, int slot_id,
+            const char* photo_path = nullptr);
 
         /**
          * @brief Posts a pipeline request with m_command_mutex held.
@@ -475,11 +488,13 @@ class VideoController
          * @param type     Command to execute.
          * @param consumer Consumer for REGISTER/UNREGISTER requests.
          * @param slot_id  Target slot for UNREGISTER requests.
+         * @param photo_path Target path for TAKE_PHOTO requests.
          * @return Completion box, or nullptr when the request could not
          *         be queued/served.
          */
         std::shared_ptr<CommandCompletion> post_request_locked(
-            PipelineRequestType type, IFrameConsumer* consumer, int slot_id);
+            PipelineRequestType type, IFrameConsumer* consumer, int slot_id,
+            const char* photo_path = nullptr);
 
         /**
          * @brief Waits for a posted request to be executed.
@@ -547,9 +562,12 @@ class VideoController
          * @brief Executes one request (executor-only); results are
          *        stored on the request and signaled by the caller after
          *        the whole claimed batch has run. Sets @p detached when
-         *        the request unsubscribed a consumer.
+         *        the request unsubscribed a consumer, and @p photo_served
+         *        when the request was a served TAKE_PHOTO (both feed the
+         *        batch-level drain decision).
          */
-        void execute_request(PipelineRequest& req, bool* detached);
+        void execute_request(PipelineRequest& req, bool* detached,
+                             bool* photo_served);
 
         /** @brief Executor-side start_recording. */
         bool executor_start_recording();
@@ -565,6 +583,21 @@ class VideoController
 
         /** @brief Executor-side consumer registration. */
         int executor_register(IFrameConsumer* consumer);
+
+        /**
+         * @brief Executor-side one-shot photo capture.
+         *
+         * Runs at an activation boundary (capture task, or a command
+         * task via the serve path under the executor token): the
+         * camera is free — request execution precedes the
+         * activation's own frame capture, and the token excludes any
+         * concurrent activation — so the frame is captured, written
+         * to SD, and released entirely in executor context.
+         *
+         * @param path Full SD card path for the photo file.
+         * @return true if the photo was captured and written.
+         */
+        bool executor_take_photo(const char* path);
 
         /**
          * @brief Executor-side consumer unregistration; true if it detached.

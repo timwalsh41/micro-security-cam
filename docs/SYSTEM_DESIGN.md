@@ -583,6 +583,7 @@ package "Controllers" {
         -capture_and_dispatch_frame()
         -handle_clip_closure()
         -process_requests() / execute_request()
+        -executor_take_photo(path)
         -finish_command()
         -ensure_loop_running() : bool
     }
@@ -687,7 +688,7 @@ SerialCommandTransport --> SerialHal_ext : line protocol
 SerialCommandTransport --> TimeService_ext : echo timestamps
 
 SystemOrchestrator --> VideoController : record control
-SystemOrchestrator --> CameraController : photo capture
+SystemOrchestrator --> VideoController : photo capture
 SystemOrchestrator --> CommandHandler : register handlers
 SystemOrchestrator --> ConfigService_ext : config access
 SystemOrchestrator --> LoggingService_ext : diagnostics
@@ -1372,8 +1373,7 @@ Top-level system coordinator and command router.
 
 #### Dependencies
 
-- `VideoController &` — for recording control.
-- `CameraController &` — for photo capture.
+- `VideoController &` — for recording control and photo capture.
 - `CommandHandler &` — for command registration.
 - `TimeService &` — for time operations.
 - `ConfigService &` — for configuration access.
@@ -1423,7 +1423,7 @@ Every command returns a `CommandResult` enum value:
 | `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"frames":uint32,"file_size":uint32}` | Returns current recording and streaming subscription state, frame count, and accumulated file size. No side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
-| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `INVALID_STATE` while the capture loop is running (either activity), `INTERNAL_ERROR` if capture or write fails. |
+| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
 | `0x13` | `START_STREAM` | None | None | Begins live preview: marks streaming active and starts the capture loop if not already running (reused during recording). No-op success if already active. |
 | `0x14` | `STOP_STREAM` | None | None | Clears streaming mode; all connected viewers are closed (within one frame period when recording continues), and when no other consumer remains the capture pipeline is torn down as well. Idempotent no-op if not active. |
 | `0x15` | `LIST_STREAMS` | None | JSON string: `{"active_streams":uint8}` | Returns the number of currently connected stream viewers. |
@@ -1610,7 +1610,7 @@ Lifecycle rules:
 - `stop_streaming()` posts `STOP_STREAMING`; the executor unsubscribes and closes all connected stream viewers even when recording continues (viewers exist only while streaming mode is active); during recording the close runs in the capture task at the next frame dispatch (bounded by one frame period) so it cannot race an in-flight delivery, otherwise the last-subscriber teardown runs and closes them after the join. A `START_STREAM` executed within that window cancels the pending close since streaming mode is active again.
 - Clip rotation reopens a fresh clip while recording remains subscribed.
 - Clip lifecycle serialization: all `AviClipSession::open()` / `close()` calls run under the owning controller's executor token — held by the capture task at each activation and by the command-side serve path while it executes requests — so clip open, finalization, and rotation reopen are mutually exclusive against command-side lifecycle changes by construction: commands can only change the registry at executor-token boundaries. A `STOP_RECORDING` immediately followed by `START_RECORDING` landing inside the rotation window can therefore not interleave with the rotation: the stop's detach is ordered against the close/reopen decision, and the start observes either an unfinalized clip (`clip close pending`) or a fully closed one — never a mid-rotation torn state. Every clip on the SD card is finalized with a patched AVI header or is the live clip of a running session; an abandoned placeholder-header clip cannot be produced by any start/stop interleaving.
-- `capture_photo()` is rejected with `INVALID_STATE` whenever `is_capture_active()` is true and performed directly when fully idle. It holds `m_command_mutex` across the entire gate check, camera capture, and SD write, so a concurrent lifecycle command (e.g. `START_STREAM` on the other transport) cannot post and activate the executor inside the photo's capture+write window; the executor never acquires the mutex, so it is never blocked by a photo.
+- Photo capture: `capture_photo()` posts a `TAKE_PHOTO` request into the executor queue; the executor captures the frame and writes it to SD at an activation boundary (in the capture task, or on a command task via the serve path under the executor token). Photos therefore work while recording and/or streaming are active — the executor serializes the photo against lifecycle commands and frame activations by construction, and the photo's SD write runs in executor context, preserving the single-capture-task SD writer discipline. Camera and SD failures are reported synchronously to the caller (bounded command wait). The serving activation is a pure service pass (no frame is captured for consumers), so a photo during recording costs one frame-period cadence slip, absorbed by the graceful frame-drop policy. A served photo with an empty registry afterwards arms the pipeline drain, so a photo taken while idle tears the loop back down after it completes. From within `on_frame()` the request is fire-and-forget and completes at the next activation boundary.
 - Executor model: start/stop commands may arrive from multiple task contexts (the web transport dispatches in the AsyncTCP task, serial commands in the main-loop task), but they never mutate pipeline state directly. Each command is posted into a small bounded request queue and executed by the capture task — the single executor — at the start of the next frame activation, so commands take effect atomically at activation boundaries: a start binds for the next activation, registrations cannot be silently lost or duplicated, and clip open/finalize/reopen (all executor-side, under the executor token) is totally ordered against command-side lifecycle changes. A command issued from within `on_frame()` is fire-and-forget: it is queued and consumed at a dispatch boundary of the same or the next activation. Commands wait (bounded) for executor completion with the command mutex released across the wait; while the capture task is between activations, a waiting task may claim the executor token (try-acquire, never blocking the capture task) and serve the queued batch itself under `m_command_mutex`, mutually exclusive with the post-join teardown section of `finish_command()`. When a command leaves the registry empty, the executor signals the drain and the command task drives the bounded scheduler join once (with the mutex released), then closes all connected stream viewers; a join recheck honors a concurrent registration — or queued-but-unexecuted work — by restarting the loop (in the registry-empty-but-queued subcase the ended session's viewers are closed first and the drain is re-armed so the queued work's own command completion re-decides the teardown).
 
 ### Capture Scheduling
@@ -1871,7 +1871,7 @@ The concurrent primitives the diagram references:
 | Primitive | Kind | Access | Role |
 |-----------|------|--------|------|
 | `m_executor_active` | `std::atomic<bool>` | Capture task holds it for its whole activation; a waiting command task try-acquires it for the serve path (never blocking the capture task) | Executor token — mutual exclusion for all pipeline-state mutation |
-| `m_command_mutex` | `std::mutex` | Command tasks only; the capture task never takes it | Serializes posting, scheduler start/stop, the photo gate, and the serve path; released across command waits and the teardown join |
+| `m_command_mutex` | `std::mutex` | Command tasks only; the capture task's activation core never takes it | Serializes posting, scheduler start/stop, and the serve path; released across command waits and the teardown join |
 | `m_queue_mutex` | `std::mutex` | Posters and the executor's batch claim | Ring handoff only (publish a slot / claim-and-snapshot the batch); never held across waits, joins, or request execution |
 | `m_queued` | `std::atomic<int>` | Posters increment; the executor exchanges it to 0 to claim the batch | Publish count of the request ring |
 | `m_loop_active` | `std::atomic<bool>` | Command side, under `m_command_mutex` | Capture scheduler running |
@@ -2014,11 +2014,11 @@ When a clip reaches `clip_duration_s` or `max_file_size_mb`, the clip is closed 
 
 ### Photo Capture
 
-`capture_photo()` captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file with the path pattern:
+`capture_photo()` posts a `TAKE_PHOTO` request into the capture executor; the photo is captured and written to the SD card as a standalone JPEG file at an activation boundary, with the path pattern:
 ```
-/YYYYMMDD/YYYYMMDD_HHMMSS_photo.jpg
+/YYYYMMDD/YYYYMMDD_HHMMSS.jpg
 ```
-Returns the file path on success. Returns `INVALID_STATE` while the capture loop is running (recording or streaming). The caller (e.g. `SystemOrchestrator::handle_take_photo()`) builds the base path from the Unix timestamp via `TimeFormatter` and resolves collisions via `VideoController::make_unique_path()` before calling `capture_photo()`.
+Returns the file path on success. Photos work while the capture loop is running (recording and/or streaming): the executor serializes the photo against lifecycle commands and frame activations, and the SD write runs in executor context alongside the recording/streaming I/O. The serving activation is a pure service pass, so a photo during active capture skips that activation's frame for consumers. While the loop is idle, the photo request starts the loop for the photo and the drain tears it back down after completion. The caller (e.g. `SystemOrchestrator::handle_take_photo()`) builds the base path from the Unix timestamp via `TimeFormatter` and resolves collisions via `VideoController::make_unique_path()` before calling `capture_photo()`.
 
 Before writing, `capture_photo()` extracts the parent directory from the path via `PathUtils::extract_parent_dir()` and creates it on the SD card (mirroring `AviClipSession::open()`). This ensures the first photo of a new day succeeds even when its `/YYYYMMDD` directory does not yet exist.
 

@@ -289,59 +289,31 @@ void VideoController::unregister_frame_consumer(int id)
 
 bool VideoController::capture_photo(const char* path)
 {
+    if (path == nullptr || path[0] == '\0')
     {
-        // Hold the command mutex across the entire gate check, camera
-        // capture, and SD write. Releasing it before the capture would
-        // allow a concurrent START_STREAM / START_RECORDING command to
-        // post and activate the executor, whose capture_frame() would
-        // then overlap this capture+write window on the shared camera.
-        // The executor never acquires this mutex, so it is never blocked
-        // here; only other command tasks wait, bounded by photo duration.
-        // (The full photo capability — pump-served capture while
-        // activities run — is deferred; this keeps the idle-only capture
-        // semantics.)
-        std::lock_guard<std::mutex> lock(m_command_mutex);
-        if (is_capture_active() ||
-            m_loop_active.load(std::memory_order_relaxed))
-        {
-            m_log.warn(SUBSYSTEM, "capture_photo rejected: capture loop active");
-            return false;
-        }
-
-        CameraCaptureResult result = m_camera.capture_frame();
-        if (result != CameraCaptureResult::SUCCESS)
-        {
-            m_log.warn(SUBSYSTEM, "Photo capture failed");
-            return false;
-        }
-
-        hal::CameraFrame frame = m_camera.get_frame();
-
-        // Ensure the parent directory exists before writing (mirrors
-        // AviClipSession::open()).
-        // The first photo of a new day would otherwise fail to open the file.
-        char dir_path[64];
-        if (PathUtils::extract_parent_dir(path, dir_path, sizeof(dir_path)))
-        {
-            create_directory(dir_path);
-        }
-
-        // Write JPEG data directly (no AVI framing)
-        bool ok = m_sd.write_sync(path, frame.data, frame.len,
-                                  hal::FileOpenMode::WRITE);
-
-        m_camera.release_frame();
-
-        if (ok)
-        {
-            m_log.info(SUBSYSTEM, "Photo saved: %s (%u bytes)", path, frame.len);
-        }
-        else
-        {
-            m_log.warn(SUBSYSTEM, "Photo SD write failed: %s", path);
-        }
-        return ok;
+        return false;
     }
+
+    std::shared_ptr<CommandCompletion> completion = post_request(
+        PipelineRequestType::TAKE_PHOTO, nullptr, -1, path);
+    if (!completion)
+    {
+        return false;
+    }
+
+    if (t_executor_context)
+    {
+        // Executor context (a consumer's on_frame): fire-and-forget.
+        // The request is consumed at this activation's boundary or the
+        // next one; waiting here would deadlock the capture task
+        // against itself (see start_recording()).
+        return true;
+    }
+
+    bool ok = false;
+    const bool completed = wait_for_completion(completion, &ok, nullptr);
+    finish_command();
+    return completed && ok;
 }
 
 void VideoController::set_stream_service(IStreamService* stream_service)
@@ -708,15 +680,17 @@ void VideoController::StreamSink::on_frame(const uint8_t* data, size_t len)
 // docstring in video_controller.h for the concurrency contract.
 
 std::shared_ptr<VideoController::CommandCompletion> VideoController::post_request(
-    PipelineRequestType type, IFrameConsumer* consumer, int slot_id)
+    PipelineRequestType type, IFrameConsumer* consumer, int slot_id,
+    const char* photo_path)
 {
     std::lock_guard<std::mutex> lock(m_command_mutex);
-    return post_request_locked(type, consumer, slot_id);
+    return post_request_locked(type, consumer, slot_id, photo_path);
 }
 
 std::shared_ptr<VideoController::CommandCompletion>
 VideoController::post_request_locked(
-    PipelineRequestType type, IFrameConsumer* consumer, int slot_id)
+    PipelineRequestType type, IFrameConsumer* consumer, int slot_id,
+    const char* photo_path)
 {
     // The ring handoff runs under m_queue_mutex so the executor's
     // claim-and-snapshot of a claimed batch can never interleave with a
@@ -736,6 +710,18 @@ VideoController::post_request_locked(
     req.type = type;
     req.consumer = consumer;
     req.slot_id = slot_id;
+    if (photo_path != nullptr)
+    {
+        // The request owns the path: a waiter that times out may be
+        // gone by the time the executor consumes the request, so the
+        // path cannot reference the caller's buffer.
+        strncpy(req.photo_path, photo_path, sizeof(req.photo_path) - 1);
+        req.photo_path[sizeof(req.photo_path) - 1] = '\0';
+    }
+    else
+    {
+        req.photo_path[0] = '\0';
+    }
     req.completion = std::make_shared<CommandCompletion>();
 
     // Make sure an executor exists to serve the request. The loop's
@@ -845,9 +831,10 @@ int VideoController::process_requests()
     }
 
     bool detached = false;
+    bool photo_served = false;
     for (int i = 0; i < n; i++)
     {
-        execute_request(batch[i], &detached);
+        execute_request(batch[i], &detached, &photo_served);
     }
 
     // Batch-level drain arming: the executor alone detects the
@@ -863,12 +850,16 @@ int VideoController::process_requests()
     // in the meantime (the close is consumed exactly once, so a drain
     // never closes the viewers twice).
     //
-    // The decision runs against the final registry state of the batch:
-    // a sequence like UNREGISTER_CONSUMER(A) followed by
+    // A served TAKE_PHOTO counts like a detach when the registry is
+    // empty afterwards: the photo request started the loop (or found it
+    // running), and with no consumer left subscribed the loop has
+    // nothing to serve, so the waiter's command completion tears it
+    // down. The decision runs against the final registry state of the
+    // batch: a sequence like UNREGISTER_CONSUMER(A) followed by
     // REGISTER_CONSUMER(B) re-fills the registry, so a per-request
     // arming after UNREGISTER would spuriously stop_all_streams()
     // connected viewers despite B still subscribing.
-    if (detached && consumer_count() == 0)
+    if ((detached || photo_served) && consumer_count() == 0)
     {
         m_close_viewers_pending.store(true, std::memory_order_release);
         m_pipeline_drained.store(true, std::memory_order_release);
@@ -887,7 +878,8 @@ int VideoController::process_requests()
     return n;
 }
 
-void VideoController::execute_request(PipelineRequest& req, bool* detached)
+void VideoController::execute_request(PipelineRequest& req,
+                                      bool* detached, bool* photo_served)
 {
     bool ok = false;
     int id = -1;
@@ -915,6 +907,10 @@ void VideoController::execute_request(PipelineRequest& req, bool* detached)
         case PipelineRequestType::UNREGISTER_CONSUMER:
             *detached = executor_unregister(req.consumer, req.slot_id) || *detached;
             ok = true;
+            break;
+        case PipelineRequestType::TAKE_PHOTO:
+            ok = executor_take_photo(req.photo_path);
+            *photo_served = true;
             break;
     }
 
@@ -1059,6 +1055,56 @@ bool VideoController::executor_unregister(IFrameConsumer* expected, int slot_id)
     }
     detach_consumer(slot_id);
     return true;
+}
+
+bool VideoController::executor_take_photo(const char* path)
+{
+    if (path == nullptr || path[0] == '\0')
+    {
+        return false;
+    }
+
+    // Executor-only, at an activation boundary: request execution
+    // precedes this activation's own frame capture (a service pass
+    // captures nothing), and the executor token excludes any concurrent
+    // activation, so the camera is free here. The SD write runs in
+    // executor context — the same discipline as the per-frame clip
+    // appends — so photo writes are serialized against recording I/O
+    // by construction.
+    CameraCaptureResult result = m_camera.capture_frame();
+    if (result != CameraCaptureResult::SUCCESS)
+    {
+        m_log.warn(SUBSYSTEM, "Photo capture failed");
+        return false;
+    }
+
+    hal::CameraFrame frame = m_camera.get_frame();
+
+    // Ensure the parent directory exists before writing (mirrors
+    // AviClipSession::open()).
+    // The first photo of a new day would otherwise fail to open the file.
+    char dir_path[64];
+    if (PathUtils::extract_parent_dir(path, dir_path, sizeof(dir_path)))
+    {
+        create_directory(dir_path);
+    }
+
+    // Write JPEG data directly (no AVI framing)
+    bool ok = m_sd.write_sync(path, frame.data, frame.len,
+                              hal::FileOpenMode::WRITE);
+
+    m_camera.release_frame();
+
+    if (ok)
+    {
+        m_log.info(SUBSYSTEM, "Photo saved: %s (%u bytes)", path,
+                   static_cast<unsigned>(frame.len));
+    }
+    else
+    {
+        m_log.warn(SUBSYSTEM, "Photo SD write failed: %s", path);
+    }
+    return ok;
 }
 
 // ============================================================

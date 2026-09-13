@@ -194,14 +194,10 @@ CommandResult SystemOrchestrator::handle_take_photo(
     const uint8_t* /* payload */, size_t /* len */,
     uint8_t* response, size_t& responseLen)
 {
-    // Photo capture needs exclusive camera/frame-buffer access; reject
-    // while any consumer keeps the capture loop running.
-    if (m_video.is_capture_active())
-    {
-        m_log.warn(SUBSYSTEM, "Take photo rejected — capture loop active");
-        return CommandResult::INVALID_STATE;
-    }
-
+    // Photo capture posts TAKE_PHOTO into the capture executor and is
+    // served at an activation boundary, so photos work while recording
+    // and/or streaming are active; camera and SD failures surface
+    // synchronously to this caller as INTERNAL_ERROR.
     // Build photo path from unix timestamp (UTC)
     uint32_t seconds = m_time.unix_now();
 

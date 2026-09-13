@@ -116,6 +116,28 @@ struct TrackingSink : public IStreamService
     }
 };
 
+/**
+ * @brief Frame-consumer test double that posts a one-shot photo request
+ *        from within on_frame() (executor context, fire-and-forget).
+ */
+struct PhotoPostingSink : public IFrameConsumer
+{
+    VideoController* vc{nullptr};
+    const char* photo_path{nullptr};
+    int posts{0};
+    int frames{0};
+
+    void on_frame(const uint8_t* /*data*/, size_t /*len*/) override
+    {
+        frames++;
+        if (vc != nullptr && photo_path != nullptr && posts == 0)
+        {
+            posts++;
+            vc->capture_photo(photo_path);
+        }
+    }
+};
+
 // ============================================================
 // Default state
 // ============================================================
@@ -491,22 +513,23 @@ void test_capture_photo_writes_jpeg_data()
 }
 
 // ============================================================
-// Photo capture — cross-transport serialization
+// Photo capture — executor serialization
 // ============================================================
 
 /**
- * @brief capture_photo() holds the command mutex across capture+write.
+ * @brief The executor serializes a photo's capture+write window
+ *        against concurrent lifecycle commands.
  *
- * Regression test for the boundary-audit race (report §6.1): a photo
- * in flight must not let a concurrent START_STREAM (arriving on the
- * other transport) post and activate the executor inside the photo's
- * capture+SD-write window. While the photo is parked inside its SD
- * write, a concurrent start_streaming() must be blocked — the capture
- * loop must not start and the executor must not capture a frame —
- * until the photo completes. Also asserts the written data is intact
- * and the photo's frame buffer was released (no leak).
+ * Replaces the idle-only photo mutex-span regression (PR #6): the
+ * photo is now an executor request, and the executor token — not a
+ * command-mutex span — provides the serialization. While a photo is
+ * parked inside its SD write (served under the executor token), a
+ * concurrent start_streaming() posted from another command task must
+ * not be able to capture a frame inside the photo's window; it
+ * completes only after the photo completes. Also asserts the written
+ * data is intact and the photo's frame buffer was released (no leak).
  */
-void test_capture_photo_holds_mutex_across_capture_and_write()
+void test_capture_photo_serialized_against_concurrent_lifecycle_command()
 {
     TestFixture f;
     f.setup_fake_frame();
@@ -516,7 +539,7 @@ void test_capture_photo_holds_mutex_across_capture_and_write()
     strcpy(photo_path, "/20260213/20260213_123456.jpg");
 
     // Park the photo inside its SD write; the gate is released below
-    // once the interleaving window has been exercised.
+    // once the serialization window has been exercised.
     f.sd_hal.gate_write_at_count.store(1, std::memory_order_relaxed);
 
     std::atomic<bool> photo_ok{false};
@@ -537,8 +560,8 @@ void test_capture_photo_holds_mutex_across_capture_and_write()
     TEST_ASSERT_EQUAL_INT(1,
         f.sd_hal.gate_write_hits.load(std::memory_order_acquire));
 
-    // Contending start from the second command transport while the
-    // photo holds the gate-check-to-write critical section.
+    // Contending start from a second command task while the photo
+    // holds the executor token.
     std::atomic<bool> start_ok{false};
     std::thread starter([&]()
     {
@@ -546,11 +569,9 @@ void test_capture_photo_holds_mutex_across_capture_and_write()
                        std::memory_order_release);
     });
 
-    // Give a broken serialization a window to slip the start in.
+    // Give a broken serialization a window to overlap the photo.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    const bool loop_started_during_write =
-        f.capture_scheduler.is_started();
     const int captures_during_write = f.camera_hal.capture_call_count;
 
     // Release the photo; both contenders must then complete cleanly.
@@ -561,10 +582,9 @@ void test_capture_photo_holds_mutex_across_capture_and_write()
     TEST_ASSERT_TRUE(photo_ok.load());
     TEST_ASSERT_TRUE(start_ok.load());
 
-    // Core invariant: the executor never overlapped the photo window —
-    // the loop did not start and no extra frame was captured while the
-    // photo's write was in flight.
-    TEST_ASSERT_FALSE(loop_started_during_write);
+    // Core invariant: no executor activation captured a frame inside
+    // the photo's capture+write window — the only capture so far is
+    // the photo's own.
     TEST_ASSERT_EQUAL_INT(1, captures_during_write);
 
     // No torn data: the photo file holds exactly the fake JPEG.
@@ -1651,10 +1671,10 @@ void test_final_teardown_stops_loop_then_closes_viewers()
 }
 
 /**
- * @brief capture_photo is rejected while any activity keeps the loop
- *        running, and allowed once fully idle.
+ * @brief Photos work while streaming-only, recording-only, and both
+ *        are active, and remain intact when fully idle.
  */
-void test_capture_photo_gating_across_modes()
+void test_capture_photo_works_across_modes()
 {
     TestFixture f;
     f.setup_fake_frame();
@@ -1663,24 +1683,270 @@ void test_capture_photo_gating_across_modes()
     char photo_path[64];
     strcpy(photo_path, "/20260213/20260213_123456.jpg");
 
-    // Preview-only: rejected
+    // Preview-only: allowed
     TEST_ASSERT_TRUE(f.video.start_streaming());
-    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    f.sd_hal.files.clear();
 
-    // Recording + preview: rejected
+    // Recording + preview: allowed
     TEST_ASSERT_TRUE(f.video.start_recording());
-    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    f.sd_hal.files.clear();
 
-    // Recording only: rejected
+    // Recording only: allowed
     f.video.stop_streaming();
     TEST_ASSERT_TRUE(f.video.is_recording());
-    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    f.sd_hal.files.clear();
 
-    // Fully idle: allowed
+    // Fully idle: allowed — and the photo request's drain tears the
+    // loop back down afterwards.
     f.video.stop_recording();
     TEST_ASSERT_FALSE(f.video.is_recording());
     TEST_ASSERT_FALSE(f.video.is_streaming());
     TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief A photo taken during recording lands on SD and leaves the
+ *        recording clip healthy.
+ *
+ * The photo executes at an activation boundary (a service pass), so
+ * recording counters keep advancing afterwards and the clip still
+ * finalizes with a patched header on stop.
+ */
+void test_capture_photo_during_recording_keeps_clip_healthy()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
+
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    const std::vector<uint8_t>& photo = f.sd_hal.files[photo_path];
+    TEST_ASSERT_EQUAL_UINT32(FAKE_JPEG_SIZE, photo.size());
+
+    // Recording continues: counters advance and the loop stays up.
+    TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(3, f.video.frames_recorded());
+
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    // Two files: the finalized clip and the photo.
+    TEST_ASSERT_EQUAL_UINT32(2, f.sd_hal.files.size());
+    for (const auto& entry : f.sd_hal.files)
+    {
+        const std::string& name = entry.first;
+        const std::vector<uint8_t>& content = entry.second;
+        if (name.find(".jpg") != std::string::npos)
+        {
+            // Photo: raw JPEG payload.
+            TEST_ASSERT_EQUAL_UINT32(FAKE_JPEG_SIZE, content.size());
+        }
+        else
+        {
+            // Clip: patched RIFF header, size field == size - 8.
+            TEST_ASSERT_EQUAL_UINT8('R', content[0]);
+            TEST_ASSERT_EQUAL_UINT8('I', content[1]);
+            TEST_ASSERT_EQUAL_UINT8('F', content[2]);
+            TEST_ASSERT_EQUAL_UINT8('F', content[3]);
+            const uint32_t riff_size =
+                static_cast<uint32_t>(content[4]) |
+                (static_cast<uint32_t>(content[5]) << 8) |
+                (static_cast<uint32_t>(content[6]) << 16) |
+                (static_cast<uint32_t>(content[7]) << 24);
+            TEST_ASSERT_EQUAL_UINT32(content.size() - 8, riff_size);
+        }
+    }
+}
+
+/**
+ * @brief A photo taken during streaming-only leaves the stream
+ *        subscribed and delivering.
+ */
+void test_capture_photo_during_streaming()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, sink.deliveries);
+
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    // Streaming continues after the photo's service-pass activation.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);
+
+    f.video.stop_streaming();
+    TEST_ASSERT_FALSE(f.video.is_streaming());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief A photo taken while recording and streaming are both active
+ *        succeeds and leaves both activities subscribed.
+ */
+void test_capture_photo_during_recording_and_streaming()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+
+    TEST_ASSERT_TRUE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+    TEST_ASSERT_TRUE(f.video.is_recording());
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+    TEST_ASSERT_TRUE(f.capture_scheduler.is_started());
+
+    // Both activities continue after the photo.
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_UINT32(2, f.video.frames_recorded());
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);
+
+    f.video.stop_streaming();
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief Camera capture failure is reported synchronously to the
+ *        TAKE_PHOTO caller, while recording is active and when idle.
+ */
+void test_capture_photo_camera_failure_reports_synchronously()
+{
+    TestFixture f;
+    set_mock_millis(1000);
+
+    // No frame configured: capture_frame() fails.
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TEST_ASSERT_TRUE(f.video.start_recording());
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_EQUAL_UINT32(0, f.sd_hal.files.count(photo_path));
+    TEST_ASSERT_TRUE(f.video.is_recording());
+
+    f.video.stop_recording();
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief SD write failure is reported synchronously to the TAKE_PHOTO
+ *        caller while streaming is active; the frame buffer is still
+ *        released and streaming continues.
+ */
+void test_capture_photo_sd_failure_reports_synchronously()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    TrackingSink sink;
+    f.video.set_stream_service(&sink);
+
+    TEST_ASSERT_TRUE(f.video.start_streaming());
+    f.capture_one_frame();
+
+    f.sd_hal.write_result = false;
+    TEST_ASSERT_FALSE(f.video.capture_photo(photo_path));
+    // The open succeeded but zero bytes were written.
+    const std::vector<uint8_t>& failed_photo = f.sd_hal.files[photo_path];
+    TEST_ASSERT_TRUE(failed_photo.empty());
+
+    // Frame released per capture: the streaming frame and the photo's
+    // own capture; streaming is still subscribed.
+    TEST_ASSERT_EQUAL_INT(2, f.camera_hal.release_call_count);
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    f.sd_hal.write_result = true;
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(2, sink.deliveries);
+
+    f.video.stop_streaming();
+}
+
+/**
+ * @brief A photo request posted from within on_frame() is
+ *        fire-and-forget and executes at the next activation boundary
+ *        without deadlocking the capture task.
+ */
+void test_capture_photo_from_on_frame_is_fire_and_forget()
+{
+    TestFixture f;
+    f.setup_fake_frame();
+    set_mock_millis(1000);
+
+    char photo_path[64];
+    strcpy(photo_path, "/20260213/20260213_123456.jpg");
+
+    PhotoPostingSink sink;
+    sink.vc = &f.video;
+    sink.photo_path = photo_path;
+
+    const int id = f.video.register_frame_consumer(&sink);
+    TEST_ASSERT_GREATER_OR_EQUAL(0, id);
+
+    // Frame 1: on_frame posts the photo request (fire-and-forget).
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(1, sink.posts);
+    TEST_ASSERT_FALSE(f.sd_hal.files.count(photo_path));
+
+    // Frame 2's boundary consumes the request: a pure service pass
+    // (no frame captured for consumers), but the photo lands.
+    f.capture_one_frame();
+    TEST_ASSERT_TRUE(f.sd_hal.files.count(photo_path));
+
+    // Frame 3: the consumer still receives frames afterwards (frame 2
+    // was the photo's pure service pass).
+    f.capture_one_frame();
+    TEST_ASSERT_EQUAL_INT(2, sink.frames);
+
+    f.video.unregister_frame_consumer(id);
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
 }
 
 // ============================================================
@@ -2761,8 +3027,14 @@ int main()
     RUN_TEST(test_deferred_viewer_close_survives_capture_failure);
     RUN_TEST(test_deferred_viewer_close_does_not_leak_into_new_session);
     RUN_TEST(test_final_teardown_stops_loop_then_closes_viewers);
-    RUN_TEST(test_capture_photo_gating_across_modes);
-    RUN_TEST(test_capture_photo_holds_mutex_across_capture_and_write);
+    RUN_TEST(test_capture_photo_works_across_modes);
+    RUN_TEST(test_capture_photo_serialized_against_concurrent_lifecycle_command);
+    RUN_TEST(test_capture_photo_during_recording_keeps_clip_healthy);
+    RUN_TEST(test_capture_photo_during_streaming);
+    RUN_TEST(test_capture_photo_during_recording_and_streaming);
+    RUN_TEST(test_capture_photo_camera_failure_reports_synchronously);
+    RUN_TEST(test_capture_photo_sd_failure_reports_synchronously);
+    RUN_TEST(test_capture_photo_from_on_frame_is_fire_and_forget);
 
     // Consumer registry
     RUN_TEST(test_register_consumer_lifecycle);
