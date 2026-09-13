@@ -344,11 +344,38 @@ void test_multi_transport_no_interference()
 void setUp() {}
 void tearDown() {}
 
+/**
+ * @brief A handler result of SD_UNAVAILABLE propagates unchanged
+ *        through dispatch() (additive result-code pass-through).
+ */
+void test_dispatch_propagates_sd_unavailable()
+{
+    TestFixture f;
+
+    f.handler.register_handler(
+        CommandCode::START_RECORDING,
+        [](const uint8_t*, size_t, uint8_t*, size_t&) -> CommandResult
+        {
+            return CommandResult::SD_UNAVAILABLE;
+        });
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+
+    CommandResult result = f.handler.dispatch(
+        CommandCode::START_RECORDING, nullptr, 0, response, response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SD_UNAVAILABLE),
+        static_cast<uint8_t>(result));
+}
+
 int main(int argc, char** argv)
 {
     UNITY_BEGIN();
 
     RUN_TEST(test_initial_state_no_handlers);
+    RUN_TEST(test_dispatch_propagates_sd_unavailable);
     RUN_TEST(test_register_and_dispatch);
     RUN_TEST(test_dispatch_unrecognized_code);
     RUN_TEST(test_tick_polls_transports);

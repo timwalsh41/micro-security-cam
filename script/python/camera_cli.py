@@ -10,6 +10,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # =============================================================
@@ -113,14 +114,35 @@ def _cmd_set_time() -> int:
 
 
 def _cmd_config() -> int:
-    """'config' command — not yet implemented in firmware."""
-    print(
-        "The 'config' command maps to GET_CONFIG which has no registered\n"
-        "handler in the current firmware. This will be implemented in the\n"
-        "future.",
-        file=sys.stderr,
-    )
-    return 1
+    """GET /control?cmd=config — returns the full live config as INI text."""
+    return _send(f"/control?cmd=config")
+
+
+def _cmd_config_get(args) -> int:
+    """GET /control?cmd=config_get_value&key=<key> — read one setting."""
+    key = urllib.parse.quote(args.key, safe="")
+    return _send(f"/control?cmd=config_get_value&key={key}")
+
+
+def _cmd_config_set(args) -> int:
+    """GET /control?cmd=config_set_value&key=<key>&value=<value>.
+
+    Sets one setting in the live in-RAM config. The change is not
+    persisted until a `config-save` is issued.
+    """
+    key = urllib.parse.quote(args.key, safe="")
+    value = urllib.parse.quote(args.value, safe="")
+    return _send(f"/control?cmd=config_set_value&key={key}&value={value}")
+
+
+def _cmd_config_save(args) -> int:
+    """GET /control?cmd=config_save&dest=<dest> — persist the live config.
+
+    The destination is case-insensitive: `nvs` writes the live config to
+    NVS flash, `sd` writes it to /config.ini on the SD card.
+    """
+    dest = args.dest.lower()
+    return _send(f"/control?cmd=config_save&dest={dest}")
 
 
 def main() -> int:
@@ -155,7 +177,35 @@ def main() -> int:
 
     subparsers.add_parser(
         "config",
-        help="Get configuration (not yet implemented in firmware)",
+        help="Get the full live configuration as INI text",
+    )
+
+    config_get = subparsers.add_parser(
+        "config-get",
+        help="Read a single configuration value (section.key)",
+    )
+    config_get.add_argument("key", help="Setting path, e.g. wifi.ssid")
+
+    config_set = subparsers.add_parser(
+        "config-set",
+        help="Set a single configuration value in the live config",
+    )
+    config_set.add_argument("key", help="Setting path, e.g. wifi.ssid")
+    config_set.add_argument(
+        "value",
+        nargs="?",
+        default="",
+        help="New value (omit to blank the setting)",
+    )
+
+    config_save = subparsers.add_parser(
+        "config-save",
+        help="Persist the live config to NVS or the SD card",
+    )
+    config_save.add_argument(
+        "dest",
+        choices=["nvs", "sd", "NVS", "SD"],
+        help="Destination: nvs (flash) or sd (/config.ini on the card)",
     )
 
     args = parser.parse_args()
@@ -172,6 +222,12 @@ def main() -> int:
         return _cmd_set_time()
     elif args.command == "config":
         return _cmd_config()
+    elif args.command == "config-get":
+        return _cmd_config_get(args)
+    elif args.command == "config-set":
+        return _cmd_config_set(args)
+    elif args.command == "config-save":
+        return _cmd_config_save(args)
     return 1
 
 

@@ -111,6 +111,13 @@ package "HAL interfaces" as HAL_IF {
         +is_initialized() : bool
     }
 
+    interface NvsHal {
+        +begin(namespace_name : const char*) : bool
+        +read_blob(key, buffer, buffer_size) : size_t
+        +write_blob(key, data, len) : bool
+        +erase_key(key) : bool
+    }
+
     interface SerialHal {
         +available() : int
         +read() : int
@@ -179,6 +186,11 @@ package "ESP32 implementations" as HAL_IMPL {
     class SerialHalImpl {
         -m_write_mutex : SemaphoreHandle_t
         write() serialised via mutex
+    }
+
+    class NvsHalImpl {
+        -m_prefs : Preferences
+        -m_open : bool
     }
 
     class TimerHalImpl {
@@ -269,6 +281,9 @@ together {
 }
 together {
     HAL_IF.SerialHal   -[hidden]down- HAL_IMPL.SerialHalImpl
+}
+together {
+    HAL_IF.NvsHal      -[hidden]down- HAL_IMPL.NvsHalImpl
 }
 together {
     HAL_IF.TimerHal    -[hidden]down- HAL_IMPL.TimerHalImpl
@@ -380,6 +395,7 @@ package "Services" {
         +start_write(path, data, len, mode)
         +start_read(path, buffer, buffer_size)
         +init_card() : SdInitResult
+        +is_card_available() : bool
         +write_sync(path, data, len, mode) : bool
         +read_sync(path, buffer, size) : size_t
         +write_at_sync(path, offset, data, len) : bool
@@ -408,11 +424,18 @@ package "Services" {
     class ConfigService {
         -m_logger : LoggingService&
         -m_config : ConfigData
+        -m_mutex : std::mutex
         +load(data : const uint8_t*, length : size_t) : bool
+        +overlay(data : const uint8_t*, length : size_t) : bool
         +config() : const ConfigData&
         +mutable_config() : ConfigData&
         +get_config_value(key, value_out, max_len) : bool
         +set_config_value(key, value) : bool
+        +serialize(buffer, buffer_size) : size_t
+        +load_nvs(nvs : NvsHal&) : bool
+        +save_nvs(nvs : NvsHal&) : bool
+        +load_sd(sd : SdController&) : bool
+        +save_sd(sd : SdController&) : bool
     }
 
     class WifiService {
@@ -421,6 +444,7 @@ package "Services" {
         +init(sta : WifiConfig, ap : ApConfig, timeout_secs : uint16_t)
         +is_connected() : bool
         +local_ip() : const char*
+        -start_ap(ap : ApConfig)
     }
 
     class WebServerService {
@@ -435,6 +459,7 @@ package "Services" {
 package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface LogBackend_ext as "LogBackend"
     interface SdCardHal_ext as "SdCardHal"
+    interface NvsHal_ext as "NvsHal"
     interface WifiHal_ext as "WifiHal"
     interface WebServerHal_ext as "WebServerHal"
     interface RequestRef_ext as "RequestRef"
@@ -461,7 +486,9 @@ StreamService *-- "0..8" StreamFrameChannel_ext : stream slots
 StreamService --> LoggingService : diagnostics
 ConfigService --> LoggingService : diagnostics
 ConfigService *-- "1" ConfigData_ext : owns
-ConfigService ..> IniParser_ext : load() parses via parse()
+ConfigService ..> IniParser_ext : load()/overlay() parse via IniParser
+ConfigService ..> NvsHal_ext : load_nvs()/save_nvs()
+ConfigService ..> SdController : load_sd()/save_sd()
 WifiService --> WifiHal_ext : connection
 WifiService --> TimeService : timeouts
 WifiService --> LoggingService : diagnostics
@@ -503,6 +530,8 @@ package "Command dispatch framework" {
         UNRECOGNIZED = 0x01
         INVALID_ARGS = 0x02
         INVALID_STATE = 0x03
+        SD_UNAVAILABLE = 0x04
+        UNAUTHORIZED = 0x05
         INTERNAL_ERROR = 0xFF
     }
 
@@ -536,7 +565,7 @@ package "Command dispatch framework" {
     }
 
     class CommandHandler {
-        +MAX_RESPONSE_SIZE = 256
+        +MAX_RESPONSE_SIZE = 1024
         -m_log : LoggingService&
         -m_handlers : HandlerEntry[16]
         -m_transports : CommandTransport*[4]
@@ -647,8 +676,12 @@ class SystemOrchestrator {
     -m_cmd_handler : CommandHandler&
     -m_streams : StreamService&
     -m_stream_password : char[]
+    -m_sd : SdController&
+    -m_nvs : NvsHal&
+    -m_sd_available : bool
     +init()
     +tick()
+    +is_sd_available() : bool
     -register_commands()
     -register_stream_route()
     -handle_get_status()
@@ -656,6 +689,8 @@ class SystemOrchestrator {
     -handle_stop_recording()
     -handle_take_photo()
     -handle_set_time()
+    -handle_set_config()
+    -handle_get_config()
     -handle_get_config_value()
     -handle_set_config_value()
     -handle_start_stream()
@@ -669,6 +704,7 @@ package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface SerialHal_ext as "SerialHal"
     interface TimerHal_ext as "TimerHal"
     interface WebServerHal_ext as "WebServerHal"
+    interface NvsHal_ext as "NvsHal"
 }
 
 package "External (see Diagram 2 - Services)" <<Frame>> {
@@ -701,6 +737,8 @@ SystemOrchestrator --> VideoController : record control
 SystemOrchestrator --> VideoController : photo capture
 SystemOrchestrator --> CommandHandler : register handlers
 SystemOrchestrator --> ConfigService_ext : config access
+SystemOrchestrator --> SdController_ext : SD availability + config save
+SystemOrchestrator --> NvsHal_ext : config save
 SystemOrchestrator --> LoggingService_ext : diagnostics
 SystemOrchestrator --> StreamService_ext : stream control
 SystemOrchestrator --> TimeService_ext : time ops
@@ -738,6 +776,7 @@ package "Utilities" {
     class IniParser <<utility>> {
         +{static} defaults() : ConfigData
         +{static} parse(content, length) : ConfigData
+        +{static} overlay(base, content, length) : ConfigData
         +{static} serialize(data, buffer, buffer_size) : size_t
     }
 
@@ -802,6 +841,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 |-----------|------|----------------|
 | `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
 | `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
+| `NvsHal` | `include/hal/nvs_hal.h` | Non-volatile key-value blob storage within a named namespace. Provides `begin(namespace)`, `read_blob(key, buf, size)`, `write_blob(key, data, len)`, and `erase_key(key)`. Used for config persistence. |
 | `TimerHal` | `include/hal/timer_hal.h` | Hardware timer abstraction for periodic ISR callbacks. Provides `init(interval_us, isr)`, `set_frequency()`, `start()`, `stop()`. |
 
 **`hal::FileOpenMode`** — file open modes supported by `SdCardHal::open()`:
@@ -825,6 +865,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 |---------------|-------|
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
 | `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/read/close/seek) |
+| `NvsHalImpl` | ESP32 `Preferences` library (NVS) — `Preferences::begin()`, `getBytes()`, `putBytes()`, `remove()` |
 | `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks. `init()` and `stop()` are the sole toggle points for the registered ISR callback: `init()` attaches it, `stop()` removes it (along with pausing the counter) so no delayed alarm dispatch can invoke the callback after stop returns. Removal is idempotent by design — an attach-state flag guards both removal sites (`stop()` and `init()`'s repeat-teardown), since the ESP-IDF v4.4.7 driver frees the interrupt handle in `timer_isr_callback_remove()` without nulling its internally stored handle, making a second unguarded remove a use-after-free. `init()` re-arms the callback on every call; the ESP-IDF v4.4.7 driver re-initializes an in-use timer in place rather than refusing `timer_init()`, so the repeat-teardown in `init()` is what keeps each start cycle clean. `set_frequency()` only retargets the alarm value and does not affect callback attachment: it requires a running timer (one whose `init()` has attached the callback and whose `stop()` has not detached it) — after `stop()`, a restart must go through `init()` before callbacks dispatch again. |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
@@ -954,6 +995,8 @@ The `tick()` method returns an `SdSignal` (`IDLE`, `CS_ACTIVE`, or `CS_INACTIVE`
 
 The constructor accepts an optional `CsSignalFn` callback that drives the CS pin directly during synchronous I/O operations. When provided, the synchronous methods bypass the state machine and use the callback to assert/deassert CS.
 
+`init_card()` caches the most recent `SdInitResult`; `is_card_available()` reports `true` only after a successful initialization, latching unavailability (missing card or init failure) until a subsequent successful `init_card()` call. `SystemOrchestrator::init()` uses this to latch degraded mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
+
 ### Non-Blocking API
 
 - `start_write(path, data, len)` — initiates a write operation.
@@ -1062,7 +1105,7 @@ Provides convenience methods (`debug()`, `info()`, `warn()`, `error()`) with pri
 
 ### Responsibility
 
-A stateless, single-pass INI file parser. Parses a character buffer into a `ConfigData` struct containing all firmware configuration.
+A stateless, single-pass INI file parser. Parses a character buffer into a `ConfigData` struct containing all firmware configuration, overlays recognized settings from a buffer onto a base config setting-by-setting, and serializes a `ConfigData` back to INI text.
 
 ### INI Format
 
@@ -1103,8 +1146,9 @@ jpeg_quality=10
 
 ### API
 
-- `IniParser::defaults()` — returns a `ConfigData` populated with defaults (port 80, empty strings).
+- `IniParser::defaults()` — returns a `ConfigData` populated with the compiled-in defaults (member initializers in `ConfigData`: web port 80, AP SSID `MicroCam`, camera/video defaults per the README configuration section; WiFi and web passwords blank).
 - `IniParser::parse(const char* content, size_t length)` — parses the given buffer and returns a `ConfigData`. Malformed lines are skipped gracefully. Unknown fields retain their defaults.
+- `IniParser::overlay(const ConfigData& base, const char* content, size_t length)` — parses the buffer and applies only the recognized settings on top of `base`; settings not mentioned in the buffer retain their base values. Used for the boot-time NVS/SD overlays.
 - `IniParser::serialize(const ConfigData& data, char* buffer, size_t buffer_size)` — serializes a `ConfigData` into INI-format text written to `buffer`. Returns the number of bytes written (excluding null terminator). If the buffer is null or too small, returns the number of bytes that would have been needed. The output is round-trip compatible with `parse()` — serializing and re-parsing yields identical values. All fields are always written, including empty strings.
 
 ### ConfigData Structure
@@ -1149,62 +1193,76 @@ Pure logic with no hardware dependencies. Testable natively with coverage for de
 
 ### Responsibility
 
-High-level configuration service that owns the current `ConfigData` and provides a `load()` method to populate it from a raw byte buffer (typically read from an INI file on the SD card).
+High-level configuration service that owns the current `ConfigData`. Provides boot-time loading (compiled-in defaults overlaid setting-by-setting from NVS, then from the SD card config file), live single-value get/set, serialization of the live config to INI text, and validated persistence of the live config to NVS or the SD card.
 
 ### Dependencies
 
-- `LoggingService &` — for diagnostic output during config loading.
+- `LoggingService &` — for diagnostic output during config loading and persistence.
+- `SdController &` — for SD card config file reads/writes (per-call, method parameter).
+- `hal::NvsHal &` — for NVS-backed config persistence (per-call, method parameter).
+
+### Boot Load Sequence and Precedence
+
+The composition root loads the config at boot in a fixed precedence order; each source overlays only the settings it mentions, so settings absent from a source keep their value from the previous layer:
+
+1. **Compiled-in defaults** (`IniParser::defaults()`): WiFi settings blank, AP SSID `MicroCam` with no password (open network), web port 80 with no password, and the camera/video defaults documented in the README configuration section.
+2. **NVS overlay** (`load_nvs()`): applied when a saved config blob exists whose schema version matches the firmware's. A saved config with a missing or mismatched schema version is erased (WARNING log naming the discarded version) and NOT migrated; the defaults are kept.
+3. **SD card config file overlay** (`load_sd()`): applied when the card is usable and `/config.ini` is readable.
+
+**Precedence: defaults < NVS < SD file** — a setting present in the SD file wins over NVS and defaults; a setting present only in NVS wins over the default.
 
 ### Key Methods
 
-- `load(const uint8_t* data, size_t length)` — parses the buffer via `IniParser::parse()`, logs the result (WiFi SSID, AP SSID, web port, capture interval), and stores the parsed config. Returns `true` on success, `false` if the buffer is null or empty (in which case defaults are retained with a warning log).
+- `load(const uint8_t* data, size_t length)` — replaces the entire config with the parsed buffer via `IniParser::parse()`.
+- `overlay(const uint8_t* data, size_t length)` — applies recognized settings from the buffer on top of the current config setting-by-setting (`IniParser::overlay()`); absent settings retain their values.
 - `config()` — returns a `const ConfigData&` to the current configuration (read-only).
-- `mutable_config()` — returns a `ConfigData&` for in-place modification. Callers can modify fields directly, then use `IniParser::serialize()` to produce an updated INI buffer for persistence.
+- `mutable_config()` — returns a `ConfigData&` for in-place modification.
+- `get_config_value()` / `set_config_value()` — read/write a single setting in the live config by `"section.key"` name. Changes here are RAM-only until a `save_*()` call persists them.
+- `serialize(char* buffer, size_t buffer_size)` — serializes the live config to INI text (all fields, including empty ones, so a serialize/overlay round trip preserves every setting).
+- `load_nvs(hal::NvsHal&)` / `save_nvs(hal::NvsHal&)` — read/overlay and validated-write against the NVS namespace. `save_nvs()` serializes first, validates the serialized size against `CONFIG_BUFFER_SIZE`, writes the blob plus a schema version key, and verifies by read-back comparison. A failed save never modifies the live RAM config.
+- `load_sd(SdController&)` / `save_sd(SdController&)` — read/overlay and validated write of the SD card config file. `save_sd()` serializes first, validates the size, writes (truncating any existing file), and verifies by read-back comparison. A failed write never modifies the live RAM config.
+- `load()`, `overlay()`, `get_config_value()`, `set_config_value()`, and `serialize()` are guarded by an internal mutex: web command handlers run on the AsyncTCP task while serial commands run in the main loop task, so these accessors serialize cross-task access to the live config. `config()`/`mutable_config()` return direct references and are intended for single-threaded boot-time use only.
 
 ### Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `CONFIG_BUFFER_SIZE` | 1024 | Maximum buffer size expected for config file reads |
+| `CONFIG_BUFFER_SIZE` | 1024 | Maximum buffer size for config reads and persistence validation |
 | `DEFAULT_CONFIG_PATH` | `/config.ini` | Path on SD card where config file is looked up |
 | `READ_TIMEOUT_MS` | 5000 | Timeout for SD card read operations |
+| `NVS_NAMESPACE` | `config` | NVS namespace holding the persisted config |
+| `NVS_KEY` | `config` | NVS key holding the serialized config blob |
+| `NVS_SCHEMA_KEY` | `schema_version` | NVS key holding the config schema version (`uint32_t`) |
+| `NVS_SCHEMA_VERSION` | 1 | Current config schema version; increment on incompatible layout changes |
 
 ### Integration
 
-In `main.cpp`, after SD card initialization:
-1. A stack-allocated buffer of `CONFIG_BUFFER_SIZE` bytes is created.
-2. `SdController::read_sync()` reads `/config.ini` from the SD card.
-3. `ConfigService::load()` parses the buffer and logs the result.
+In `main.cpp`, during boot:
+1. The SD card is initialized. A missing card or a failed initialization does not abort boot: the system proceeds in streaming-only mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
+2. `ConfigService::load_nvs()` overlays saved NVS settings onto the compiled-in defaults.
+3. `ConfigService::load_sd()` overlays `/config.ini` settings when the card is readable.
 4. `build_camera_config()` translates the user-facing `CameraImageConfig` (resolution + JPEG quality from config) into `ResolvedCameraParams`. The camera controller clamps these against HAL capabilities at init time.
 5. `CameraController::init(ResolvedCameraParams)` initializes the camera with the validated config.
 6. `VideoController::init(config, width, height)` stores the validated dimensions.
-7. `WifiService::init()` connects to STA or falls back to AP.
-8. `SystemOrchestrator::init()` registers command handlers and the `/stream` route.
+7. `WifiService::init()` connects to STA, or falls back to AP directly when the STA SSID is blank (the default), or after a connection timeout.
+8. `SystemOrchestrator::init()` latches SD availability and registers command handlers and the `/stream` route.
 9. `WebCommandTransport::register_routes()` wires `/status` and `/control`; `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening (see [Initialization Sequence](#initialization-sequence)).
 
 ### Write Pattern
 
-ConfigService does not own file I/O or serialization. Callers that need to persist modified config follow this pattern:
+Persistence goes through `ConfigService`; command handlers (`SET_CONFIG`) and the boot sequence are the intended callers:
 
 ```c++
-// 1. Modify config in place
-config_service.mutable_config().web.port = 9090;
-
-// 2. Serialize to INI text
-char buf[ConfigService::CONFIG_BUFFER_SIZE];
-size_t len = IniParser::serialize(config_service.config(), buf, sizeof(buf));
-
-// 3. Write to SD card via SdController (blocking sync API)
-sd_controller.write_sync(ConfigService::DEFAULT_CONFIG_PATH,
-                        reinterpret_cast<const uint8_t*>(buf), len,
-                        hal::FileOpenMode::WRITE);
+// Persist the live config to NVS or SD (validates size, verifies read-back)
+config_service.save_nvs(nvs);
+config_service.save_sd(sd_controller);
 ```
 
-This keeps ConfigService thin while enabling full round-trip config persistence.
+Both save methods validate the serialized config against `CONFIG_BUFFER_SIZE` before committing, and verify the committed data by read-back comparison. A failed save leaves the in-RAM config intact.
 
 ### Testability
 
-Testable natively using `MockLogBackend` for log verification and `RealTimeService` for time. Tests cover defaults, loading, mutable access, and reload behavior.
+Testable natively using `MockLogBackend`, `MockSdCardHal`/`SdController`, and `MockNvsHal`. Tests cover defaults, loading, overlay, round-trip persistence, schema-version discard, and failure leaves-RAM-intact behavior.
 
 ---
 
@@ -1233,7 +1291,7 @@ The `cmd` query parameter on `/control` selects the command to dispatch — see 
 
 #### Responsibility
 
-Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls back to AP (access point) mode on timeout. Reconnection strategy is encapsulated here for future evolution.
+Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls back to AP (access point) mode on timeout. With no STA SSID configured, the STA attempt is skipped and AP mode starts directly. Reconnection strategy is encapsulated here for future evolution.
 
 #### Dependencies
 
@@ -1244,12 +1302,15 @@ Encapsulates WiFi lifecycle — attempts STA (station) connection first, falls b
 
 ```
 init(sta_config, ap_config, timeout_secs)
-  → mode(STA)
-  → if static_ip + gateway + subnet_mask all set:
-       config_static(ip, gateway, subnet)  ← on failure, log warning and continue with DHCP
-  → begin_sta(ssid, password)
-  → poll status() every 1s until connected or timeout
-  → if timeout: mode(AP), begin_ap(ssid, password)
+  → if sta.ssid is blank:
+       start_ap(ap)  ← no STA attempt (the default, unconfigured state)
+  → else:
+       mode(STA)
+       if static_ip + gateway + subnet_mask all set:
+            config_static(ip, gateway, subnet)  ← on failure, log warning and continue with DHCP
+       begin_sta(ssid, password)
+       poll status() every 1s until connected or timeout
+       if timeout: start_ap(ap)
 ```
 
 If all three static IP fields (`static_ip`, `gateway`, `subnet_mask`) are present and non-empty in the config, `config_static()` is called before `begin_sta()`. If `config_static()` returns `false` (e.g. malformed address), a warning is logged and the system falls back to DHCP — `begin_sta()` is always called.
@@ -1260,7 +1321,7 @@ Static IP applies only to STA mode. AP mode always uses its own addressing via `
 
 #### Key Methods
 
-- `init(sta, ap, timeout_secs)` — connects to the configured STA network. If not connected within `timeout_secs`, falls back to AP mode.
+- `init(sta, ap, timeout_secs)` — with a blank STA SSID (the compiled-in default), starts AP mode directly. Otherwise connects to the configured STA network; if not connected within `timeout_secs`, falls back to AP mode.
 - `is_connected()` — returns `true` if connected as a station.
 - `local_ip()` — returns the current IP address (STA or AP).
 
@@ -1316,7 +1377,7 @@ The full set of recognised commands, their hex codes, payloads, and transport ma
 
 - **Fixed-size arrays**: Handlers and transports use fixed-size arrays (`MAX_HANDLERS = 16`, `MAX_TRANSPORTS = 4`) rather than dynamic allocation.
 - **Tick-driven**: `tick()` polls all registered transports, dispatches pending requests, and sends responses back through the transport.
-- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (256) byte buffer for the handler to write response data.
+- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (1024) byte buffer for the handler to write response data — sized to carry a full serialized configuration (`ConfigService::CONFIG_BUFFER_SIZE`).
 
 #### Testability
 
@@ -1389,6 +1450,12 @@ Top-level system coordinator and command router.
 - `LoggingService &` — for diagnostic output.
 - `StreamService &` — for MJPEG stream control.
 - `WebServerHal &` — for `/stream` route registration.
+- `SdController &` — for latching SD availability and config persistence to the SD card.
+- `hal::NvsHal &` — for config persistence to NVS.
+
+#### SD-Optional Boot and Degraded Mode
+
+The SD card is optional at boot. `init()` latches availability from `SdController::is_card_available()`; both a missing card (`NO_SD_CARD`) and a failed card initialization (`HW_INIT_FAILURE`) latch the system into **streaming-only mode**: camera, WiFi, web server, streaming, and command dispatch all come up, but `TAKE_PHOTO` and `START_RECORDING` return `SD_UNAVAILABLE` (the SD check takes precedence over `INVALID_STATE` state checks and gates before any camera capture), while `STOP_RECORDING` remains a successful no-op. The latched state is surfaced additively in `GET_STATUS` as the `"sd"` field. Late SD insertion is not detected at runtime; recovery is insert-card-then-power-cycle.
 
 #### Registered Commands
 
@@ -1398,7 +1465,9 @@ The orchestrator registers handlers for all commands listed in the **[Command Re
 
 ```
 init()
+  → latch SD availability (streaming-only mode when unavailable)
   → register_commands()  // registers all handlers with CommandHandler
+  → register_stream_route()
   → log initialization
 
 tick()
@@ -1423,23 +1492,25 @@ Every command returns a `CommandResult` enum value:
 | `0x01` | `UNRECOGNIZED` | No handler registered for this command code |
 | `0x02` | `INVALID_ARGS` | Payload was missing, too short, or malformed |
 | `0x03` | `INVALID_STATE` | Command cannot be executed in the current system state |
+| `0x04` | `SD_UNAVAILABLE` | Command requires the SD card, which was absent or failed to initialize at boot |
+| `0x05` | `UNAUTHORIZED` | Command refused by the transport's access policy (web config commands without a configured web password) |
 | `0xFF` | `INTERNAL_ERROR` | Hardware or unexpected failure |
 
 #### Command Details
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8}` | Returns current recording and streaming subscription state, frame count, and accumulated file size. No side effects. |
-| `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, and connected stream count. No side effects. |
+| `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks), `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
-| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
+| `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks, and no camera capture is performed). Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
 | `0x13` | `START_STREAM` | None | None | Begins live preview: marks streaming active and starts the capture loop if not already running (reused during recording). No-op success if already active. |
 | `0x14` | `STOP_STREAM` | None | None | Clears streaming mode; all connected viewers are closed (within one frame period when recording continues), and when no other consumer remains the capture pipeline is torn down as well. Idempotent no-op if not active. |
 | `0x15` | `LIST_STREAMS` | None | JSON string: `{"active_streams":uint8}` | Returns the number of currently connected stream viewers. |
-| `0x20` | `SET_CONFIG` | *(not yet specified)* | None | Update firmware configuration. **Not yet implemented** — returns `INVALID_STATE`. |
-| `0x21` | `GET_CONFIG` | None | *(currently unmapped)* | Returns current configuration as serialised INI text. No handler is registered in the binary dispatch table; the web transport maps this to `GET_CONFIG` but the dispatch path is unresolved. |
-| `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). Returns `INVALID_ARGS` if the key is unknown. |
-| `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value. The string contains both the key path and the new value separated by `=`. Returns `INVALID_ARGS` if the key is unknown. |
+| `0x20` | `SET_CONFIG` | Null-terminated string: destination, `"nvs"` or `"sd"` (case-insensitive) | None | Persists the live (in-RAM) configuration to the destination storage: NVS or the SD card config file (`/config.ini`). Values set via `SET_CONFIG_VALUE` are NOT persisted until this command runs. Returns `INVALID_ARGS` if the destination is missing or unknown, `SD_UNAVAILABLE` when the `sd` destination is requested with no usable card, `INTERNAL_ERROR` if the validated write fails (the live RAM config is left intact in that case). The web transport refuses this command with `UNAUTHORIZED` while no web password is configured; the serial transport is unrestricted. |
+| `0x21` | `GET_CONFIG` | None | Full configuration as serialized INI text | Returns the live (in-RAM) configuration serialized via `IniParser::serialize()`; re-parsing the response reproduces the same values. Returns `INTERNAL_ERROR` if the serialized config exceeds the response buffer. The web transport serves this response as `text/plain` and refuses the command with `UNAUTHORIZED` while no web password is configured; the serial transport is unrestricted. |
+| `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). String settings are returned verbatim; numeric and boolean settings are returned formatted as in serialized INI text (decimal; `camera.grab_mode` as two-digit hex; `video.audio_enabled` as `true`/`false`). Returns `INVALID_ARGS` if the key is unknown. |
+| `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value in the live (in-RAM) config. The string contains both the key path and the new value separated by `=`. String settings accept any value that fits the field buffer; numeric and boolean settings must satisfy the same constraints as the INI parser (e.g. `web.port` 1–65535, `web.max_streams` 1–4, `video.fps` 1–30, `video.mic_gain` 1–8, jpeg quality ≤ 63, `camera.grab_mode` hexadecimal ≤ 0xFF). Returns `INVALID_ARGS` if the key is unknown or the value is out of range or unparseable; rejected values leave the config unchanged. The change is NOT persisted; run `SET_CONFIG` to commit it to NVS or the SD card. |
 | `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |
 
 #### Transport Mappings
@@ -1456,9 +1527,12 @@ Every command returns a `CommandResult` enum value:
 | `stream_stop` | `STOP_STREAM` | |
 | `stream_list` | `LIST_STREAMS` | |
 | `config` | `GET_CONFIG` | |
+| `config_save` | `SET_CONFIG` | Requires a `dest` query parameter: `nvs` or `sd` (case-insensitive) |
+| `config_get_value` | `GET_CONFIG_VALUE` | Requires a `key` query parameter: `"section.key"` string |
+| `config_set_value` | `SET_CONFIG_VALUE` | Requires `key` and `value` query parameters (empty `value` blanks the setting) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 
-The web transport sends a JSON response body for all commands:
+The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
 
 - Success: `{"result":"ok"}`
 - Error: `{"result":"error","code":<uint>}`
@@ -1479,6 +1553,8 @@ The `/status` endpoint always dispatches `GET_STATUS` regardless of query parame
 | `TIME <unix_ts>` | `SET_TIME` | Decimal ASCII string (parsed as `uint32_t` by transport) | Empty |
 | `GET <section>.<key>` | `GET_CONFIG_VALUE` | `"section.key"` string | The value string |
 | `SET <section>.<key>=<val>` | `SET_CONFIG_VALUE` | `"section.key=value"` string | Empty |
+| `CONFIG_GET` | `GET_CONFIG` | None | Full config as serialized INI text |
+| `CONFIG_SAVE <nvs\|sd>` | `SET_CONFIG` | Destination string (`nvs` or `sd`, case-insensitive) | Empty |
 
 Response format:
 - **Success**: `OK [data]\n` (data is optional)
@@ -1726,7 +1802,7 @@ alt streaming also subscribed
 end
 
 VC -> CAM : release_frame()
-ACS -> ACS : frames_recorded++\nfile_size += chunk.len
+ACS -> ACS : frames_recorded++\nfile_size += chunk.len (written bytes only)
 
 ACS -> ACS : check clip limits\n(duration, file size)
 
@@ -2111,12 +2187,12 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 
 1. **Platform init** — `PlatformInitializer::init()` configures ESP-IDF and basic hardware.
 2. **LED init** — GPIO 21 configured as output, LED set to OFF via `LedStateMachine`.
-3. **SD card init** — `SdController::init_card()` mounts the SD card. If this fails, `setup()` returns early.
-4. **Config load** — Reads `/config.ini` from SD into a stack buffer via `SdController::read_sync()`, then calls `ConfigService::load()`. Missing or empty files result in sensible defaults.
+3. **SD card init (optional)** — `SdController::init_card()` mounts the SD card. A missing card (`NO_SD_CARD`) or a failed initialization (`HW_INIT_FAILURE`) does not abort boot: the failure is logged and the system proceeds in streaming-only degraded mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
+4. **Config load** — Compiled-in defaults are overlaid from NVS (`ConfigService::load_nvs()`, using a saved config blob when its schema version matches), then from `/config.ini` on the SD card when readable (`ConfigService::load_sd()`). Precedence: defaults < NVS < SD file.
 5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
 6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step. On ESP32, the capture task is created and pinned to CPU0.
 7. **Stream init** — `StreamService::init(max_streams)` configures the concurrent stream slot count; `VideoController::set_stream_service(&stream_service)` wires frame delivery.
-8. **WiFi init** — `WifiService::init()` attempts STA connection with a timeout, falling back to AP mode.
+8. **WiFi init** — `WifiService::init()` connects to STA when an SSID is configured (with a timeout); with the blank default SSID it starts AP mode directly.
 9. **Web route registration** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route, `SerialCommandTransport` is added to the `CommandHandler`, and `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. `WebServerService::init()` then registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening: `WebServerHalImpl` buffers registrations made before the server exists and attaches them before `begin()`.
 10. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
 

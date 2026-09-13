@@ -1585,6 +1585,17 @@ if (m_config.audio_enabled) m_mic_service->start_capture();
 
 **Demo:** Browse to camera, see status, browse/download recorded files, edit config, view live stream.
 
+> **Implemented prior to slice 5 (config management):** the config-management
+> portion of this slice's command interface is already in place ahead of the
+> web UI. `GET_CONFIG_VALUE` / `SET_CONFIG_VALUE` (0x22 / 0x23) operate on the
+> live in-RAM config, `GET_CONFIG` (0x21) returns the full config as
+> serialized INI text, and `SET_CONFIG` (0x20) persists the live config to a
+> destination named by its argument — `nvs` or `sd` (case-insensitive).
+> Compiled-in defaults are overlaid at boot from NVS and then from the SD card
+> config file. Until the slice 5 web UI lands, config update/transfer on
+> initial device bringup is managed via the serial interface
+> (`GET`/`SET`/`CONFIG_GET`/`CONFIG_SAVE`).
+
 ### New Commands
 
 ```cpp

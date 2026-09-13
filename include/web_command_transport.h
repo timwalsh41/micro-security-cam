@@ -89,6 +89,23 @@ class WebCommandTransport : public CommandTransport
 
         /** @brief Handler for GET /control — dispatches the command from the "cmd" query param. */
         void handle_control(hal::RequestRef& request);
+
+        /**
+         * @brief Sends the standard JSON result envelope for a result code.
+         *
+         * Used for commands that produce no response payload:
+         * `{"result":"ok"}` on success, `{"result":"error","code":N}`
+         * otherwise.
+         */
+        void send_result(hal::RequestRef& request, CommandResult result);
+
+        /**
+         * @brief Returns true if the command manages the configuration.
+         *
+         * Config commands are refused on the web interface while no web
+         * password is configured; the serial interface is unrestricted.
+         */
+        static bool is_config_command(CommandCode code);
 };
 
 #endif // WEB_COMMAND_TRANSPORT_H

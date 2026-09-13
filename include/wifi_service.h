@@ -55,6 +55,16 @@ class WifiService
         TimeService& m_time;
         LoggingService& m_log;
         bool m_connected{false};
+
+        /**
+         * @brief Switches to AP mode using the given AP config.
+         *
+         * Applies the static AP IP (when fully configured) and starts
+         * the access point.
+         *
+         * @param ap AP fallback config (SSID, password).
+         */
+        void start_ap(const ConfigData::ApConfig& ap);
 };
 
 #endif // WIFI_SERVICE_H

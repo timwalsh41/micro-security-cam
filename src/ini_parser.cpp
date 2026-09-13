@@ -65,8 +65,18 @@ bool IniParser::get_bool_val(const char* val_start, size_t val_len)
 
 ConfigData IniParser::parse(const char* content, size_t length)
 {
-    ConfigData config{};
+    return parse_into(ConfigData{}, content, length);
+}
 
+ConfigData IniParser::overlay(const ConfigData& base,
+                              const char* content, size_t length)
+{
+    return parse_into(base, content, length);
+}
+
+ConfigData IniParser::parse_into(ConfigData config,
+                                 const char* content, size_t length)
+{
     if (!content || length == 0)
     {
         return config;

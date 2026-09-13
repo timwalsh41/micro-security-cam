@@ -1,4 +1,5 @@
 #include "serial_command_transport.h"
+#include "command_handler.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -158,7 +159,9 @@ void SerialCommandTransport::send_response(
     const uint8_t* data,
     size_t len)
 {
-    char buf[LINE_BUFFER_SIZE + 16];
+    // Data responses carry up to CommandHandler::MAX_RESPONSE_SIZE
+    // bytes (e.g. a full serialized config from GET_CONFIG).
+    char buf[CommandHandler::MAX_RESPONSE_SIZE + 8];
 
     if (code == CommandResult::SUCCESS)
     {
@@ -299,6 +302,29 @@ bool SerialCommandTransport::parse_command(
         code = CommandCode::SET_CONFIG_VALUE;
         payload = payload_buffer;
         payload_len = arg_len;
+        return true;
+    }
+    else if (strcmp(cmd, "CONFIG_SAVE") == 0)
+    {
+        if (args == nullptr)
+        {
+            return false;
+        }
+        // Payload is the destination string: "nvs" or "sd".
+        size_t arg_len = strnlen(args, LINE_BUFFER_SIZE - 1);
+        memcpy(payload_buffer, args, arg_len);
+        payload_buffer[arg_len] = '\0';
+        code = CommandCode::SET_CONFIG;
+        payload = payload_buffer;
+        payload_len = arg_len;
+        return true;
+    }
+    else if (strcmp(cmd, "CONFIG_GET") == 0)
+    {
+        // No payload: the response is the full serialized config.
+        code = CommandCode::GET_CONFIG;
+        payload = nullptr;
+        payload_len = 0;
         return true;
     }
 

@@ -189,7 +189,13 @@ size_t SdController::get_bytes_read() const
 
 hal::SdInitResult SdController::init_card()
 {
-    return m_sd_hal.init();
+    m_init_result = m_sd_hal.init();
+    return m_init_result;
+}
+
+bool SdController::is_card_available() const
+{
+    return m_init_result == hal::SdInitResult::SUCCESS;
 }
 
 void SdController::set_state(SdController::SdState next_state)

@@ -1,6 +1,9 @@
 #include <unity.h>
 #include "config_service.h"
 #include "mock_log_backend.h"
+#include "mock_sd_card_hal.h"
+#include "mock_nvs_hal.h"
+#include "sd_controller.h"
 #include "time_service.h"
 #include <Arduino.h>
 #include <string>
@@ -50,7 +53,7 @@ void test_config_has_defaults_before_load()
 
     TEST_ASSERT_EQUAL_STRING("", cfg.wifi.ssid);
     TEST_ASSERT_EQUAL_STRING("", cfg.wifi.password);
-    TEST_ASSERT_EQUAL_STRING("", cfg.ap.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", cfg.ap.ssid);
     TEST_ASSERT_EQUAL_STRING("", cfg.ap.password);
     TEST_ASSERT_EQUAL_UINT16(80, cfg.web.port);
     TEST_ASSERT_EQUAL_STRING("", cfg.web.password);
@@ -321,6 +324,454 @@ void test_mutable_config_persists_across_loads()
 }
 
 // ============================================================
+// NVS / SD persistence
+// ============================================================
+
+/**
+ * @brief Fixture wiring ConfigService to mock NVS and SD storage.
+ */
+struct PersistenceFixture
+{
+    MockSdCardHal sd_hal;
+    SdController sd_controller;
+    LoggingService log;
+    ConfigService svc;
+    MockNvsHal nvs;
+
+    PersistenceFixture()
+        : sd_controller(real_time, sd_hal)
+        , log(mock_backend, real_time)
+        , svc(log)
+    {
+        sd_hal.init_result = hal::SdInitResult::SUCCESS;
+        sd_controller.init_card();
+    }
+
+    /** Serializes the service's live config to an INI byte vector. */
+    std::vector<uint8_t> serialized() const
+    {
+        char buf[ConfigService::CONFIG_BUFFER_SIZE];
+        size_t len = svc.serialize(buf, sizeof(buf));
+        return std::vector<uint8_t>(buf, buf + len);
+    }
+};
+
+/** Little-endian bytes of a schema version integer. */
+static std::vector<uint8_t> version_bytes(uint32_t v)
+{
+    return std::vector<uint8_t>{
+        static_cast<uint8_t>(v & 0xFFU),
+        static_cast<uint8_t>((v >> 8) & 0xFFU),
+        static_cast<uint8_t>((v >> 16) & 0xFFU),
+        static_cast<uint8_t>((v >> 24) & 0xFFU)};
+}
+
+/**
+ * @brief save_nvs() then load_nvs() on a fresh service round-trips values.
+ */
+void test_save_nvs_then_load_nvs_round_trip()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Home");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    // Fresh service over the same NVS backing store (boot simulation).
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("Home", fresh.config().wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", fresh.config().ap.ssid);
+}
+
+/**
+ * @brief load_nvs() overlays setting-by-setting: absent keys retain values.
+ */
+void test_load_nvs_overlays_setting_by_setting()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.password", "Secret");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("Secret", fresh.config().wifi.password);
+    TEST_ASSERT_EQUAL_STRING("", fresh.config().wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", fresh.config().ap.ssid);
+}
+
+/**
+ * @brief load_nvs() with no saved config returns false and changes nothing.
+ */
+void test_load_nvs_without_saved_config()
+{
+    PersistenceFixture f;
+
+    TEST_ASSERT_FALSE(f.svc.load_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("", f.svc.config().wifi.ssid);
+}
+
+/**
+ * @brief A saved config with a mismatched schema version is erased and
+ *        the compiled-in defaults are kept.
+ */
+void test_load_nvs_schema_version_mismatch_discards()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Stale");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    // Corrupt the stored schema version to simulate an older firmware.
+    f.nvs.seed_blob(ConfigService::NVS_SCHEMA_KEY,
+                    version_bytes(ConfigService::NVS_SCHEMA_VERSION + 1));
+
+    // A fresh service (compiled-in defaults) must not pick up the
+    // stale config; the stale data is erased.
+    ConfigService fresh(f.log);
+    TEST_ASSERT_FALSE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_TRUE(f.nvs.blobs.find(ConfigService::NVS_KEY) ==
+                     f.nvs.blobs.end());
+    TEST_ASSERT_TRUE(f.nvs.blobs.find(ConfigService::NVS_SCHEMA_KEY) ==
+                     f.nvs.blobs.end());
+    TEST_ASSERT_TRUE(any_log_contains("schema version"));
+    TEST_ASSERT_EQUAL_STRING("", fresh.config().wifi.ssid);
+}
+
+/**
+ * @brief A saved config with no readable schema version is discarded.
+ */
+void test_load_nvs_missing_schema_version_discards()
+{
+    PersistenceFixture f;
+    f.nvs.seed_blob(ConfigService::NVS_KEY,
+                    {static_cast<uint8_t>('[')});
+
+    TEST_ASSERT_FALSE(f.svc.load_nvs(f.nvs));
+    TEST_ASSERT_TRUE(f.nvs.blobs.find(ConfigService::NVS_KEY) ==
+                     f.nvs.blobs.end());
+    TEST_ASSERT_EQUAL_STRING("", f.svc.config().wifi.ssid);
+}
+
+/**
+ * @brief A failed NVS write leaves the RAM config intact.
+ */
+void test_save_nvs_failure_leaves_ram_config_intact()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Home");
+    f.nvs.write_result = false;
+
+    TEST_ASSERT_FALSE(f.svc.save_nvs(f.nvs));
+    TEST_ASSERT_EQUAL_STRING("Home", f.svc.config().wifi.ssid);
+}
+
+/**
+ * @brief save_sd() then load_sd() on a fresh service round-trips values.
+ */
+void test_save_sd_then_load_sd_round_trip()
+{
+    PersistenceFixture f;
+    f.svc.set_config_value("wifi.ssid", "Home");
+    TEST_ASSERT_TRUE(f.svc.save_sd(f.sd_controller));
+
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_sd(f.sd_controller));
+    TEST_ASSERT_EQUAL_STRING("Home", fresh.config().wifi.ssid);
+}
+
+/**
+ * @brief Boot overlay order: defaults < NVS < SD config file.
+ */
+void test_overlay_order_defaults_then_nvs_then_sd()
+{
+    PersistenceFixture f;
+
+    // Defaults: wifi.ssid blank, ap.ssid "MicroCam".
+    f.svc.set_config_value("wifi.ssid", "Home");
+    f.svc.set_config_value("wifi.password", "Secret");
+    TEST_ASSERT_TRUE(f.svc.save_nvs(f.nvs));
+
+    // SD file overrides wifi.ssid and web.port, leaves the rest.
+    const char* ini =
+        "[wifi]\n"
+        "ssid=Camp\n";
+    f.sd_hal.files[ConfigService::DEFAULT_CONFIG_PATH] =
+        std::vector<uint8_t>(ini, ini + strlen(ini));
+
+    // Simulate the boot sequence on a defaults-fresh service sharing
+    // the same NVS and SD backing stores.
+    ConfigService fresh(f.log);
+    TEST_ASSERT_TRUE(fresh.load_nvs(f.nvs));
+    TEST_ASSERT_TRUE(fresh.load_sd(f.sd_controller));
+
+    // SD wins over NVS on conflict.
+    TEST_ASSERT_EQUAL_STRING("Camp", fresh.config().wifi.ssid);
+    // NVS value survives where the SD file is silent.
+    TEST_ASSERT_EQUAL_STRING("Secret", fresh.config().wifi.password);
+    // Defaults survive where neither source speaks.
+    TEST_ASSERT_EQUAL_STRING("MicroCam", fresh.config().ap.ssid);
+}
+
+/**
+ * @brief Serialization round-trips every value through parse().
+ */
+void test_serialize_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    svc.set_config_value("wifi.ssid", "Home");
+    svc.set_config_value("wifi.password", "Secret");
+    svc.set_config_value("web.password", "WebPass");
+    svc.set_config_value("camera.resolution", "HD");
+
+    char buf[ConfigService::CONFIG_BUFFER_SIZE];
+    size_t len = svc.serialize(buf, sizeof(buf));
+
+    ConfigData parsed = IniParser::parse(buf, len);
+    TEST_ASSERT_EQUAL_STRING("Home", parsed.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("Secret", parsed.wifi.password);
+    TEST_ASSERT_EQUAL_STRING("WebPass", parsed.web.password);
+    TEST_ASSERT_EQUAL_STRING("HD", parsed.camera.resolution);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", parsed.ap.ssid);
+}
+
+// ============================================================
+// Typed config values (numeric and boolean settings)
+// ============================================================
+
+/**
+ * @brief Numeric and boolean settings read back formatted as in
+ *        serialized INI text.
+ */
+void test_get_numeric_fields_formatted()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.get_config_value("web.port", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("80", value);
+
+    TEST_ASSERT_TRUE(svc.get_config_value("web.max_streams", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("4", value);
+
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.grab_mode", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("ff", value);
+
+    TEST_ASSERT_TRUE(svc.get_config_value("video.audio_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("false", value);
+}
+
+/**
+ * @brief Numeric settings set/get round-trip through the live config.
+ */
+void test_set_get_numeric_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("web.port", "8080"));
+    TEST_ASSERT_TRUE(svc.get_config_value("web.port", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("8080", value);
+    TEST_ASSERT_EQUAL_UINT16(8080, svc.config().web.port);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("web.max_streams", "2"));
+    TEST_ASSERT_TRUE(svc.get_config_value("web.max_streams", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("2", value);
+    TEST_ASSERT_EQUAL_UINT8(2, svc.config().web.max_streams);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.fps", "15"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.fps", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("15", value);
+    TEST_ASSERT_EQUAL_UINT16(15, svc.config().video.fps);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.clip_duration_s", "120"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.clip_duration_s", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("120", value);
+    TEST_ASSERT_EQUAL_UINT16(120, svc.config().video.clip_duration_s);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.max_file_size_mb", "100"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.max_file_size_mb", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("100", value);
+    TEST_ASSERT_EQUAL_UINT16(100, svc.config().video.max_file_size_mb);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.jpeg_quality", "20"));
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.jpeg_quality", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("20", value);
+    TEST_ASSERT_EQUAL_UINT8(20, svc.config().camera.jpeg_quality);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.jpeg_quality", "25"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.jpeg_quality", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("25", value);
+    TEST_ASSERT_EQUAL_UINT8(25, svc.config().video.jpeg_quality);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.mic_gain", "5"));
+    TEST_ASSERT_TRUE(svc.get_config_value("video.mic_gain", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("5", value);
+    TEST_ASSERT_EQUAL_UINT8(5, svc.config().video.mic_gain);
+}
+
+/**
+ * @brief Boolean settings round-trip as "true"/"false" text.
+ */
+void test_set_get_bool_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.audio_enabled", "true"));
+    TEST_ASSERT_TRUE(svc.config().video.audio_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("video.audio_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("true", value);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("video.audio_enabled", "false"));
+    TEST_ASSERT_FALSE(svc.config().video.audio_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("video.audio_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("false", value);
+
+    // Case-insensitive, matching the INI parser.
+    TEST_ASSERT_TRUE(svc.set_config_value("video.audio_enabled", "TRUE"));
+    TEST_ASSERT_TRUE(svc.config().video.audio_enabled);
+}
+
+/**
+ * @brief Hexadecimal grab_mode round-trips through get/set.
+ */
+void test_set_get_grab_mode_hex_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.grab_mode", "1a"));
+    TEST_ASSERT_EQUAL_HEX8(0x1A, svc.config().camera.grab_mode);
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.grab_mode", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("1a", value);
+}
+
+/**
+ * @brief camera.rotation round-trips through get/set; only 0 and 180
+ *        are accepted.
+ */
+void test_set_get_rotation_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.rotation", "180"));
+    TEST_ASSERT_EQUAL_UINT16(180, svc.config().camera.rotation);
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.rotation", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("180", value);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.rotation", "0"));
+    TEST_ASSERT_EQUAL_UINT16(0, svc.config().camera.rotation);
+}
+
+/**
+ * @brief Out-of-range numeric values are rejected and leave the
+ *        setting unchanged.
+ */
+void test_set_numeric_out_of_range_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    svc.set_config_value("web.port", "8080");
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", "0"));
+    TEST_ASSERT_EQUAL_UINT16(8080, svc.config().web.port);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", "65536"));
+    TEST_ASSERT_EQUAL_UINT16(8080, svc.config().web.port);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.max_streams", "5"));
+    TEST_ASSERT_EQUAL_UINT8(4, svc.config().web.max_streams);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.max_streams", "0"));
+    TEST_ASSERT_EQUAL_UINT8(4, svc.config().web.max_streams);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("video.fps", "31"));
+    TEST_ASSERT_EQUAL_UINT16(10, svc.config().video.fps);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("video.mic_gain", "9"));
+    TEST_ASSERT_EQUAL_UINT8(2, svc.config().video.mic_gain);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.jpeg_quality", "64"));
+    TEST_ASSERT_EQUAL_UINT8(10, svc.config().camera.jpeg_quality);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("video.jpeg_quality", "64"));
+    TEST_ASSERT_EQUAL_UINT8(10, svc.config().video.jpeg_quality);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.grab_mode", "1ff"));
+    TEST_ASSERT_EQUAL_HEX8(0xFF, svc.config().camera.grab_mode);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.rotation", "90"));
+    TEST_ASSERT_EQUAL_UINT16(0, svc.config().camera.rotation);
+}
+
+/**
+ * @brief Unparseable numeric/boolean values are rejected.
+ */
+void test_set_numeric_unparseable_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    svc.set_config_value("video.fps", "15");
+
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", "abc"));
+    TEST_ASSERT_FALSE(svc.set_config_value("web.port", ""));
+    TEST_ASSERT_FALSE(svc.set_config_value("video.fps", "12x"));
+    TEST_ASSERT_FALSE(svc.set_config_value("video.audio_enabled", "yes"));
+
+    // Rejected writes leave the live config unchanged.
+    TEST_ASSERT_EQUAL_UINT16(15, svc.config().video.fps);
+    TEST_ASSERT_EQUAL_UINT16(80, svc.config().web.port);
+    TEST_ASSERT_FALSE(svc.config().video.audio_enabled);
+}
+
+/**
+ * @brief Unknown keys are rejected by set and get.
+ */
+void test_unknown_typed_key_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_FALSE(svc.set_config_value("web.bogus", "1"));
+    TEST_ASSERT_FALSE(svc.get_config_value("web.bogus", value, sizeof(value)));
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.bogus", "1"));
+    TEST_ASSERT_FALSE(svc.get_config_value("camera.bogus", value, sizeof(value)));
+}
+
+/**
+ * @brief A typed set survives a serialize/parse round trip.
+ */
+void test_typed_set_serialize_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    svc.set_config_value("web.port", "8080");
+    svc.set_config_value("video.fps", "15");
+    svc.set_config_value("video.audio_enabled", "true");
+
+    char buf[ConfigService::CONFIG_BUFFER_SIZE];
+    size_t len = svc.serialize(buf, sizeof(buf));
+
+    ConfigData parsed = IniParser::parse(buf, len);
+    TEST_ASSERT_EQUAL_UINT16(8080, parsed.web.port);
+    TEST_ASSERT_EQUAL_UINT16(15, parsed.video.fps);
+    TEST_ASSERT_TRUE(parsed.video.audio_enabled);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -368,6 +819,26 @@ int main(int argc, char** argv)
     RUN_TEST(test_mutable_config_same_as_config_before_modify);
     RUN_TEST(test_mutable_config_modify_visible_through_config);
     RUN_TEST(test_mutable_config_persists_across_loads);
+
+    // NVS / SD persistence
+    RUN_TEST(test_save_nvs_then_load_nvs_round_trip);
+    RUN_TEST(test_load_nvs_overlays_setting_by_setting);
+    RUN_TEST(test_load_nvs_without_saved_config);
+    RUN_TEST(test_load_nvs_schema_version_mismatch_discards);
+    RUN_TEST(test_load_nvs_missing_schema_version_discards);
+    RUN_TEST(test_save_nvs_failure_leaves_ram_config_intact);
+    RUN_TEST(test_save_sd_then_load_sd_round_trip);
+    RUN_TEST(test_overlay_order_defaults_then_nvs_then_sd);
+    RUN_TEST(test_serialize_round_trip);
+    RUN_TEST(test_get_numeric_fields_formatted);
+    RUN_TEST(test_set_get_numeric_round_trip);
+    RUN_TEST(test_set_get_bool_round_trip);
+    RUN_TEST(test_set_get_grab_mode_hex_round_trip);
+    RUN_TEST(test_set_get_rotation_round_trip);
+    RUN_TEST(test_set_numeric_out_of_range_rejected);
+    RUN_TEST(test_set_numeric_unparseable_rejected);
+    RUN_TEST(test_unknown_typed_key_rejected);
+    RUN_TEST(test_typed_set_serialize_round_trip);
 
     return UNITY_END();
 }

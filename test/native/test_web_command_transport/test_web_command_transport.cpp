@@ -112,6 +112,9 @@ struct TestFixture
         cmd_handler.register_handler(CommandCode::STOP_RECORDING, capture_handler);
         cmd_handler.register_handler(CommandCode::TAKE_PHOTO, capture_handler);
         cmd_handler.register_handler(CommandCode::GET_CONFIG, capture_handler);
+        cmd_handler.register_handler(CommandCode::SET_CONFIG, capture_handler);
+        cmd_handler.register_handler(CommandCode::GET_CONFIG_VALUE, capture_handler);
+        cmd_handler.register_handler(CommandCode::SET_CONFIG_VALUE, capture_handler);
         cmd_handler.register_handler(CommandCode::SET_TIME, capture_handler);
     }
 };
@@ -342,9 +345,12 @@ void test_control_take_photo()
 }
 
 /**
- * @brief /control maps cmd=config to GET_CONFIG.
+ * @brief /control refuses cmd=config while no web password is configured.
+ *
+ * Config commands carry credentials and the full config body, so the
+ * web transport refuses them instead of serving them unauthenticated.
  */
-void test_control_get_config()
+void test_control_config_refused_without_password()
 {
     TestFixture f;
     f.transport.register_routes("");
@@ -353,7 +359,210 @@ void test_control_get_config()
     f.hal.mock_request.set_arg("cmd", "config");
     f.hal.simulate_request("/control", hal::HttpMethod::GET);
 
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("application/json",
+                             f.hal.mock_request.responses[0].content_type.c_str());
+    // UNAUTHORIZED = 0x05
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control refuses cmd=config_save while no web password is
+ *        configured, even with credentials supplied.
+ */
+void test_control_config_save_refused_without_password()
+{
+    TestFixture f;
+    f.transport.register_routes("");
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "config_save");
+    f.hal.mock_request.set_arg("dest", "nvs");
+    f.hal.mock_request.set_auth("admin", "anything");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control serves cmd=config with correct auth behind a
+ *        configured password, as INI text.
+ */
+void test_control_config_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("text/plain",
+                             f.hal.mock_request.responses[0].content_type.c_str());
+    TEST_ASSERT(f.hal.mock_request.responses[0].body.find("captured") !=
+                std::string::npos);
+}
+
+/**
+ * @brief /control dispatches cmd=config_save with the dest payload
+ *        when a password is configured and auth passes.
+ */
+void test_control_config_save_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config_save");
+    f.hal.mock_request.set_arg("dest", "nvs");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(3, g_last_payload_len);
+    TEST_ASSERT_EQUAL_UINT8('n', g_last_payload[0]);
+    TEST_ASSERT_EQUAL_UINT8('v', g_last_payload[1]);
+    TEST_ASSERT_EQUAL_UINT8('s', g_last_payload[2]);
+}
+
+/**
+ * @brief /control refuses cmd=config_get_value and cmd=config_set_value
+ *        while no web password is configured.
+ */
+void test_control_config_value_refused_without_password()
+{
+    TestFixture f;
+    f.transport.register_routes("");
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "config_get_value");
+    f.hal.mock_request.set_arg("key", "wifi.ssid");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+
+    reset_capture();
+    f.hal.mock_request.responses.clear();
+    f.hal.mock_request.set_arg("cmd", "config_set_value");
+    f.hal.mock_request.set_arg("key", "wifi.ssid");
+    f.hal.mock_request.set_arg("value", "Home");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control dispatches cmd=config_get_value with the key payload
+ *        when a password is configured and auth passes.
+ */
+void test_control_config_get_value_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config_get_value");
+    f.hal.mock_request.set_arg("key", "wifi.ssid");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(9, g_last_payload_len);
+    TEST_ASSERT_EQUAL_UINT8('w', g_last_payload[0]);
+    TEST_ASSERT_EQUAL_UINT8('i', g_last_payload[1]);
+    TEST_ASSERT_EQUAL_UINT8('f', g_last_payload[2]);
+    TEST_ASSERT_EQUAL_UINT8('i', g_last_payload[3]);
+}
+
+/**
+ * @brief /control dispatches cmd=config_set_value with the
+ *        "key=value" payload when a password is configured and auth
+ *        passes.
+ */
+void test_control_config_set_value_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config_set_value");
+    f.hal.mock_request.set_arg("key", "wifi.ssid");
+    f.hal.mock_request.set_arg("value", "Home");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(14, g_last_payload_len);
+    TEST_ASSERT_TRUE(std::string(
+        reinterpret_cast<const char*>(g_last_payload),
+        g_last_payload_len) == "wifi.ssid=Home");
+}
+
+/**
+ * @brief config_get_value without a key arg returns 400.
+ */
+void test_control_config_get_value_missing_key_returns_400()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "config_get_value");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(400, f.hal.mock_request.responses[0].code);
+}
+
+/**
+ * @brief config_set_value without a key or value arg returns 400.
+ */
+/**
+ * @brief config_set_value without a key arg returns 400; an empty
+ *        value is a legitimate blank and dispatches.
+ */
+void test_control_config_set_value_missing_args_returns_400()
+{
+    // Missing "value" arg maps to an empty (blank) value and dispatches.
+    TestFixture f_blank;
+    f_blank.transport.register_routes("secret");
+
+    reset_capture();
+    f_blank.hal.mock_request.set_auth("admin", "secret");
+    f_blank.hal.mock_request.set_arg("cmd", "config_set_value");
+    f_blank.hal.mock_request.set_arg("key", "wifi.ssid");
+    f_blank.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_TRUE(std::string(
+        reinterpret_cast<const char*>(g_last_payload),
+        g_last_payload_len) == "wifi.ssid=");
+
+    // Missing "key" arg.
+    TestFixture f2;
+    f2.transport.register_routes("secret");
+
+    reset_capture();
+    f2.hal.mock_request.set_auth("admin", "secret");
+    f2.hal.mock_request.set_arg("cmd", "config_set_value");
+    f2.hal.mock_request.set_arg("value", "Home");
+    f2.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(400, f2.hal.mock_request.responses[0].code);
 }
 
 /**
@@ -515,6 +724,35 @@ void test_fallback_error_no_payload()
                              hal.mock_request.responses[0].body.c_str());
 }
 
+/**
+ * @brief SD_UNAVAILABLE (0x04) renders as {"result":"error","code":4}.
+ */
+void test_fallback_error_sd_unavailable()
+{
+    MockWebServerHal hal;
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService logger(log_backend, time);
+    CommandHandler err_handler(logger);
+    err_handler.register_handler(CommandCode::GET_STATUS,
+                                 [](const uint8_t*, size_t, uint8_t*,
+                                    size_t& responseLen) -> CommandResult
+                                 {
+                                     responseLen = 0;
+                                     return CommandResult::SD_UNAVAILABLE;
+                                 });
+    WebCommandTransport err_transport(hal, err_handler);
+    err_transport.register_routes("");
+
+    hal.simulate_request("/status", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, hal.mock_request.responses[0].code);
+    // SD_UNAVAILABLE = 0x04
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":4}",
+                             hal.mock_request.responses[0].body.c_str());
+}
+
 // ============================================================
 // main
 // ============================================================
@@ -542,7 +780,15 @@ int main()
     RUN_TEST(test_control_start_recording);
     RUN_TEST(test_control_stop_recording);
     RUN_TEST(test_control_take_photo);
-    RUN_TEST(test_control_get_config);
+    RUN_TEST(test_control_config_refused_without_password);
+    RUN_TEST(test_control_config_save_refused_without_password);
+    RUN_TEST(test_control_config_succeeds_with_password);
+    RUN_TEST(test_control_config_save_succeeds_with_password);
+    RUN_TEST(test_control_config_value_refused_without_password);
+    RUN_TEST(test_control_config_get_value_succeeds_with_password);
+    RUN_TEST(test_control_config_set_value_succeeds_with_password);
+    RUN_TEST(test_control_config_get_value_missing_key_returns_400);
+    RUN_TEST(test_control_config_set_value_missing_args_returns_400);
     RUN_TEST(test_control_unknown_cmd_falls_back_to_get_status);
 
     // SET_TIME
@@ -554,6 +800,7 @@ int main()
     // Fallback JSON response path
     RUN_TEST(test_fallback_success_no_payload);
     RUN_TEST(test_fallback_error_no_payload);
+    RUN_TEST(test_fallback_error_sd_unavailable);
 
     return UNITY_END();
 }

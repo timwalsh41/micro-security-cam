@@ -45,6 +45,16 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
         m_log.debug(SUBSYSTEM, "No static IP config, using DHCP");
     }
 
+    // No STA SSID configured: skip the (pointless) connection attempt
+    // and go straight to AP mode so blank settings fall through to the
+    // fallback AP cleanly.
+    if (sta.ssid[0] == '\0')
+    {
+        m_log.warn(SUBSYSTEM, "No STA SSID configured, starting AP mode");
+        start_ap(ap);
+        return;
+    }
+
     // Attempt STA connection
     m_log.info(SUBSYSTEM, "Connecting to STA network: %s", sta.ssid);
     m_hal.begin_sta(sta.ssid, sta.password);
@@ -74,6 +84,14 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
     m_log.warn(SUBSYSTEM, "STA connection timed out after %u seconds, "
                "falling back to AP mode", timeout_secs);
 
+    start_ap(ap);
+
+    // Note: In AP mode, m_connected remains false as we are not
+    // connected to a network as a station.
+}
+
+void WifiService::start_ap(const ConfigData::ApConfig& ap)
+{
     // Switch to AP mode
     m_hal.mode(false, true);
 
@@ -99,9 +117,6 @@ void WifiService::init(const ConfigData::WifiConfig& sta,
 
     m_log.info(SUBSYSTEM, "AP started. SSID: %s, IP: %s",
                ap.ssid, m_hal.local_ip());
-
-    // Note: In AP mode, m_connected remains false as we are not
-    // connected to a network as a station.
 }
 
 bool WifiService::is_connected() const

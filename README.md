@@ -61,7 +61,22 @@ pio test -e seeed_xiao_esp32s3_test
 
 ## Configuration
 
-The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used. The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
+The firmware ships with sensible defaults compiled in. At startup, the defaults are overlaid setting-by-setting from NVS (non-volatile flash storage, if a config was saved there), and then from the INI-style config file (`/config.ini`) on the SD card if present — **precedence: defaults < NVS < SD file**; a setting mentioned in a later source overrides earlier ones, settings not mentioned keep their earlier value.
+
+Compiled-in defaults: WiFi settings blank (STA connection is skipped and the fallback AP starts immediately), AP SSID `MicroCam` with no password (open network), web port 80 with no password, and the camera/video defaults listed in the table below.
+
+The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
+
+### Managing configuration
+
+Config changes made at runtime (serial `GET`/`SET` commands, i.e. `GET_CONFIG_VALUE`/`SET_CONFIG_VALUE`) apply to the **live in-RAM config only** — they are not persisted automatically. Every setting in the config is addressable by its `section.key` name: string settings accept any value that fits the field buffer, and numeric/boolean settings must satisfy the same constraints as the config file parser (e.g. `web.port` 1–65535, `web.max_streams` 1–4, `video.fps` 1–30, `video.mic_gain` 1–8, jpeg quality ≤ 63); out-of-range or unparseable values are rejected and leave the setting unchanged. To commit the current config, use `CONFIG_SAVE <dest>` (serial) or `config_save` with a `dest` parameter (web), where `dest` is `nvs` or `sd` (case-insensitive):
+
+- `CONFIG_SAVE nvs` — writes the live config to NVS flash (survives reboots, no SD card needed).
+- `CONFIG_SAVE sd` — writes the live config to `/config.ini` on the SD card.
+
+`CONFIG_GET` (serial) or `cmd=config` (web) returns the full live config as INI text for inspection or editing. Until the slice 5 web UI lands, config editing on initial device bringup is managed via the serial interface; web config commands are refused (`{"result":"error","code":5}`) until a web password is configured. NVS saves are tagged with a schema version; a saved config written by an incompatible firmware version is discarded at boot (no migration) and defaults are used instead.
+
+A failed persistence write leaves the live RAM config intact, so the running configuration is never corrupted by a storage failure.
 
 ### Example Config File
 
@@ -74,7 +89,7 @@ gateway=192.168.1.1
 subnet_mask=255.255.255.0
 
 [ap]
-ssid=ESP32-Cam
+ssid=MicroCam
 password=FallbackPass
 ap_ip=192.168.4.1
 ap_gateway=192.168.4.1
@@ -110,7 +125,7 @@ mic_gain=2
 | `[wifi]` | `static_ip` | string | `""` | Static IP address for station mode |
 | `[wifi]` | `gateway` | string | `""` | Gateway address (required with static_ip) |
 | `[wifi]` | `subnet_mask` | string | `""` | Subnet mask (required with static_ip) |
-| `[ap]` | `ssid` | string | `""` | Access point name (fallback) |
+| `[ap]` | `ssid` | string | `MicroCam` | Access point name (fallback) |
 | `[ap]` | `password` | string | `""` | Access point password |
 | `[ap]` | `ap_ip` | string | `""` | Static IP for AP mode (requires ap_gateway & ap_subnet_mask) |
 | `[ap]` | `ap_gateway` | string | `""` | Gateway address for AP mode |
@@ -133,6 +148,19 @@ mic_gain=2
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
 
 Boolean keys accept `true` or `false` (case-insensitive); any other value is parsed as `false`.
+
+## SD Card & Degraded Mode
+
+The SD card is optional at boot. If no card is present, or card initialization fails, the system still comes up fully in **streaming-only degraded mode**: camera, WiFi, web server, live streaming, and command dispatch all work; recording and photo capture are unavailable.
+
+In degraded mode:
+
+- `TAKE_PHOTO` and `START_RECORDING` fail with return code `SD_UNAVAILABLE` (`0x04`; serial `ERR 04`, web `{"result":"error","code":4}`). This check takes precedence over other error conditions.
+- `RECORD_STOP` remains a successful no-op.
+- `GET /status` (and serial `STATUS`) reports the latched card state in the additive `"sd": false` field.
+- `CONFIG_SAVE sd` fails with `SD_UNAVAILABLE`; use `CONFIG_SAVE nvs` instead.
+
+Late SD insertion is **not** detected at runtime. To recover from degraded mode, insert a card (if missing) and power-cycle the device.
 
 ### Adding a New Config Section
 
@@ -186,8 +214,8 @@ When WiFi is configured, the camera provides a web interface for status and cont
 
 ### Connection
 
-1. The camera first attempts to connect to the configured STA (station) WiFi network.
-2. If STA connection fails within 30 seconds, it falls back to AP (access point) mode with the configured AP SSID/password.
+1. If a STA (station) SSID is configured, the camera first attempts to connect to that network.
+2. With no STA SSID (the default) or when STA connection fails within 30 seconds, it falls back to AP (access point) mode with the configured AP SSID/password (default: `MicroCam`, open network).
 3. The IP address is logged at startup and available via the serial monitor.
 
 ### Endpoints
@@ -195,13 +223,17 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/` | No | Built-in HTML status page |
-| GET | `/status` | Yes | JSON status (recording and streaming activity, frame count, file size) |
+| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |
 | GET | `/control?cmd=stream_start` | Yes | Start live preview (capture loop on) |
 | GET | `/control?cmd=stream_stop` | Yes | Stop live preview |
 | GET | `/control?cmd=stream_list` | Yes | List connected stream clients (JSON) |
+| GET | `/control?cmd=config` | Yes | Full live config as INI text (requires a configured web password) |
+| GET | `/control?cmd=config_get_value&key=<section.key>` | Yes | Read a single config value (requires a configured web password) |
+| GET | `/control?cmd=config_set_value&key=<section.key>&value=<val>` | Yes | Set a single config value in the live config (requires a configured web password) |
+| GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card (requires a configured web password) |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |
 
 ### Live Streaming
@@ -223,7 +255,9 @@ The number of concurrent viewers is limited by `max_streams` (1–4).
 
 ### Authentication
 
-If a web password is configured in `config.ini`, all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled.
+If a web password is configured (in `config.ini` on the SD card or in a config saved to NVS), all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled (except config commands — see below).
+
+Config commands (`cmd=config`, `cmd=config_save`) require a configured web password regardless: with no password set, the web interface refuses them with `UNAUTHORIZED` (web `{"result":"error","code":5}`), and config access stays on the serial interface (`CONFIG_GET`/`CONFIG_SAVE`), which is always available.
 
 ## Video Recording
 
@@ -234,7 +268,7 @@ The firmware records MJPEG video to the SD card in standard AVI containers.
 - Frames are captured from the camera at the configured FPS and written to an AVI file.
 - Clips are automatically rotated when `clip_duration_s` or `max_file_size_mb` is reached.
 - Files are stored in date-stamped directories: `/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`.
-- The complete AVI is buffered in RAM and written to SD in a single flush at clip end, ensuring valid AVI files.
+- Frames are written to SD incrementally, one AVI chunk per frame; at clip end the header is patched in place.
 
 ### Capabilities
 
@@ -277,6 +311,17 @@ uv run script/python/camera_cli.py status
 
 # Send a control command
 uv run script/python/camera_cli.py control [start | stop | photo | stream_start | stream_stop | stream_list]
+
+# Get the full live config as INI text
+uv run script/python/camera_cli.py config
+
+# Read / set a single config value (live RAM config; not persisted)
+uv run script/python/camera_cli.py config-get wifi.ssid
+uv run script/python/camera_cli.py config-set wifi.ssid MyNetwork
+
+# Persist the live config to NVS flash or the SD card
+uv run script/python/camera_cli.py config-save nvs
+uv run script/python/camera_cli.py config-save sd
 
 # Set camera clock to current system time
 uv run script/python/camera_cli.py set-time

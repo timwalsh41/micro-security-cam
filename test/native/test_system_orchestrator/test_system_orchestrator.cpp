@@ -13,6 +13,7 @@
 #include "mock_capture_scheduler.h"
 #include "mock_log_backend.h"
 #include "mock_web_server_hal.h"
+#include "mock_nvs_hal.h"
 #include <cstring>
 #include <memory>
 #include <string>
@@ -25,6 +26,7 @@ struct TestFixture
 {
     MockCameraHal camera_hal;
     MockSdCardHal sd_hal;
+    MockNvsHal nvs_hal;
     MockLogBackend log_backend;
     RealTimeService time;
     SdController sd_controller;
@@ -38,7 +40,17 @@ struct TestFixture
     MockWebServerHal web_hal;
     SystemOrchestrator orchestrator;
 
-    explicit TestFixture(const char* web_password = nullptr)
+    /**
+     * @brief Constructs the fixture.
+     *
+     * @param web_password  Web password to register (nullptr for none).
+     * @param sd_init_result SD init result; non-SUCCESS latches the
+     *                      orchestrator into streaming-only mode,
+     *                      mirroring the degraded boot composition.
+     */
+    explicit TestFixture(const char* web_password = nullptr,
+                         hal::SdInitResult sd_init_result =
+                             hal::SdInitResult::SUCCESS)
         : sd_controller(time, sd_hal)
         , camera_ctrl(camera_hal)
         , logger(log_backend, time)
@@ -47,7 +59,7 @@ struct TestFixture
         , cmd_handler(logger)
         , stream_service(logger)
         , orchestrator(video, camera_ctrl, cmd_handler, time, config, logger,
-                       stream_service, web_hal)
+                       stream_service, web_hal, sd_controller, nvs_hal)
     {
         camera_hal.init_result = hal::CameraInitResult::SUCCESS;
         camera_ctrl.init();
@@ -65,6 +77,12 @@ struct TestFixture
         // Mirror main.cpp composition: the video controller delivers
         // frames to (and tears down) the shared stream service.
         video.set_stream_service(&stream_service);
+
+        // SD card initialization precedes orchestrator init in the
+        // composition root; the orchestrator latches availability
+        // from the controller at init().
+        sd_hal.init_result = sd_init_result;
+        sd_controller.init_card();
 
         // Config load precedes orchestrator init in the composition
         // root; a configured web password must be visible to the
@@ -593,9 +611,9 @@ void test_set_time_invalid_payload()
 }
 
 /**
- * @brief SET_CONFIG returns INVALID_STATE (deferred to Slice 5).
+ * @brief SET_CONFIG without a destination argument is rejected.
  */
-void test_set_config_returns_invalid_state()
+void test_set_config_requires_destination()
 {
     TestFixture f;
 
@@ -603,8 +621,236 @@ void test_set_config_returns_invalid_state()
         f.cmd_handler, CommandCode::SET_CONFIG);
 
     TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(CommandResult::INVALID_STATE),
+        static_cast<uint8_t>(CommandResult::INVALID_ARGS),
         static_cast<uint8_t>(result));
+}
+
+/**
+ * @brief SET_CONFIG with an unknown destination is rejected.
+ */
+void test_set_config_unknown_destination()
+{
+    TestFixture f;
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("floppy"), 6);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INVALID_ARGS),
+        static_cast<uint8_t>(result));
+}
+
+/**
+ * @brief SET_CONFIG with destination nvs persists the live config.
+ */
+void test_set_config_nvs_persists_live_config()
+{
+    TestFixture f;
+    f.config.set_config_value("wifi.ssid", "Home");
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("nvs"), 3);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    // Two blob writes: the config itself and the schema version.
+    TEST_ASSERT_EQUAL_INT(2, f.nvs_hal.write_call_count);
+    auto it = f.nvs_hal.blobs.find(ConfigService::NVS_KEY);
+    TEST_ASSERT_TRUE(it != f.nvs_hal.blobs.end());
+    std::string ini(reinterpret_cast<const char*>(it->second.data()),
+                    it->second.size());
+    TEST_ASSERT_NOT_NULL(strstr(ini.c_str(), "[wifi]"));
+    TEST_ASSERT_NOT_NULL(strstr(ini.c_str(), "ssid=Home"));
+}
+
+/**
+ * @brief SET_CONFIG destination argument is case-insensitive.
+ */
+void test_set_config_destination_case_insensitive()
+{
+    TestFixture f;
+
+    CommandResult nvs_result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("NVS"), 3);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(nvs_result));
+    TEST_ASSERT_EQUAL_INT(2, f.nvs_hal.write_call_count);
+
+    CommandResult sd_result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("Sd"), 2);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(sd_result));
+    TEST_ASSERT_TRUE(f.sd_hal.files.find(ConfigService::DEFAULT_CONFIG_PATH) !=
+                     f.sd_hal.files.end());
+}
+
+/**
+ * @brief SET_CONFIG_VALUE changes the live config without persisting it.
+ */
+void test_set_config_value_does_not_persist()
+{
+    TestFixture f;
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG_VALUE,
+        reinterpret_cast<const uint8_t*>("wifi.ssid=Home"),
+        strlen("wifi.ssid=Home"));
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_INT(0, f.nvs_hal.write_call_count);
+    TEST_ASSERT_TRUE(f.sd_hal.files.empty());
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_TRUE(f.config.get_config_value("wifi.ssid", value,
+                                               sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("Home", value);
+}
+
+/**
+ * @brief SET_CONFIG with destination sd writes the config file.
+ */
+void test_set_config_sd_persists_live_config()
+{
+    TestFixture f;
+    f.config.set_config_value("wifi.ssid", "Home");
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("sd"), 2);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    auto it = f.sd_hal.files.find(ConfigService::DEFAULT_CONFIG_PATH);
+    TEST_ASSERT_TRUE(it != f.sd_hal.files.end());
+    std::string ini(reinterpret_cast<const char*>(it->second.data()),
+                    it->second.size());
+    TEST_ASSERT_NOT_NULL(strstr(ini.c_str(), "ssid=Home"));
+}
+
+/**
+ * @brief SET_CONFIG to SD while degraded returns SD_UNAVAILABLE.
+ */
+void test_set_config_sd_unavailable_when_degraded()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("sd"), 2);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SD_UNAVAILABLE),
+        static_cast<uint8_t>(result));
+}
+
+/**
+ * @brief A failed SD config write leaves the RAM config intact.
+ */
+void test_set_config_sd_write_failure_leaves_ram_config_intact()
+{
+    TestFixture f;
+    f.config.set_config_value("wifi.ssid", "Home");
+    f.sd_hal.write_result = false;
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::SET_CONFIG,
+        reinterpret_cast<const uint8_t*>("sd"), 2);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INTERNAL_ERROR),
+        static_cast<uint8_t>(result));
+
+    // The live RAM config must be untouched by the failed persistence.
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_TRUE(f.config.get_config_value("wifi.ssid", value,
+                                               sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("Home", value);
+}
+
+/**
+ * @brief GET_CONFIG returns the full config as serialized INI text.
+ */
+void test_get_config_returns_serialized_ini()
+{
+    TestFixture f;
+    f.config.set_config_value("wifi.ssid", "Home");
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::GET_CONFIG, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    const char* ini = reinterpret_cast<const char*>(response);
+    TEST_ASSERT_NOT_NULL(strstr(ini, "[wifi]"));
+    TEST_ASSERT_NOT_NULL(strstr(ini, "ssid=Home"));
+    TEST_ASSERT_NOT_NULL(strstr(ini, "[ap]"));
+    TEST_ASSERT_NOT_NULL(strstr(ini, "[video]"));
+
+    // Round-trip: re-parsing the response yields the same values.
+    ConfigData parsed = IniParser::parse(ini, response_len);
+    TEST_ASSERT_EQUAL_STRING("Home", parsed.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("MicroCam", parsed.ap.ssid);
+}
+
+/**
+ * @brief GET_CONFIG returns full configs up to the storage buffer size.
+ *
+ * Regression: configs that serialize between the old 512-byte response
+ * limit and the 1024-byte storage limit failed with INTERNAL_ERROR even
+ * though CONFIG_SAVE accepted them.
+ */
+void test_get_config_returns_full_band_config()
+{
+    TestFixture f;
+
+    // Fill every string field to its maximum valid length so the
+    // serialized config lands in the 512–1023 byte band.
+    char long_value[CONFIG_FIELD_MAX_LENGTH];
+    memset(long_value, 'a', sizeof(long_value) - 1);
+    long_value[sizeof(long_value) - 1] = '\0';
+    f.config.set_config_value("wifi.ssid", long_value);
+    f.config.set_config_value("wifi.password", long_value);
+    f.config.set_config_value("wifi.static_ip", long_value);
+    f.config.set_config_value("wifi.gateway", long_value);
+    f.config.set_config_value("wifi.subnet_mask", long_value);
+    f.config.set_config_value("ap.password", long_value);
+    f.config.set_config_value("ap.ap_ip", long_value);
+    f.config.set_config_value("ap.ap_gateway", long_value);
+    f.config.set_config_value("ap.ap_subnet_mask", long_value);
+    f.config.set_config_value("web.password", long_value);
+
+    // Sanity: the config exceeds the old limit but fits the storage
+    // buffer (i.e. CONFIG_SAVE would accept it).
+    char expected[ConfigService::CONFIG_BUFFER_SIZE];
+    size_t serialized_len = f.config.serialize(expected, sizeof(expected));
+    TEST_ASSERT_GREATER_THAN(512, serialized_len);
+    TEST_ASSERT_LESS_THAN(ConfigService::CONFIG_BUFFER_SIZE, serialized_len);
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::GET_CONFIG, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_UINT32(serialized_len, response_len);
+    TEST_ASSERT_EQUAL_MEMORY(expected, response, serialized_len);
 }
 
 /**
@@ -904,6 +1150,185 @@ void test_stream_route_uses_register_time_password_snapshot()
 }
 
 // ============================================================
+// Streaming-only degraded mode (SD unavailable)
+// ============================================================
+
+/**
+ * @brief START_RECORDING while degraded returns SD_UNAVAILABLE.
+ *
+ * No recording state may change and no capture request may be posted.
+ */
+void test_degraded_start_recording_returns_sd_unavailable()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+    f.setup_fake_frame();
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::START_RECORDING);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SD_UNAVAILABLE),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_FALSE(f.video.is_recording());
+    TEST_ASSERT_FALSE(f.capture_scheduler.is_started());
+}
+
+/**
+ * @brief TAKE_PHOTO while degraded returns SD_UNAVAILABLE.
+ *
+ * The gate precedes camera capture: no camera frame may be wasted.
+ */
+void test_degraded_take_photo_returns_sd_unavailable()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+    f.setup_fake_frame();
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::TAKE_PHOTO, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SD_UNAVAILABLE),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_INT(0, f.camera_hal.capture_call_count);
+    TEST_ASSERT_EQUAL_UINT32(0, response_len);
+}
+
+/**
+ * @brief SD_UNAVAILABLE takes precedence over INVALID_STATE.
+ *
+ * A photo request during streaming with no SD reports the SD reason,
+ * not the capture-loop state rejection.
+ */
+void test_degraded_take_photo_precedence_over_invalid_state()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+    f.setup_fake_frame();
+
+    dispatch_cmd(f.cmd_handler, CommandCode::START_STREAM);
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::TAKE_PHOTO, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SD_UNAVAILABLE),
+        static_cast<uint8_t>(result));
+}
+
+/**
+ * @brief STOP_RECORDING stays SUCCESS while degraded (idempotent).
+ */
+void test_degraded_stop_recording_returns_success()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::STOP_RECORDING);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+}
+
+/**
+ * @brief GET_STATUS reports the latched SD availability.
+ */
+void test_degraded_get_status_reports_sd_false()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"sd\":false"));
+}
+
+/**
+ * @brief A failed SD card initialization also latches degraded mode.
+ */
+void test_degraded_hw_init_failure_enters_streaming_only()
+{
+    TestFixture f(nullptr, hal::SdInitResult::HW_INIT_FAILURE);
+
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::START_RECORDING);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SD_UNAVAILABLE),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_FALSE(f.video.is_recording());
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"sd\":false"));
+}
+
+/**
+ * @brief Healthy fixture reports SD available in GET_STATUS.
+ */
+void test_get_status_reports_sd_true_when_available()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"sd\":true"));
+}
+
+/**
+ * @brief Streaming works end to end while degraded.
+ *
+ * In streaming-only mode the full viewer path stays operational:
+ * start streaming, capture a frame that reaches a connected viewer,
+ * then stop streaming and verify the viewer is closed.
+ */
+void test_degraded_streaming_end_to_end()
+{
+    TestFixture f(nullptr, hal::SdInitResult::NO_SD_CARD);
+    f.setup_fake_frame();
+
+    CommandResult start = dispatch_cmd(
+        f.cmd_handler, CommandCode::START_STREAM);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(start));
+    TEST_ASSERT_TRUE(f.video.is_streaming());
+
+    // Connect a viewer and deliver a frame to it.
+    auto channel = std::make_shared<StreamFrameChannel>();
+    StreamFrameChannel* raw = channel.get();
+    f.stream_service.start_stream(channel);
+    TEST_ASSERT_EQUAL_UINT8(1, f.stream_service.active_slot_count());
+
+    f.capture_one_frame();
+    TEST_ASSERT_FALSE(raw->is_closed());
+
+    // Stopping streaming closes the viewer and frees the slot.
+    CommandResult stop = dispatch_cmd(
+        f.cmd_handler, CommandCode::STOP_STREAM);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(stop));
+    TEST_ASSERT_EQUAL_UINT8(0, f.stream_service.active_slot_count());
+    TEST_ASSERT_TRUE(raw->is_closed());
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -927,7 +1352,16 @@ int main()
     RUN_TEST(test_take_photo_uniquifies_same_second_collision);
     RUN_TEST(test_set_time_sets_offset);
     RUN_TEST(test_set_time_invalid_payload);
-    RUN_TEST(test_set_config_returns_invalid_state);
+    RUN_TEST(test_set_config_requires_destination);
+    RUN_TEST(test_set_config_unknown_destination);
+    RUN_TEST(test_set_config_nvs_persists_live_config);
+    RUN_TEST(test_set_config_destination_case_insensitive);
+    RUN_TEST(test_set_config_value_does_not_persist);
+    RUN_TEST(test_set_config_sd_persists_live_config);
+    RUN_TEST(test_set_config_sd_unavailable_when_degraded);
+    RUN_TEST(test_set_config_sd_write_failure_leaves_ram_config_intact);
+    RUN_TEST(test_get_config_returns_serialized_ini);
+    RUN_TEST(test_get_config_returns_full_band_config);
     RUN_TEST(test_tick_does_not_crash);
     RUN_TEST(test_start_stream_delegates);
     RUN_TEST(test_stop_stream_delegates);
@@ -940,6 +1374,14 @@ int main()
     RUN_TEST(test_stream_route_rejects_bad_credentials);
     RUN_TEST(test_stream_route_uses_register_time_password_snapshot);
     RUN_TEST(test_get_status_reports_streaming_field);
+    RUN_TEST(test_degraded_start_recording_returns_sd_unavailable);
+    RUN_TEST(test_degraded_take_photo_returns_sd_unavailable);
+    RUN_TEST(test_degraded_take_photo_precedence_over_invalid_state);
+    RUN_TEST(test_degraded_stop_recording_returns_success);
+    RUN_TEST(test_degraded_get_status_reports_sd_false);
+    RUN_TEST(test_degraded_hw_init_failure_enters_streaming_only);
+    RUN_TEST(test_get_status_reports_sd_true_when_available);
+    RUN_TEST(test_degraded_streaming_end_to_end);
 
     return UNITY_END();
 }

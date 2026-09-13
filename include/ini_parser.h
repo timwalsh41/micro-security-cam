@@ -57,7 +57,9 @@ struct ConfigData
      */
     struct ApConfig
     {
-        char ssid[CONFIG_FIELD_MAX_LENGTH]{};
+        /** Compiled-in default AP SSID so the camera is reachable
+         *  without any configuration (streaming-only default). */
+        char ssid[CONFIG_FIELD_MAX_LENGTH]{"MicroCam"};
         char password[CONFIG_FIELD_MAX_LENGTH]{};
         char ap_ip[CONFIG_FIELD_MAX_LENGTH]{};
         char ap_gateway[CONFIG_FIELD_MAX_LENGTH]{};
@@ -123,10 +125,13 @@ class IniParser
 {
     public:
         /**
-         * @brief Returns a ConfigData pre-populated with safe defaults.
+         * @brief Returns a ConfigData pre-populated with the compiled-in
+         *         default configuration: WiFi settings blank, AP SSID
+         *         `MicroCam` (open network), web port 80 with no password,
+         *         and the camera/video defaults documented in the README
+         *         configuration section.
          *
-         * @return ConfigData with all default values (empty strings, port 80,
-         *         capture interval 20000 ms).
+         * @return ConfigData with all default values.
          */
         static ConfigData defaults();
 
@@ -141,6 +146,24 @@ class IniParser
          * @return Populated ConfigData with parsed values and defaults.
          */
         static ConfigData parse(const char* content, size_t length);
+
+    /**
+     * @brief Parses an INI-format buffer and overlays it onto a base config.
+     *
+     * Starts from @p base and applies each recognized key=value line
+     * setting-by-setting, so settings absent from the buffer retain
+     * their values from @p base while settings present in the buffer
+     * override @p base (including explicitly blanked values).
+     *
+     * @param base    Configuration providing values for settings the
+     *                buffer does not mention.
+     * @param content Pointer to the INI-format content.
+     * @param length  Number of bytes in the content buffer.
+     * @return Copy of @p base with recognized settings from the buffer
+     *         applied on top.
+     */
+    static ConfigData overlay(const ConfigData& base,
+                              const char* content, size_t length);
 
         /**
          * @brief Serializes a ConfigData struct into INI-format text.
@@ -166,6 +189,21 @@ class IniParser
     private:
         // Maximum line length supported by the parser (excluding null terminator)
         static constexpr size_t MAX_LINE_LENGTH = 128;
+
+        /**
+         * @brief Parses an INI-format buffer starting from a given config.
+         *
+         * Shared implementation of parse() and overlay(): @p base is
+         * taken by value as the starting config and each recognized
+         * key=value line is applied on top of it.
+         *
+         * @param base    Starting configuration.
+         * @param content Pointer to the INI-format content.
+         * @param length  Number of bytes in the content buffer.
+         * @return The resulting config.
+         */
+        static ConfigData parse_into(ConfigData base,
+                                     const char* content, size_t length);
 
         /**
          * @brief Compares a parsed key against an expected name, case-insensitive.
