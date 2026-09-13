@@ -231,6 +231,8 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/control?cmd=stream_stop` | Yes | Stop live preview |
 | GET | `/control?cmd=stream_list` | Yes | List connected stream clients (JSON) |
 | GET | `/control?cmd=config` | Yes | Full live config as INI text (requires a configured web password) |
+| GET | `/control?cmd=config_get_value&key=<section.key>` | Yes | Read a single config value (requires a configured web password) |
+| GET | `/control?cmd=config_set_value&key=<section.key>&value=<val>` | Yes | Set a single config value in the live config (requires a configured web password) |
 | GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card (requires a configured web password) |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |
 
@@ -309,6 +311,17 @@ uv run script/python/camera_cli.py status
 
 # Send a control command
 uv run script/python/camera_cli.py control [start | stop | photo | stream_start | stream_stop | stream_list]
+
+# Get the full live config as INI text
+uv run script/python/camera_cli.py config
+
+# Read / set a single config value (live RAM config; not persisted)
+uv run script/python/camera_cli.py config-get wifi.ssid
+uv run script/python/camera_cli.py config-set wifi.ssid MyNetwork
+
+# Persist the live config to NVS flash or the SD card
+uv run script/python/camera_cli.py config-save nvs
+uv run script/python/camera_cli.py config-save sd
 
 # Set camera clock to current system time
 uv run script/python/camera_cli.py set-time

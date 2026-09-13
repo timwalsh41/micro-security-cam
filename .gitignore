@@ -9,3 +9,4 @@ TODO.md
 *.avi
 .venv/
 config.ini
+__pycache__/

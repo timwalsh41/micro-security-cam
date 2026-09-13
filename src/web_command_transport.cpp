@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 WebCommandTransport::WebCommandTransport(hal::WebServerHal& web,
                                          CommandHandler& handler)
@@ -76,6 +77,14 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     {
         return CommandCode::SET_CONFIG;
     }
+    if (std::strcmp(cmd, "config_get_value") == 0)
+    {
+        return CommandCode::GET_CONFIG_VALUE;
+    }
+    if (std::strcmp(cmd, "config_set_value") == 0)
+    {
+        return CommandCode::SET_CONFIG_VALUE;
+    }
     if (std::strcmp(cmd, "set_time") == 0)
     {
         return CommandCode::SET_TIME;
@@ -143,7 +152,9 @@ void WebCommandTransport::send_result(
 bool WebCommandTransport::is_config_command(CommandCode code)
 {
     return code == CommandCode::GET_CONFIG ||
-           code == CommandCode::SET_CONFIG;
+           code == CommandCode::SET_CONFIG ||
+           code == CommandCode::GET_CONFIG_VALUE ||
+           code == CommandCode::SET_CONFIG_VALUE;
 }
 
 bool WebCommandTransport::check_auth(hal::RequestRef& request)
@@ -193,6 +204,45 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
     if (m_password[0] == '\0' && is_config_command(code))
     {
         send_result(request, CommandResult::UNAUTHORIZED);
+        return;
+    }
+
+    // GET_CONFIG_VALUE needs the key from the "key" query parameter.
+    if (code == CommandCode::GET_CONFIG_VALUE)
+    {
+        const char* key = request.arg("key");
+        if (key == nullptr || key[0] == '\0')
+        {
+            request.send(400, "application/json",
+                         "{\"error\":\"missing 'key' parameter\"}");
+            return;
+        }
+
+        // Payload is the "section.key" string.
+        dispatch_and_respond(request, code,
+                             reinterpret_cast<const uint8_t*>(key),
+                             strlen(key));
+        return;
+    }
+
+    // SET_CONFIG_VALUE needs the key from the "key" query parameter;
+    // an empty "value" is a legitimate blank (clears the setting).
+    if (code == CommandCode::SET_CONFIG_VALUE)
+    {
+        const char* key = request.arg("key");
+        const char* value = request.arg("value");
+        if (key == nullptr || key[0] == '\0' || value == nullptr)
+        {
+            request.send(400, "application/json",
+                         "{\"error\":\"missing 'key' or 'value' parameter\"}");
+            return;
+        }
+
+        // Payload format is "section.key=value".
+        std::string payload = std::string(key) + "=" + value;
+        dispatch_and_respond(request, code,
+                             reinterpret_cast<const uint8_t*>(payload.c_str()),
+                             payload.size());
         return;
     }
 

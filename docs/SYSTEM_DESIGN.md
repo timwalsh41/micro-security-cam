@@ -1528,6 +1528,8 @@ Every command returns a `CommandResult` enum value:
 | `stream_list` | `LIST_STREAMS` | |
 | `config` | `GET_CONFIG` | |
 | `config_save` | `SET_CONFIG` | Requires a `dest` query parameter: `nvs` or `sd` (case-insensitive) |
+| `config_get_value` | `GET_CONFIG_VALUE` | Requires a `key` query parameter: `"section.key"` string |
+| `config_set_value` | `SET_CONFIG_VALUE` | Requires `key` and `value` query parameters (empty `value` blanks the setting) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 
 The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
