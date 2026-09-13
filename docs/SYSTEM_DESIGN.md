@@ -1377,7 +1377,7 @@ The full set of recognised commands, their hex codes, payloads, and transport ma
 
 - **Fixed-size arrays**: Handlers and transports use fixed-size arrays (`MAX_HANDLERS = 16`, `MAX_TRANSPORTS = 4`) rather than dynamic allocation.
 - **Tick-driven**: `tick()` polls all registered transports, dispatches pending requests, and sends responses back through the transport.
-- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (256) byte buffer for the handler to write response data.
+- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (512) byte buffer for the handler to write response data — sized to carry a full serialized configuration.
 
 #### Testability
 

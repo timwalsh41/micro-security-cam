@@ -253,7 +253,7 @@ The number of concurrent viewers is limited by `max_streams` (1–4).
 
 ### Authentication
 
-If a web password is configured in `config.ini`, all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled.
+If a web password is configured (in `config.ini` on the SD card or in a config saved to NVS), all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled (except config commands — see below).
 
 Config commands (`cmd=config`, `cmd=config_save`) require a configured web password regardless: with no password set, the web interface refuses them with `UNAUTHORIZED` (web `{"result":"error","code":5}`), and config access stays on the serial interface (`CONFIG_GET`/`CONFIG_SAVE`), which is always available.
 
@@ -266,7 +266,7 @@ The firmware records MJPEG video to the SD card in standard AVI containers.
 - Frames are captured from the camera at the configured FPS and written to an AVI file.
 - Clips are automatically rotated when `clip_duration_s` or `max_file_size_mb` is reached.
 - Files are stored in date-stamped directories: `/YYYYMMDD/YYYYMMDD_HHMMSS_<WxH>_<FPS>fps.avi`.
-- The complete AVI is buffered in RAM and written to SD in a single flush at clip end, ensuring valid AVI files.
+- Frames are written to SD incrementally, one AVI chunk per frame; at clip end the header is patched in place.
 
 ### Capabilities
 
