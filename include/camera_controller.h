@@ -16,6 +16,7 @@ struct CameraImageConfig
     const char* resolution{"VGA"};  ///< Resolution string from INI
     uint8_t jpeg_quality{10};       ///< JPEG quality (0-63, lower = better)
     uint8_t fb_count{1};            ///< Requested frame buffer count
+    uint16_t rotation{0};          ///< Image rotation in degrees (0 or 180)
 };
 
 /**

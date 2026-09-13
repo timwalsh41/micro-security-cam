@@ -1,6 +1,8 @@
 #include <unity.h>
 #include "camera_controller.h"
 #include "mock_camera_hal.h"
+#include "mock_log_backend.h"
+#include "time_service.h"
 
 // ============================================================
 // IDLE state — pre-init
@@ -442,6 +444,90 @@ void test_init_explicit_grab_mode_latest()
 }
 
 // ============================================================
+// rotation configuration
+// ============================================================
+
+/**
+ * @brief build_camera_config carries rotation into the HAL config.
+ */
+void test_build_camera_config_carries_rotation()
+{
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService log{log_backend, time};
+
+    CameraImageConfig user_config;
+    user_config.rotation = 180;
+
+    auto params = build_camera_config(user_config, log);
+    TEST_ASSERT_EQUAL_UINT16(180, params.hal_config.rotation);
+}
+
+/**
+ * @brief init() passes rotation 180 through to the HAL unmodified.
+ */
+void test_init_rotation_180_passed_to_hal()
+{
+    MockCameraHal hal;
+    hal::CameraConfig config;
+    config.rotation = 180;
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT16(180, hal.last_requested_rotation);
+}
+
+/**
+ * @brief init() passes rotation 0 through to the HAL unmodified.
+ */
+void test_init_rotation_0_passed_to_hal()
+{
+    MockCameraHal hal;
+    hal::CameraConfig config;
+    config.rotation = 0;
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT16(0, hal.last_requested_rotation);
+}
+
+/**
+ * @brief Unsupported rotation (90) is clamped to 0 before reaching the HAL.
+ */
+void test_init_unsupported_rotation_90_clamped_to_zero()
+{
+    MockCameraHal hal;
+    hal::CameraConfig config;
+    config.rotation = 90;
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT16(0, hal.last_requested_rotation);
+}
+
+/**
+ * @brief Unsupported rotation (270) is clamped to 0 before reaching the HAL.
+ */
+void test_init_unsupported_rotation_270_clamped_to_zero()
+{
+    MockCameraHal hal;
+    hal::CameraConfig config;
+    config.rotation = 270;
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL_UINT16(0, hal.last_requested_rotation);
+}
+
+// ============================================================
 // Full lifecycle
 // ============================================================
 
@@ -524,6 +610,13 @@ int main(int argc, char **argv)
     RUN_TEST(test_init_default_grab_mode_is_auto_sentinel);
     RUN_TEST(test_init_explicit_grab_mode_when_empty);
     RUN_TEST(test_init_explicit_grab_mode_latest);
+
+    // rotation configuration
+    RUN_TEST(test_build_camera_config_carries_rotation);
+    RUN_TEST(test_init_rotation_180_passed_to_hal);
+    RUN_TEST(test_init_rotation_0_passed_to_hal);
+    RUN_TEST(test_init_unsupported_rotation_90_clamped_to_zero);
+    RUN_TEST(test_init_unsupported_rotation_270_clamped_to_zero);
 
     // Full lifecycle
     RUN_TEST(test_full_lifecycle);

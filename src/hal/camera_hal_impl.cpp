@@ -51,6 +51,19 @@ CameraInitResult CameraHalImpl::init(const CameraConfig& cam_config)
         return CameraInitResult::HARDWARE_FAILURE;
     }
 
+    // Apply 180 degree rotation via sensor registers (hmirror + vflip).
+    // Sensor flip state resets to settings-table defaults on every
+    // esp_camera_init(), so this must be re-applied on each init.
+    if (cam_config.rotation == 180)
+    {
+        sensor_t* sensor = esp_camera_sensor_get();
+        if (sensor != nullptr)
+        {
+            sensor->set_hmirror(sensor, 1);
+            sensor->set_vflip(sensor, 1);
+        }
+    }
+
     m_initialized = true;
     return CameraInitResult::SUCCESS;
 }

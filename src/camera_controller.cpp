@@ -102,6 +102,7 @@ ResolvedCameraParams build_camera_config(
     hal_config.frame_size = framesize;
     hal_config.jpeg_quality = jpeg_quality;
     hal_config.fb_count = user_config.fb_count;
+    hal_config.rotation = user_config.rotation;
 
     ResolvedCameraParams params;
     params.hal_config = hal_config;
@@ -149,6 +150,12 @@ hal::CameraInitResult CameraController::init()
     {
         m_config.fb_count = caps.max_fb_count;
     }
+    // Sensor-register rotation only supports 0/180; any other value is
+    // rejected and falls back to no rotation.
+    if (m_config.rotation != 0 && m_config.rotation != 180)
+    {
+        m_config.rotation = 0;
+    }
 
     hal::CameraInitResult result = m_hal.init(m_config);
     m_initialized = (result == hal::CameraInitResult::SUCCESS);
@@ -183,6 +190,12 @@ hal::CameraInitResult CameraController::init(const ResolvedCameraParams& params)
     if (m_config.fb_count > caps.max_fb_count)
     {
         m_config.fb_count = caps.max_fb_count;
+    }
+    // Sensor-register rotation only supports 0/180; any other value is
+    // rejected and falls back to no rotation.
+    if (m_config.rotation != 0 && m_config.rotation != 180)
+    {
+        m_config.rotation = 0;
     }
 
     hal::CameraInitResult result = m_hal.init(m_config);

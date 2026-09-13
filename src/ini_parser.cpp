@@ -295,6 +295,15 @@ ConfigData IniParser::parse(const char* content, size_t length)
                     {
                         config.camera.grab_mode = static_cast<uint8_t>(get_uint_val(val_start, val_len, nullptr, 16));
                     }
+                    else if (key_match(key_start, key_len, "rotation"))
+                    {
+                        // Only 0/180 are accepted; 90/270 are not supported.
+                        uint32_t parsed = get_uint_val(val_start, val_len);
+                        if (parsed == 0 || parsed == 180)
+                        {
+                            config.camera.rotation = static_cast<uint16_t>(parsed);
+                        }
+                    }
                     break;
                 }
                 case Section::VIDEO:
@@ -431,6 +440,10 @@ size_t IniParser::serialize(const ConfigData& data,
     write("\n");
     snprintf(num_buf, sizeof(num_buf), "%02x", data.camera.grab_mode);
     write("grab_mode=");
+    write(num_buf);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.camera.rotation);
+    write("rotation=");
     write(num_buf);
     write("\n");
 

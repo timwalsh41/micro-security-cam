@@ -82,6 +82,7 @@ struct ConfigData
         char resolution[CONFIG_FIELD_MAX_LENGTH]{"VGA"};
         uint8_t jpeg_quality{10};
         uint8_t grab_mode{0xFF};
+        uint16_t rotation{0};
     };
 
     /**

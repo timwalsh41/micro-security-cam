@@ -94,6 +94,15 @@ struct CameraConfig
      * during SD write stalls.
      */
     uint8_t grab_mode{0xFF};
+
+    /**
+     * @brief Image rotation in degrees.
+     *
+     * Supported values are 0 (no rotation) and 180 (applied via sensor
+     * hmirror + vflip registers after esp_camera_init()). Any other
+     * value is rejected before reaching the HAL.
+     */
+    uint16_t rotation{0};
 };
 
 /**
