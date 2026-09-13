@@ -51,6 +51,9 @@ class MockCameraHal : public hal::CameraHal
         /** The CameraConfig passed to the most recent init() call. */
         hal::CameraConfig last_init_config{};
 
+        /** The rotation value passed to the most recent init() call. */
+        uint16_t last_requested_rotation{0};
+
         // ============================================================
         // Test data
         // ============================================================
@@ -66,6 +69,7 @@ class MockCameraHal : public hal::CameraHal
         {
             init_call_count++;
             last_init_config = config;
+            last_requested_rotation = config.rotation;
             return init_result;
         }
 

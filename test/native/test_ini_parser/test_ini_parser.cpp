@@ -563,6 +563,70 @@ void test_video_jpeg_quality_out_of_range_ignored()
 }
 
 // ============================================================
+// Camera section parsing — rotation
+// ============================================================
+
+/**
+ * @brief parse() accepts rotation=180.
+ */
+void test_camera_rotation_180_parsed()
+{
+    const char* ini = "[camera]\nrotation=180\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(180, d.camera.rotation);
+}
+
+/**
+ * @brief parse() accepts rotation=0.
+ */
+void test_camera_rotation_0_parsed()
+{
+    const char* ini = "[camera]\nrotation=0\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(0, d.camera.rotation);
+}
+
+/**
+ * @brief parse() rejects rotation=90 and keeps the default.
+ */
+void test_camera_rotation_90_rejected()
+{
+    const char* ini = "[camera]\nrotation=90\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(0, d.camera.rotation);
+}
+
+/**
+ * @brief parse() rejects rotation=270 and keeps the default.
+ */
+void test_camera_rotation_270_rejected()
+{
+    const char* ini = "[camera]\nrotation=270\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(0, d.camera.rotation);
+}
+
+/**
+ * @brief parse() rejects rotation=45 and keeps the default.
+ */
+void test_camera_rotation_45_rejected()
+{
+    const char* ini = "[camera]\nrotation=45\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(0, d.camera.rotation);
+}
+
+/**
+ * @brief parse() rejects a non-numeric rotation and keeps the default.
+ */
+void test_camera_rotation_non_numeric_rejected()
+{
+    const char* ini = "[camera]\nrotation=abc\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT16(0, d.camera.rotation);
+}
+
+// ============================================================
 // Serialization
 // ============================================================
 
@@ -690,6 +754,7 @@ void test_roundtrip_custom_values()
     original.video.clip_duration_s = 120;
     original.video.max_file_size_mb = 200;
     original.video.jpeg_quality = 5;
+    original.camera.rotation = 180;
 
     char buf[1024];
     IniParser::serialize(original, buf, sizeof(buf));
@@ -713,6 +778,8 @@ void test_roundtrip_custom_values()
                              parsed.video.max_file_size_mb);
     TEST_ASSERT_EQUAL_UINT8(original.video.jpeg_quality,
                             parsed.video.jpeg_quality);
+    TEST_ASSERT_EQUAL_UINT16(original.camera.rotation,
+                            parsed.camera.rotation);
 }
 
 /**
@@ -762,6 +829,7 @@ void test_serialize_all_fields_present()
     d.video.clip_duration_s = 30;
     d.video.max_file_size_mb = 100;
     d.video.jpeg_quality = 20;
+    d.camera.rotation = 180;
 
     char buf[1024];
     IniParser::serialize(d, buf, sizeof(buf));
@@ -786,6 +854,7 @@ void test_serialize_all_fields_present()
     TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=30"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=100"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=20"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "rotation=180"));
 }
 
 // ============================================================
@@ -859,6 +928,14 @@ int main(int argc, char** argv)
     RUN_TEST(test_video_fps_minimum_accepted);
     RUN_TEST(test_video_fps_maximum_accepted);
     RUN_TEST(test_video_jpeg_quality_out_of_range_ignored);
+
+    // Camera section parsing — rotation
+    RUN_TEST(test_camera_rotation_180_parsed);
+    RUN_TEST(test_camera_rotation_0_parsed);
+    RUN_TEST(test_camera_rotation_90_rejected);
+    RUN_TEST(test_camera_rotation_270_rejected);
+    RUN_TEST(test_camera_rotation_45_rejected);
+    RUN_TEST(test_camera_rotation_non_numeric_rejected);
 
     // Serialization
     RUN_TEST(test_serialize_defaults);

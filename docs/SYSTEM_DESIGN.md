@@ -232,6 +232,7 @@ package "HAL value types" {
         +frame_size : uint8_t
         +fb_count : uint8_t
         +grab_mode : uint8_t
+        +rotation : uint16_t
     }
 }
 
@@ -820,6 +821,8 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
 
+**Camera rotation** — `hal::CameraConfig` carries a `rotation` field (`0` or `180` only; any other value is clamped to `0` by `CameraController` before reaching the HAL). After a successful `esp_camera_init()`, `CameraHalImpl::init()` applies `rotation == 180` by writing the sensor hmirror + vflip registers via `esp_camera_sensor_get()`. Applying inside `init()` (rather than once at boot) re-applies rotation automatically on every camera re-init, since sensor flip state resets to defaults on each `esp_camera_init()` cycle. 90/270 degrees are not supported; they would require a software JPEG decode/rotate/re-encode path (see the `msc-image-rotation-feasibility` report §3.2).
+
 ### WifiHal
 
 **File**: `include/hal/wifi_hal.h`
@@ -1068,6 +1071,7 @@ password=webpass
 
 [camera]
 resolution=VGA
+rotation=0
 
 [video]
 fps=10
@@ -1085,7 +1089,7 @@ jpeg_quality=10
 - Whitespace around keys, values, and section headers is trimmed
 - Unknown sections and keys are silently ignored
 - Values are truncated to `CONFIG_FIELD_MAX_LENGTH - 1` (63) characters
-- Integer values (`port`, `fps`, `jpeg_quality`) are validated with range checking
+- Integer values (`port`, `fps`, `jpeg_quality`, `rotation`) are validated with range checking
 
 ### API
 
@@ -1106,7 +1110,8 @@ struct ConfigData
                           uint8_t max_streams{4}; };
     struct CameraConfig { char resolution[64]{"VGA"};
                           uint8_t jpeg_quality{10};
-                          uint8_t grab_mode{0xFF}; };
+                          uint8_t grab_mode{0xFF};
+                          uint16_t rotation{0}; };
     struct VideoConfig  { uint16_t fps; char resolution[64];
                           uint16_t clip_duration_s;
                           uint16_t max_file_size_mb;

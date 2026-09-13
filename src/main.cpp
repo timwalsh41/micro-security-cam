@@ -176,6 +176,7 @@ void setup()
     cam_image_config.resolution = config_service.config().camera.resolution;
     cam_image_config.jpeg_quality = config_service.config().camera.jpeg_quality;
     cam_image_config.fb_count = 2;
+    cam_image_config.rotation = config_service.config().camera.rotation;
     ResolvedCameraParams cam_params = build_camera_config(cam_image_config, logger);
     hal::CameraInitResult cam_result = camera_ctrl.init(cam_params);
     if (cam_result != hal::CameraInitResult::SUCCESS)

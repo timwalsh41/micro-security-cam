@@ -89,6 +89,7 @@ max_streams=4
 resolution=VGA
 jpeg_quality=10
 grab_mode=0xFF
+rotation=0
 
 [video]
 fps=10
@@ -120,6 +121,7 @@ mic_gain=2
 | `[camera]` | `resolution` | string | `VGA` | Still photo resolution (see table below) |
 | `[camera]` | `jpeg_quality` | integer | `10` | Still photo JPEG quality (0–63, lower = better) |
 | `[camera]` | `grab_mode` | hex | `0xFF` | Camera grab mode (0x00 = when empty, 0x01 = latest, 0xFF = hardware-recommended default) |
+| `[camera]` | `rotation` | integer | `0` | Image rotation in degrees (0 or 180; applied via sensor hmirror/vflip registers at camera init; 90/270 not supported) |
 | `[video]` | `fps` | integer | `10` | Video frame rate (1–30) |
 | `[video]` | `resolution` | string | `VGA` | Frame resolution (see table below) |
 | `[video]` | `clip_duration_s` | integer | `60` | Max clip length in seconds (0 = no limit) |
