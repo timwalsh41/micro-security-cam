@@ -93,7 +93,7 @@ class ConfigService
          * Log output includes bytes_read / CONFIG_BUFFER_SIZE so reviewers
          * can see how much margin is available.
          */
-        static constexpr size_t CONFIG_BUFFER_SIZE = 512;
+        static constexpr size_t CONFIG_BUFFER_SIZE = 1024;
 
         /**
          * @brief Default path for the config file on SD card.

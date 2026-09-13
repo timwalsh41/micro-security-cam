@@ -61,7 +61,7 @@ pio test -e seeed_xiao_esp32s3_test
 
 ## Configuration
 
-The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used. The config file is limited to 512 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
+The firmware reads an INI-style config file (`/config.ini`) from the SD card at startup. If the file is missing or empty, sensible defaults are used. The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
 
 ### Example Config File
 

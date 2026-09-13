@@ -70,11 +70,11 @@ void test_default_config_path()
 }
 
 /**
- * @brief CONFIG_BUFFER_SIZE is 512.
+ * @brief CONFIG_BUFFER_SIZE is 1024.
  */
 void test_config_buffer_size()
 {
-    TEST_ASSERT_EQUAL_UINT32(512, ConfigService::CONFIG_BUFFER_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(1024, ConfigService::CONFIG_BUFFER_SIZE);
 }
 
 /**

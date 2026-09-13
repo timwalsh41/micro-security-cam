@@ -1165,7 +1165,7 @@ High-level configuration service that owns the current `ConfigData` and provides
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `CONFIG_BUFFER_SIZE` | 512 | Maximum buffer size expected for config file reads |
+| `CONFIG_BUFFER_SIZE` | 1024 | Maximum buffer size expected for config file reads |
 | `DEFAULT_CONFIG_PATH` | `/config.ini` | Path on SD card where config file is looked up |
 | `READ_TIMEOUT_MS` | 5000 | Timeout for SD card read operations |
 
