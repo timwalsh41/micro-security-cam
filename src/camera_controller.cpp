@@ -1,18 +1,6 @@
 #include "camera_controller.h"
 #include <cstring>
 #include <strings.h>   // strcasecmp (POSIX)
-#include "esp_camera.h"
-
-// Pin the esp32-camera framesize_t enum values this module's resolution
-// table depends on. If the library enum ever changes, the build fails
-// loudly here instead of silently mis-mapping resolutions on the sensor.
-static_assert(FRAMESIZE_QQVGA == 1, "esp32-camera framesize_t drift");
-static_assert(FRAMESIZE_QVGA == 5, "esp32-camera framesize_t drift");
-static_assert(FRAMESIZE_VGA == 8, "esp32-camera framesize_t drift");
-static_assert(FRAMESIZE_SVGA == 9, "esp32-camera framesize_t drift");
-static_assert(FRAMESIZE_XGA == 10, "esp32-camera framesize_t drift");
-static_assert(FRAMESIZE_HD == 11, "esp32-camera framesize_t drift");
-static_assert(FRAMESIZE_UXGA == 13, "esp32-camera framesize_t drift");
 
 // ============================================================
 // Resolution mapping (build_camera_config)
@@ -22,43 +10,45 @@ namespace
 {
 
 /**
- * @brief Resolution entry mapping string names to framesize values and pixel dimensions.
+ * @brief Resolution entry mapping string names to HAL frame sizes and
+ *        pixel dimensions.
  */
 struct ResolutionEntry
 {
-    const char* name;   ///< Resolution name (case-insensitive match)
-    uint8_t framesize;  ///< ESP32 framesize_t enum value
-    uint16_t width;     ///< Pixel width
-    uint16_t height;    ///< Pixel height
+    const char* name;          ///< Resolution name (case-insensitive match)
+    hal::FrameSize framesize;  ///< HAL frame size selection
+    uint16_t width;            ///< Pixel width
+    uint16_t height;           ///< Pixel height
 };
 
 /**
  * @brief Table of supported resolution mappings.
  *
- * Entries are ordered by framesize enum value for consistency.
- * The table is terminated by a sentinel entry with nullptr name.
+ * Entries are ordered by frame size (ascending pixel dimensions) for
+ * consistency. The table is terminated by a sentinel entry with
+ * nullptr name.
  */
 const ResolutionEntry RESOLUTION_TABLE[] =
 {
-    {"QQVGA",  FRAMESIZE_QQVGA,  160,  120},
-    {"QVGA",   FRAMESIZE_QVGA,   320,  240},
-    {"VGA",    FRAMESIZE_VGA,    640,  480},
-    {"SVGA",   FRAMESIZE_SVGA,   800,  600},
-    {"XGA",    FRAMESIZE_XGA,   1024,  768},
-    {"HD",     FRAMESIZE_HD,    1280,  720},
-    {"UXGA",   FRAMESIZE_UXGA,  1600, 1200},
-    {nullptr,               0,    0,    0},  // sentinel
+    {"QQVGA",  hal::FrameSize::QQVGA,  160,  120},
+    {"QVGA",   hal::FrameSize::QVGA,   320,  240},
+    {"VGA",    hal::FrameSize::VGA,    640,  480},
+    {"SVGA",   hal::FrameSize::SVGA,   800,  600},
+    {"XGA",    hal::FrameSize::XGA,   1024,  768},
+    {"HD",     hal::FrameSize::HD,    1280,  720},
+    {"UXGA",   hal::FrameSize::UXGA,  1600, 1200},
+    {nullptr,  hal::FrameSize::VGA,     0,    0},  // sentinel
 };
 
 /**
- * @brief Resolves a framesize enum value to pixel dimensions.
+ * @brief Resolves a HAL frame size to pixel dimensions.
  *
- * @param framesize Framesize enum value to look up.
+ * @param framesize Frame size to look up.
  * @param width     [out] Pixel width.
  * @param height    [out] Pixel height.
- * @return true if the framesize was found in the resolution table.
+ * @return true if the frame size was found in the resolution table.
  */
-bool resolve_dimensions(uint8_t framesize, uint16_t& width, uint16_t& height)
+bool resolve_dimensions(hal::FrameSize framesize, uint16_t& width, uint16_t& height)
 {
     for (const ResolutionEntry* entry = RESOLUTION_TABLE; entry->name != nullptr; ++entry)
     {
@@ -83,7 +73,7 @@ ResolvedCameraParams build_camera_config(
     LoggingService& log)
 {
     // Default: VGA
-    uint8_t framesize = FRAMESIZE_VGA;
+    hal::FrameSize framesize = hal::FrameSize::VGA;
     uint16_t width = 640;
     uint16_t height = 480;
     bool found = false;
@@ -120,7 +110,6 @@ ResolvedCameraParams build_camera_config(
     params.hal_config = hal_config;
     params.width = width;
     params.height = height;
-    params.framesize = framesize;
 
     return params;
 }
@@ -175,7 +164,6 @@ hal::CameraInitResult CameraController::init()
     if (m_initialized)
     {
         m_actual_params.hal_config = m_config;
-        m_actual_params.framesize = m_config.frame_size;
         resolve_dimensions(m_config.frame_size,
                            m_actual_params.width,
                            m_actual_params.height);
@@ -216,7 +204,6 @@ hal::CameraInitResult CameraController::init(const ResolvedCameraParams& params)
     if (m_initialized)
     {
         m_actual_params.hal_config = m_config;
-        m_actual_params.framesize = m_config.frame_size;
         if (!resolve_dimensions(m_config.frame_size,
                                 m_actual_params.width,
                                 m_actual_params.height))

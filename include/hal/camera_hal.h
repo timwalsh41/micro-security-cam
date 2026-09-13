@@ -38,18 +38,35 @@ struct CameraFrame
 };
 
 /**
+ * @brief HAL-owned camera frame size selection.
+ *
+ * Application-facing frame size vocabulary, ordered by ascending pixel
+ * dimensions so relational comparison expresses "larger than". The HAL
+ * interface is platform-agnostic; the concrete camera driver below the
+ * HAL owns the mapping from these entries to the platform's native
+ * frame-size enum.
+ */
+enum class FrameSize : uint8_t
+{
+    QQVGA,  ///< 160x120
+    QVGA,   ///< 320x240
+    VGA,    ///< 640x480
+    SVGA,   ///< 800x600
+    XGA,    ///< 1024x768
+    HD,     ///< 1280x720
+    UXGA,   ///< 1600x1200
+};
+
+/**
  * @brief Abstract hardware capability limits for camera operation.
  *
  * Returned by CameraHal::get_capabilities(). Describes what the
  * hardware can support regardless of the underlying reason
  * (PSRAM availability, DRAM limits, board revision, etc.).
  */
-/**
- * @brief Default capabilities for systems without PSRAM.
- */
 struct CameraCapabilities
 {
-    uint8_t max_framesize;          ///< Framesize enum (e.g. FRAMESIZE_SVGA = 9)
+    FrameSize max_framesize;        ///< Largest supported frame size
     uint8_t min_jpeg_quality;       ///< Minimum JPEG quality (0-63, lower = better)
     uint8_t max_fb_count;           ///< Maximum frame buffers
     uint8_t recommended_grab_mode;  ///< 0=WHEN_EMPTY, 1=LATEST
@@ -60,14 +77,14 @@ struct CameraCapabilities
 /** PSRAM-present capabilities: UXGA, quality 10, 2 bufs, LATEST grab. */
 constexpr CameraCapabilities PSRAM_CAPABILITIES
 {
-    13,   /* FRAMESIZE_UXGA */
+    FrameSize::UXGA,
     10, 2, 1, 1600, 1200
 };
 
 /** No-PSRAM capabilities: SVGA, quality 12, 1 buf, WHEN_EMPTY grab. */
 constexpr CameraCapabilities NO_PSRAM_CAPABILITIES
 {
-    9,    /* FRAMESIZE_SVGA */
+    FrameSize::SVGA,
     12, 1, 0, 800, 600
 };
 
@@ -84,8 +101,8 @@ struct CameraConfig
     /** JPEG quality (0-63, lower = higher quality). */
     uint8_t jpeg_quality{12};
 
-    /** Framesize enum value (e.g. FRAMESIZE_SVGA = 9). */
-    uint8_t frame_size{9};
+    /** Frame size selection. */
+    FrameSize frame_size{FrameSize::SVGA};
 
     /** Number of frame buffers. */
     uint8_t fb_count{1};

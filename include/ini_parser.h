@@ -89,8 +89,9 @@ struct ConfigData
      * @brief Video recording configuration.
      *
      * Resolution is stored as a string (e.g. "VGA", "HD") to keep
-     * ConfigData platform-independent. The VideoController maps the
-     * string to the platform-specific framesize_t enum at runtime.
+     * ConfigData platform-independent. The camera mapping layer
+     * translates the string to a hal::FrameSize and pixel dimensions
+     * at runtime.
      */
     struct VideoConfig
     {
