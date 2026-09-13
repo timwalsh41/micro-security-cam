@@ -15,12 +15,13 @@ import urllib.request
 # =============================================================
 # Connection settings — customise for your device
 # =============================================================
-HOST = "192.168.39.101"   # ESP32 IP address (STA or AP mode)
+DEFAULT_HOST = "192.168.39.101"   # ESP32 IP address (STA or AP mode)
 PORT = 80                 # Web server port (from config.ini [web] section)
 PASSWORD = "webpass"      # Web password (from config.ini [web] section).
                           # Set to "" if no password is configured.
 
 # =============================================================
+HOST = DEFAULT_HOST
 BASE_URL = f"http://{HOST}:{PORT}"
 
 
@@ -127,6 +128,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="ESP32 Security Camera CLI",
     )
+    parser.add_argument(
+        "--ip",
+        default=DEFAULT_HOST,
+        help=f"ESP32 IP address (default: {DEFAULT_HOST})",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("status", help="Get camera status")
@@ -153,6 +159,10 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    global HOST, BASE_URL
+    HOST = args.ip
+    BASE_URL = f"http://{HOST}:{PORT}"
 
     if args.command == "status":
         return _cmd_status()
