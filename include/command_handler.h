@@ -36,7 +36,7 @@ class CommandHandler
          * Sized to carry a full serialized configuration
          * (ConfigService::CONFIG_BUFFER_SIZE).
          */
-        static constexpr size_t MAX_RESPONSE_SIZE = 512;
+        static constexpr size_t MAX_RESPONSE_SIZE = 1024;
 
         explicit CommandHandler(LoggingService& log);
 

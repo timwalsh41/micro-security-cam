@@ -807,6 +807,53 @@ void test_get_config_returns_serialized_ini()
 }
 
 /**
+ * @brief GET_CONFIG returns full configs up to the storage buffer size.
+ *
+ * Regression: configs that serialize between the old 512-byte response
+ * limit and the 1024-byte storage limit failed with INTERNAL_ERROR even
+ * though CONFIG_SAVE accepted them.
+ */
+void test_get_config_returns_full_band_config()
+{
+    TestFixture f;
+
+    // Fill every string field to its maximum valid length so the
+    // serialized config lands in the 512–1023 byte band.
+    char long_value[CONFIG_FIELD_MAX_LENGTH];
+    memset(long_value, 'a', sizeof(long_value) - 1);
+    long_value[sizeof(long_value) - 1] = '\0';
+    f.config.set_config_value("wifi.ssid", long_value);
+    f.config.set_config_value("wifi.password", long_value);
+    f.config.set_config_value("wifi.static_ip", long_value);
+    f.config.set_config_value("wifi.gateway", long_value);
+    f.config.set_config_value("wifi.subnet_mask", long_value);
+    f.config.set_config_value("ap.password", long_value);
+    f.config.set_config_value("ap.ap_ip", long_value);
+    f.config.set_config_value("ap.ap_gateway", long_value);
+    f.config.set_config_value("ap.ap_subnet_mask", long_value);
+    f.config.set_config_value("web.password", long_value);
+
+    // Sanity: the config exceeds the old limit but fits the storage
+    // buffer (i.e. CONFIG_SAVE would accept it).
+    char expected[ConfigService::CONFIG_BUFFER_SIZE];
+    size_t serialized_len = f.config.serialize(expected, sizeof(expected));
+    TEST_ASSERT_GREATER_THAN(512, serialized_len);
+    TEST_ASSERT_LESS_THAN(ConfigService::CONFIG_BUFFER_SIZE, serialized_len);
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::GET_CONFIG, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_UINT32(serialized_len, response_len);
+    TEST_ASSERT_EQUAL_MEMORY(expected, response, serialized_len);
+}
+
+/**
  * @brief tick() does not crash.
  */
 void test_tick_does_not_crash()
@@ -1314,6 +1361,7 @@ int main()
     RUN_TEST(test_set_config_sd_unavailable_when_degraded);
     RUN_TEST(test_set_config_sd_write_failure_leaves_ram_config_intact);
     RUN_TEST(test_get_config_returns_serialized_ini);
+    RUN_TEST(test_get_config_returns_full_band_config);
     RUN_TEST(test_tick_does_not_crash);
     RUN_TEST(test_start_stream_delegates);
     RUN_TEST(test_stop_stream_delegates);
