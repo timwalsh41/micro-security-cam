@@ -116,12 +116,13 @@ CameraCapabilities CameraHalImpl::get_capabilities() const
     if (psramFound())
     {
         // PSRAM present: UXGA, quality 10, 2 buffers, LATEST grab
-        return {5, 10, 2, 1, 1600, 1200};
+        return {FRAMESIZE_UXGA, 10, 2, 1, 1600, 1200};
     }
     else
     {
         // No PSRAM: SVGA, quality 12, 1 buffer, WHEN_EMPTY grab
-        return {3, 12, 1, 0, 800, 600};
+        // (fb_location DRAM limits cap the frame size below UXGA)
+        return {FRAMESIZE_SVGA, 12, 1, 0, 800, 600};
     }
 }
 

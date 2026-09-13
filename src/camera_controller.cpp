@@ -1,6 +1,18 @@
 #include "camera_controller.h"
 #include <cstring>
 #include <strings.h>   // strcasecmp (POSIX)
+#include "esp_camera.h"
+
+// Pin the esp32-camera framesize_t enum values this module's resolution
+// table depends on. If the library enum ever changes, the build fails
+// loudly here instead of silently mis-mapping resolutions on the sensor.
+static_assert(FRAMESIZE_QQVGA == 1, "esp32-camera framesize_t drift");
+static_assert(FRAMESIZE_QVGA == 5, "esp32-camera framesize_t drift");
+static_assert(FRAMESIZE_VGA == 8, "esp32-camera framesize_t drift");
+static_assert(FRAMESIZE_SVGA == 9, "esp32-camera framesize_t drift");
+static_assert(FRAMESIZE_XGA == 10, "esp32-camera framesize_t drift");
+static_assert(FRAMESIZE_HD == 11, "esp32-camera framesize_t drift");
+static_assert(FRAMESIZE_UXGA == 13, "esp32-camera framesize_t drift");
 
 // ============================================================
 // Resolution mapping (build_camera_config)
@@ -28,14 +40,14 @@ struct ResolutionEntry
  */
 const ResolutionEntry RESOLUTION_TABLE[] =
 {
-    {"QQVGA",  0,  160,  120},  // FRAMESIZE_QQVGA
-    {"QVGA",   1,  320,  240},  // FRAMESIZE_QVGA
-    {"VGA",    2,  640,  480},  // FRAMESIZE_VGA
-    {"SVGA",   3,  800,  600},  // FRAMESIZE_SVGA
-    {"XGA",    4, 1024,  768},  // FRAMESIZE_XGA
-    {"HD",     6, 1280,  720},  // FRAMESIZE_HD
-    {"UXGA",   5, 1600, 1200},  // FRAMESIZE_UXGA
-    {nullptr,   0,    0,    0},  // sentinel
+    {"QQVGA",  FRAMESIZE_QQVGA,  160,  120},
+    {"QVGA",   FRAMESIZE_QVGA,   320,  240},
+    {"VGA",    FRAMESIZE_VGA,    640,  480},
+    {"SVGA",   FRAMESIZE_SVGA,   800,  600},
+    {"XGA",    FRAMESIZE_XGA,   1024,  768},
+    {"HD",     FRAMESIZE_HD,    1280,  720},
+    {"UXGA",   FRAMESIZE_UXGA,  1600, 1200},
+    {nullptr,               0,    0,    0},  // sentinel
 };
 
 /**
@@ -71,7 +83,7 @@ ResolvedCameraParams build_camera_config(
     LoggingService& log)
 {
     // Default: VGA
-    uint8_t framesize = 2;  // FRAMESIZE_VGA
+    uint8_t framesize = FRAMESIZE_VGA;
     uint16_t width = 640;
     uint16_t height = 480;
     bool found = false;

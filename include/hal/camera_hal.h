@@ -49,7 +49,7 @@ struct CameraFrame
  */
 struct CameraCapabilities
 {
-    uint8_t max_framesize;          ///< Framesize enum (e.g. FRAMESIZE_SVGA = 3)
+    uint8_t max_framesize;          ///< Framesize enum (e.g. FRAMESIZE_SVGA = 9)
     uint8_t min_jpeg_quality;       ///< Minimum JPEG quality (0-63, lower = better)
     uint8_t max_fb_count;           ///< Maximum frame buffers
     uint8_t recommended_grab_mode;  ///< 0=WHEN_EMPTY, 1=LATEST
@@ -58,10 +58,18 @@ struct CameraCapabilities
 };
 
 /** PSRAM-present capabilities: UXGA, quality 10, 2 bufs, LATEST grab. */
-constexpr CameraCapabilities PSRAM_CAPABILITIES{5, 10, 2, 1, 1600, 1200};
+constexpr CameraCapabilities PSRAM_CAPABILITIES
+{
+    13,   /* FRAMESIZE_UXGA */
+    10, 2, 1, 1600, 1200
+};
 
 /** No-PSRAM capabilities: SVGA, quality 12, 1 buf, WHEN_EMPTY grab. */
-constexpr CameraCapabilities NO_PSRAM_CAPABILITIES{3, 12, 1, 0, 800, 600};
+constexpr CameraCapabilities NO_PSRAM_CAPABILITIES
+{
+    9,    /* FRAMESIZE_SVGA */
+    12, 1, 0, 800, 600
+};
 
 /**
  * @brief Configuration parameters for camera initialization.
@@ -76,8 +84,8 @@ struct CameraConfig
     /** JPEG quality (0-63, lower = higher quality). */
     uint8_t jpeg_quality{12};
 
-    /** Frame size enum value (e.g. FRAMESIZE_SVGA = 3). */
-    uint8_t frame_size{3};
+    /** Framesize enum value (e.g. FRAMESIZE_SVGA = 9). */
+    uint8_t frame_size{9};
 
     /** Number of frame buffers. */
     uint8_t fb_count{1};

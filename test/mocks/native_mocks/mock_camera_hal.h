@@ -30,7 +30,7 @@ class MockCameraHal : public hal::CameraHal
         bool initialized_state{true};
 
         /** Value returned by get_capabilities(). */
-        hal::CameraCapabilities capabilities{3, 12, 1, 0, 800, 600};
+        hal::CameraCapabilities capabilities{hal::NO_PSRAM_CAPABILITIES};
 
         // ============================================================
         // Call tracking (inspect after calling the method)

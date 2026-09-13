@@ -178,7 +178,7 @@ class CameraController
         bool m_initialized{false};
         bool m_frame_acquired{false};
         hal::CameraFrame m_current_frame{nullptr, 0};
-        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 640, 480, 2};
+        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 640, 480, 8};  /* FRAMESIZE_VGA */
 };
 
 #endif // CAMERA_CONTROLLER_H
