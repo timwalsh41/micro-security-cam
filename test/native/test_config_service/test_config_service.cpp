@@ -655,6 +655,26 @@ void test_set_get_grab_mode_hex_round_trip()
 }
 
 /**
+ * @brief camera.rotation round-trips through get/set; only 0 and 180
+ *        are accepted.
+ */
+void test_set_get_rotation_round_trip()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    char value[CONFIG_FIELD_MAX_LENGTH];
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.rotation", "180"));
+    TEST_ASSERT_EQUAL_UINT16(180, svc.config().camera.rotation);
+    TEST_ASSERT_TRUE(svc.get_config_value("camera.rotation", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("180", value);
+
+    TEST_ASSERT_TRUE(svc.set_config_value("camera.rotation", "0"));
+    TEST_ASSERT_EQUAL_UINT16(0, svc.config().camera.rotation);
+}
+
+/**
  * @brief Out-of-range numeric values are rejected and leave the
  *        setting unchanged.
  */
@@ -690,6 +710,9 @@ void test_set_numeric_out_of_range_rejected()
 
     TEST_ASSERT_FALSE(svc.set_config_value("camera.grab_mode", "1ff"));
     TEST_ASSERT_EQUAL_HEX8(0xFF, svc.config().camera.grab_mode);
+
+    TEST_ASSERT_FALSE(svc.set_config_value("camera.rotation", "90"));
+    TEST_ASSERT_EQUAL_UINT16(0, svc.config().camera.rotation);
 }
 
 /**
@@ -811,6 +834,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_set_get_numeric_round_trip);
     RUN_TEST(test_set_get_bool_round_trip);
     RUN_TEST(test_set_get_grab_mode_hex_round_trip);
+    RUN_TEST(test_set_get_rotation_round_trip);
     RUN_TEST(test_set_numeric_out_of_range_rejected);
     RUN_TEST(test_set_numeric_unparseable_rejected);
     RUN_TEST(test_unknown_typed_key_rejected);

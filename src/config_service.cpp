@@ -191,6 +191,11 @@ bool read_typed_field(const ConfigData& cfg, const char* key,
         snprintf(value_out, max_len, "%02x", cfg.camera.grab_mode);
         return true;
     }
+    if (strcmp(key, "camera.rotation") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.camera.rotation);
+        return true;
+    }
     if (strcmp(key, "video.fps") == 0)
     {
         snprintf(value_out, max_len, "%u", cfg.video.fps);
@@ -272,6 +277,17 @@ bool write_typed_field(ConfigData& cfg, const char* key, const char* value)
             return false;
         }
         cfg.camera.grab_mode = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "camera.rotation") == 0)
+    {
+        // Only 0/180 are accepted; 90/270 are not supported.
+        if (!parse_uint_value(value, parsed) ||
+            (parsed != 0 && parsed != 180))
+        {
+            return false;
+        }
+        cfg.camera.rotation = static_cast<uint16_t>(parsed);
         return true;
     }
     if (strcmp(key, "video.fps") == 0)
