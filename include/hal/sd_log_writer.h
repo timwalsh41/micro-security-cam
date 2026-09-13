@@ -53,15 +53,15 @@ class SdLogWriter : public hal::LogBackend
         /**
          * @brief Constructs an SdLogWriter with the given dependencies.
          *
-         * @param sd_controller  Reference to SdController for SD I/O.
-         * @param time           Reference to TimeService for timestamps.
-         * @param min_level      Minimum log severity level to write.
-         * @param retention_days Number of days to retain old log files (default: 7).
+         * @param sd_controller     Reference to SdController for SD I/O.
+         * @param time              Reference to TimeService for timestamps.
+         * @param min_level         Minimum log severity level to write.
+         * @param sd_retention_days Number of days to retain old log files (default: 7).
          */
         explicit SdLogWriter(SdController& sd_controller,
                              TimeService& time,
                              hal::LogLevel min_level = hal::LogLevel::INFO,
-                             uint8_t retention_days = 7);
+                             uint8_t sd_retention_days = 7);
 
         /**
          * @brief Write a formatted log line to the internal buffer.
@@ -168,7 +168,7 @@ class SdLogWriter : public hal::LogBackend
          * @brief Delete old log files based on retention policy.
          *
          * Scans the log directory once and removes daily log files
-         * strictly older than (today - retention_days). Files dated
+         * strictly older than (today - sd_retention_days). Files dated
          * in 1970 derive from an unset wall clock and are never
          * expired.
          */

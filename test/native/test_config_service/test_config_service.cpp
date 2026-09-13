@@ -148,7 +148,7 @@ void test_load_logging_config()
         "serial_enabled=false\n"
         "serial_min_level=warning\n"
         "sd_min_level=error\n"
-        "retention_days=14\n";
+        "sd_retention_days=14\n";
 
     TEST_ASSERT_TRUE(svc.load(reinterpret_cast<const uint8_t*>(ini), strlen(ini)));
 
@@ -157,7 +157,7 @@ void test_load_logging_config()
     TEST_ASSERT_FALSE(cfg.logging.serial_enabled);
     TEST_ASSERT_EQUAL_STRING("warning", cfg.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING("error", cfg.logging.sd_min_level);
-    TEST_ASSERT_EQUAL_UINT8(14, cfg.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(14, cfg.logging.sd_retention_days);
 }
 
 /**

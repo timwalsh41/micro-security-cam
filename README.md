@@ -1,15 +1,18 @@
-# ESP32 Security Camera
+# Micro Security Camera
 
 A still photo and MJPEG video camera built on the Seeed XIAO ESP32S3 Sense. Provides video streaming, as well as JPEG images and MPEG video capture to a MicroSD card.
 
 Built with the Arduino framework and PlatformIO.
 
-## Hardware
+---
+
+## Nomiinal Hardware
 
 - **Board**: Seeed XIAO ESP32S3 Sense (with onboard camera and MicroSD card slot)
-- **Camera**: OV2640 module (included with the board)
+- **Camera**: OV2640 module
 - **Storage**: MicroSD card (FAT32 formatted)
-- **LED**: GPIO 21 (active LOW; shared with the SD card chip-select pin)
+
+---
 
 ## Project Structure
 
@@ -24,39 +27,53 @@ docs/             Additional documentation
 script/           Build helper scripts
 ```
 
+---
+
 ## Prerequisites
 
 - [PlatformIO CLI](https://docs.platformio.org/en/latest/core/installation.html)
-- Python 3 with [uv](https://docs.astral.sh/uv/)
-- Activate the PlatformIO environment before running commands, e.g.:
+  - Activate the PlatformIO environment before running commands, e.g.:
   ```bash
   source ~/.platformio/penv/bin/activate
   ```
+- Python 3 with [uv](https://docs.astral.sh/uv/)
+
+---
 
 ## Build & Flash
 
+Note that the `upload.sh` script will update the git hash referenced in the version tag, see `version.h`
+
 ```bash
 # Build firmware for the ESP32 target
-pio run -e seeed_xiao_esp32s3
+pio run -e seeed_xiao_esp32s3   # native command
+script/build.sh                 # helper script
 
 # Flash to the connected board
-pio run -e seeed_xiao_esp32s3 --target upload
+pio run -e seeed_xiao_esp32s3 --target upload    # native command
+script/upload.sh                                 # helper script
 
 # Open serial monitor
-pio device monitor
+pio device monitor     # native command
+script/monitor.sh      # helper script
 ```
+
+---
 
 ## Running Tests
 
 ```bash
 # Run all native unit tests (host machine, no hardware needed)
-pio test -e native
+pio test -e native    # native command
+script/test.sh        # helper script
 
 # Run a specific test suite
 pio test -e native -f native/test_camera_controller
 
 # Run hardware integration tests (requires board connected via USB)
-pio test -e seeed_xiao_esp32s3_test
+pio test -e seeed_xiao_esp32s3_test   # native command
+script/hw_test.sh                     # helper script
+script/hw_test_build.sh               # build hardware tests only
 ```
 
 ### End-to-end regression suite
@@ -151,21 +168,21 @@ A failed persistence write leaves the live RAM config intact, so the running con
 ```ini
 [wifi]
 ssid=MyNetwork
-password=MyPassword
+password=changeme
 static_ip=192.168.1.100
 gateway=192.168.1.1
 subnet_mask=255.255.255.0
 
 [ap]
 ssid=MicroCam
-password=FallbackPass
+password=changeme
 ap_ip=192.168.4.1
 ap_gateway=192.168.4.1
 ap_subnet_mask=255.255.255.0
 
 [web]
 port=80
-password=WebPass
+password=changeme
 max_streams=4
 
 [camera]
@@ -188,7 +205,7 @@ sd_enabled=after_set_time
 serial_enabled=true
 serial_min_level=info
 sd_min_level=info
-retention_days=7
+sd_retention_days=7
 ```
 
 ### Sections and Keys
@@ -223,17 +240,15 @@ retention_days=7
 | `[logging]` | `serial_enabled` | bool | `true` | Enable serial logging |
 | `[logging]` | `serial_min_level` | string | `info` | Minimum log level for serial output |
 | `[logging]` | `sd_min_level` | string | `info` | Minimum log level for SD card output |
-| `[logging]` | `retention_days` | integer | `7` | Number of days to retain SD log files (1–255) |
+| `[logging]` | `sd_retention_days` | integer | `7` | Number of days to retain SD log files (1–255) |
 
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
 
 Boolean keys accept `true` or `false` (case-insensitive); any other value is parsed as `false`.
 
-String keys like `sd_enabled` accept `true`, `false`, and `after_set_time` (case-insensitive).
-
 ## SD Card & Degraded Mode
 
-The SD card is optional at boot. If no card is present, or card initialization fails, the system still comes up fully in **streaming-only degraded mode**: camera, WiFi, web server, live streaming, and command dispatch all work; recording, photo capture, and SD card logging are unavailable (serial logging continues to work).
+The SD card is optional at boot. If no card is present, or card initialization fails, the system still comes up fully in **streaming-only degraded mode**: camera, WiFi, web server, live streaming, and command dispatch all work; recording, photo capture, file browsing, and SD card logging are unavailable (serial logging continues to work).
 
 In degraded mode:
 
@@ -402,6 +417,8 @@ Nominal recording capabilities for the OV2640 camera on the ESP32S3 board, per d
 | Stopping | Single pulse (500ms) | Clip boundary — old clip closing, new clip opening |
 | Idle | Photo capture pulse or off | Not recording video |
 
+---
+
 ## CLI Tool
 
 The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints. It shares its HTTP transport with the e2e suite ([`script/python/camclient.py`](script/python/camclient.py)). Connection settings come from the environment or flags only: pass `--ip` (or set `CAM_HOST`) for the device address and set `CAM_PASSWORD` for the web password — nothing is baked in. `version` and `reboot` fail soft with a clear message while the flashed firmware lacks those endpoints.
@@ -435,9 +452,13 @@ uv run script/python/camera_cli.py reboot
 
 Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.
 
+---
+
 ## Debugging
 
 The project supports on-chip debugging via the ESP32-S3 built-in USB-JTAG bridge. See [docs/DEBUGGING.md](docs/DEBUGGING.md) for the full GDB workflow and PlatformIO debug configuration.
+
+---
 
 ## VSCode IntelliSense for Tests
 
@@ -472,6 +493,8 @@ pio test -e native
 ```
 
 Since PlatformIO regularly rewrites the `c_cpp_properties.json` (e.g. on project changes, updates to `platformio.ini`, etc.), **the `fix_test_intellisense.sh` script must be re-run as needed** to ensure the configurations are up to date.
+
+---
 
 ## Documentation
 

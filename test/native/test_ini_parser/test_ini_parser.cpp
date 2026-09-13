@@ -663,7 +663,7 @@ void test_serialize_defaults()
     TEST_ASSERT_NOT_NULL(strstr(buf, "serial_enabled=true"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "serial_min_level=info"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "sd_min_level=info"));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "retention_days=7"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_retention_days=7"));
 
     // Verify static IP defaults (empty strings) are serialized
     TEST_ASSERT_NOT_NULL(strstr(buf, "static_ip="));
@@ -682,13 +682,13 @@ void test_logging_all_keys()
         "serial_enabled=false\n"
         "serial_min_level=warning\n"
         "sd_min_level=error\n"
-        "retention_days=14\n";
+        "sd_retention_days=14\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
     TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, d.logging.sd_enabled);
     TEST_ASSERT_FALSE(d.logging.serial_enabled);
     TEST_ASSERT_EQUAL_STRING("warning", d.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING("error", d.logging.sd_min_level);
-    TEST_ASSERT_EQUAL_UINT8(14, d.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(14, d.logging.sd_retention_days);
 }
 
 /**
@@ -702,7 +702,7 @@ void test_logging_partial_keys_retain_defaults()
     TEST_ASSERT_TRUE(d.logging.serial_enabled);
     TEST_ASSERT_EQUAL_STRING("info", d.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING("info", d.logging.sd_min_level);
-    TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(7, d.logging.sd_retention_days);
 }
 
 /**
@@ -766,37 +766,37 @@ void test_logging_sd_enabled_case_insensitive()
 }
 
 /**
- * @brief parse() ignores retention_days below the valid range.
+ * @brief parse() ignores sd_retention_days below the valid range.
  */
 void test_logging_retention_days_zero_ignored()
 {
     const char* ini = "[logging]\nretention_days=0\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
-    TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(7, d.logging.sd_retention_days);
 }
 
 /**
- * @brief parse() ignores retention_days above the valid range.
+ * @brief parse() ignores sd_retention_days above the valid range.
  */
 void test_logging_retention_days_256_ignored()
 {
     const char* ini = "[logging]\nretention_days=256\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
-    TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(7, d.logging.sd_retention_days);
 }
 
 /**
- * @brief parse() accepts retention_days at both range boundaries.
+ * @brief parse() accepts sd_retention_days at both range boundaries.
  */
 void test_logging_retention_days_boundaries_accepted()
 {
-    const char* ini = "[logging]\nretention_days=1\n";
+    const char* ini = "[logging]\nsd_retention_days=1\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
-    TEST_ASSERT_EQUAL_UINT8(1, d.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(1, d.logging.sd_retention_days);
 
-    const char* ini_max = "[logging]\nretention_days=255\n";
+    const char* ini_max = "[logging]\nsd_retention_days=255\n";
     ConfigData d_max = IniParser::parse(ini_max, strlen(ini_max));
-    TEST_ASSERT_EQUAL_UINT8(255, d_max.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(255, d_max.logging.sd_retention_days);
 }
 
 /**
@@ -823,7 +823,7 @@ void test_serialize_non_default_values()
     d.logging.serial_enabled = false;
     strcpy(d.logging.serial_min_level, "warning");
     strcpy(d.logging.sd_min_level, "error");
-    d.logging.retention_days = 14;
+    d.logging.sd_retention_days = 14;
 
     char buf[1024];
     size_t written = IniParser::serialize(d, buf, sizeof(buf));
@@ -847,7 +847,7 @@ void test_serialize_non_default_values()
     TEST_ASSERT_NOT_NULL(strstr(buf, "serial_enabled=false"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "serial_min_level=warning"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "sd_min_level=error"));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "retention_days=14"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_retention_days=14"));
 }
 
 /**
@@ -878,8 +878,8 @@ void test_roundtrip_defaults()
                              parsed.video.max_file_size_mb);
     TEST_ASSERT_EQUAL_UINT8(original.video.jpeg_quality,
                             parsed.video.jpeg_quality);
-    TEST_ASSERT_EQUAL_UINT8(original.logging.retention_days,
-                            parsed.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(original.logging.sd_retention_days,
+                            parsed.logging.sd_retention_days);
 }
 
 /**
@@ -907,7 +907,7 @@ void test_roundtrip_custom_values()
     original.logging.serial_enabled = false;
     strcpy(original.logging.serial_min_level, "debug");
     strcpy(original.logging.sd_min_level, "warning");
-    original.logging.retention_days = 30;
+    original.logging.sd_retention_days = 30;
 
     char buf[1024];
     IniParser::serialize(original, buf, sizeof(buf));
@@ -940,8 +940,8 @@ void test_roundtrip_custom_values()
                              parsed.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING(original.logging.sd_min_level,
                              parsed.logging.sd_min_level);
-    TEST_ASSERT_EQUAL_UINT8(original.logging.retention_days,
-                            parsed.logging.retention_days);
+    TEST_ASSERT_EQUAL_UINT8(original.logging.sd_retention_days,
+                            parsed.logging.sd_retention_days);
 }
 
 /**

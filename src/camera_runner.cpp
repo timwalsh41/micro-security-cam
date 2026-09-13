@@ -153,7 +153,7 @@ public:
             m_sd_log_writer.reset(new SdLogWriter(
                 m_sd_controller, m_real_time,
                 log_level::parse(logging_config.sd_min_level),
-                logging_config.retention_days));
+                logging_config.sd_retention_days));
             if (logging_config.sd_enabled == SdEnabledMode::TRUE)
             {
                 attach_sd_log_sink();

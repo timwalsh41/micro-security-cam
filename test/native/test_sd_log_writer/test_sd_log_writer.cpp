@@ -27,9 +27,9 @@ struct SdLogWriterFixture
 
     SdLogWriterFixture(
         hal::LogLevel min_level = hal::LogLevel::INFO,
-        uint8_t retention_days = 7)
+        uint8_t sd_retention_days = 7)
         : sd_controller(real_time, sd_hal)
-        , writer(sd_controller, real_time, min_level, retention_days)
+        , writer(sd_controller, real_time, min_level, sd_retention_days)
     {
         sd_hal.init_result = hal::SdInitResult::SUCCESS;
         sd_controller.init_card();

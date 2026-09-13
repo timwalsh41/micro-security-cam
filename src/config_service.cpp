@@ -248,9 +248,9 @@ bool read_typed_field(const ConfigData& cfg, const char* key,
         snprintf(value_out, max_len, "%s", cfg.logging.serial_enabled ? "true" : "false");
         return true;
     }
-    if (strcmp(key, "logging.retention_days") == 0)
+    if (strcmp(key, "logging.sd_retention_days") == 0)
     {
-        snprintf(value_out, max_len, "%u", cfg.logging.retention_days);
+        snprintf(value_out, max_len, "%u", cfg.logging.sd_retention_days);
         return true;
     }
     return false;
@@ -400,14 +400,14 @@ bool write_typed_field(ConfigData& cfg, const char* key, const char* value)
         cfg.logging.serial_enabled = parsed_bool;
         return true;
     }
-    if (strcmp(key, "logging.retention_days") == 0)
+    if (strcmp(key, "logging.sd_retention_days") == 0)
     {
         if (!parse_uint_value(value, parsed) ||
             parsed < 1 || parsed > 255)
         {
             return false;
         }
-        cfg.logging.retention_days = static_cast<uint8_t>(parsed);
+        cfg.logging.sd_retention_days = static_cast<uint8_t>(parsed);
         return true;
     }
     return false;

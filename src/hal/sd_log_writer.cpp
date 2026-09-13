@@ -16,11 +16,11 @@ constexpr char SdLogWriter::LOG_DIR[];
 SdLogWriter::SdLogWriter(SdController& sd_controller,
                          TimeService& time,
                          hal::LogLevel min_level,
-                         uint8_t retention_days)
+                         uint8_t sd_retention_days)
     : m_sd_controller(sd_controller)
     , m_time(time)
     , m_min_level(min_level)
-    , m_retention_days(retention_days)
+    , m_retention_days(sd_retention_days)
     , m_buffer_pos(0)
 {
     // Initialize the current date to an empty string
@@ -160,7 +160,7 @@ void SdLogWriter::check_rotate()
 void SdLogWriter::delete_old_logs()
 {
     // Compute the cutoff date: daily log files strictly older than
-    // (today - retention_days) are expired.
+    // (today - sd_retention_days) are expired.
     time_t today = static_cast<time_t>(m_time.unix_now());
     time_t cutoff = today - (static_cast<time_t>(m_retention_days) * 86400);
     struct tm cutoff_utc;

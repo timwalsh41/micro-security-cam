@@ -400,12 +400,12 @@ ConfigData IniParser::parse_into(ConfigData config,
                     {
                         get_string_val(val_start, val_len, config.logging.sd_min_level, CONFIG_FIELD_MAX_LENGTH);
                     }
-                    else if (key_match(key_start, key_len, "retention_days"))
+                    else if (key_match(key_start, key_len, "sd_retention_days"))
                     {
                         uint32_t parsed = get_uint_val(val_start, val_len);
                         if (parsed >= 1 && parsed <= 255)
                         {
-                            config.logging.retention_days = static_cast<uint8_t>(parsed);
+                            config.logging.sd_retention_days = static_cast<uint8_t>(parsed);
                         }
                     }
                     break;
@@ -555,8 +555,8 @@ size_t IniParser::serialize(const ConfigData& data,
     write("sd_min_level=");
     write(data.logging.sd_min_level);
     write("\n");
-    snprintf(num_buf, sizeof(num_buf), "%u", data.logging.retention_days);
-    write("retention_days=");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.logging.sd_retention_days);
+    write("sd_retention_days=");
     write(num_buf);
     write("\n");
 

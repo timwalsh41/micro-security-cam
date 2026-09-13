@@ -131,7 +131,7 @@ struct ConfigData
         bool serial_enabled{true};
         char serial_min_level[CONFIG_FIELD_MAX_LENGTH]{"info"};
         char sd_min_level[CONFIG_FIELD_MAX_LENGTH]{"info"};
-        uint8_t retention_days{7};
+        uint8_t sd_retention_days{7};
     };
 
     LoggingConfig logging;
