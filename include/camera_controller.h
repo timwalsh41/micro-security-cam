@@ -26,19 +26,23 @@ struct CameraImageConfig
  * that downstream consumers (VideoController, AviWriter) should use.
  * The final clamped values after init() are available via
  * CameraController::get_params().
+ *
+ * The pixel dimensions are kept alongside hal_config.frame_size because
+ * AVI container headers and clip filenames need concrete width/height,
+ * and those consumers must not depend on the resolution-mapping table
+ * to derive them from the enum.
  */
 struct ResolvedCameraParams
 {
     hal::CameraConfig hal_config;  ///< Desired HAL config (pre-clamping)
     uint16_t width;                ///< Pixel width from resolution mapping
     uint16_t height;               ///< Pixel height from resolution mapping
-    uint8_t framesize;             ///< Maps to ESP32 framesize_t enum value
 };
 
 /**
  * @brief Translates user-facing CameraImageConfig to desired camera parameters.
  *
- * Maps resolution string to framesize_t enum + pixel dimensions.
+ * Maps resolution string to hal::FrameSize enum + pixel dimensions.
  * This is a pure mapping function — hardware capability clamping
  * (PSRAM guards, etc.) is handled by CameraController::init()
  * via HAL-provided CameraCapabilities.
@@ -166,7 +170,7 @@ class CameraController
          *
          * Contains the clamped HAL config and resolved pixel dimensions.
          * Only valid after a successful init() call. Before init(),
-         * returns default (VGA) values.
+         * returns default (SVGA) values.
          *
          * @return Const reference to the actual applied parameters.
          */
@@ -178,7 +182,7 @@ class CameraController
         bool m_initialized{false};
         bool m_frame_acquired{false};
         hal::CameraFrame m_current_frame{nullptr, 0};
-        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 640, 480, 2};
+        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 800, 600};
 };
 
 #endif // CAMERA_CONTROLLER_H

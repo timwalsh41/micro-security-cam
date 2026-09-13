@@ -980,36 +980,43 @@ void test_build_camera_config_known_names()
 
     user_config.resolution = "VGA";
     auto vga = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::VGA, vga.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(640, vga.width);
     TEST_ASSERT_EQUAL_UINT16(480, vga.height);
 
     user_config.resolution = "HD";
     auto hd = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::HD, hd.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(1280, hd.width);
     TEST_ASSERT_EQUAL_UINT16(720, hd.height);
 
     user_config.resolution = "QVGA";
     auto qvga = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::QVGA, qvga.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(320, qvga.width);
     TEST_ASSERT_EQUAL_UINT16(240, qvga.height);
 
     user_config.resolution = "QQVGA";
     auto qqvga = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::QQVGA, qqvga.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(160, qqvga.width);
     TEST_ASSERT_EQUAL_UINT16(120, qqvga.height);
 
     user_config.resolution = "SVGA";
     auto svga = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::SVGA, svga.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(800, svga.width);
     TEST_ASSERT_EQUAL_UINT16(600, svga.height);
 
     user_config.resolution = "XGA";
     auto xga = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::XGA, xga.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(1024, xga.width);
     TEST_ASSERT_EQUAL_UINT16(768, xga.height);
 
     user_config.resolution = "UXGA";
     auto uxga = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::UXGA, uxga.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(1600, uxga.width);
     TEST_ASSERT_EQUAL_UINT16(1200, uxga.height);
 }
@@ -1023,6 +1030,7 @@ void test_build_camera_config_unknown_defaults_to_vga()
     user_config.resolution = "UNKNOWN";
     user_config.jpeg_quality = 10;
     auto res = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::VGA, res.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(640, res.width);
     TEST_ASSERT_EQUAL_UINT16(480, res.height);
 }
@@ -1037,6 +1045,7 @@ void test_build_camera_config_returns_requested_dims()
     user_config.resolution = "UXGA";
     user_config.jpeg_quality = 10;
     auto params = build_camera_config(user_config, cam_logger);
+    TEST_ASSERT_EQUAL(hal::FrameSize::UXGA, params.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(1600, params.width);
     TEST_ASSERT_EQUAL_UINT16(1200, params.height);
 }

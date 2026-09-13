@@ -3,6 +3,7 @@
 #include "mock_camera_hal.h"
 #include "mock_log_backend.h"
 #include "time_service.h"
+#include <cstdio>
 
 // ============================================================
 // IDLE state — pre-init
@@ -109,11 +110,11 @@ void test_init_passes_custom_config()
 {
     MockCameraHal hal;
     // Set permissive capabilities so custom values pass through clamping
-    hal.capabilities = {8, 6, 4, 0, 1600, 1200};
+    hal.capabilities = {hal::FrameSize::UXGA, 6, 4, 0, 1600, 1200};
 
     hal::CameraConfig config;
     config.jpeg_quality = 8;
-    config.frame_size = 2;  // FRAMESIZE_VGA
+    config.frame_size = hal::FrameSize::VGA;
     config.fb_count = 2;
     CameraController ctrl(hal, config);
 
@@ -122,7 +123,7 @@ void test_init_passes_custom_config()
 
     TEST_ASSERT_EQUAL_INT(1, hal.init_call_count);
     TEST_ASSERT_EQUAL_UINT8(8, hal.last_init_config.jpeg_quality);
-    TEST_ASSERT_EQUAL_UINT8(2, hal.last_init_config.frame_size);
+    TEST_ASSERT_EQUAL(hal::FrameSize::VGA, hal.last_init_config.frame_size);
     TEST_ASSERT_EQUAL_UINT8(2, hal.last_init_config.fb_count);
 }
 
@@ -136,17 +137,17 @@ void test_init_passes_custom_config()
 void test_init_clamps_framesize()
 {
     MockCameraHal hal;
-    // Conservative capabilities: max SVGA (3)
-    hal.capabilities = {3, 1, 4, 0, 800, 600};
+    // Conservative capabilities: max SVGA
+    hal.capabilities = {hal::FrameSize::SVGA, 1, 4, 0, 800, 600};
 
     hal::CameraConfig config;
-    config.frame_size = 5;  // UXGA — exceeds max_framesize=3
+    config.frame_size = hal::FrameSize::UXGA;  // exceeds max_framesize = SVGA
     CameraController ctrl(hal, config);
 
     hal.init_result = hal::CameraInitResult::SUCCESS;
     ctrl.init();
 
-    TEST_ASSERT_EQUAL_UINT8(3, hal.last_init_config.frame_size);
+    TEST_ASSERT_EQUAL(hal::FrameSize::SVGA, hal.last_init_config.frame_size);
 }
 
 /**
@@ -156,7 +157,7 @@ void test_init_clamps_quality()
 {
     MockCameraHal hal;
     // Conservative capabilities: min quality 12
-    hal.capabilities = {5, 12, 2, 0, 1600, 1200};
+    hal.capabilities = {hal::FrameSize::QVGA, 12, 2, 0, 1600, 1200};
 
     hal::CameraConfig config;
     config.jpeg_quality = 5;  // Better (lower) than min_jpeg_quality=12
@@ -174,7 +175,7 @@ void test_init_clamps_quality()
 void test_init_clamps_fb_count()
 {
     MockCameraHal hal;
-    hal.capabilities = {5, 1, 1, 0, 1600, 1200};
+    hal.capabilities = {hal::FrameSize::UXGA, 1, 1, 0, 1600, 1200};
 
     hal::CameraConfig config;
     config.fb_count = 4;  // exceeds max_fb_count=1
@@ -199,8 +200,9 @@ void test_get_params_before_init()
     CameraController ctrl(hal);
 
     const ResolvedCameraParams& params = ctrl.get_params();
-    TEST_ASSERT_EQUAL_UINT16(640, params.width);
-    TEST_ASSERT_EQUAL_UINT16(480, params.height);
+    TEST_ASSERT_EQUAL(hal::FrameSize::SVGA, params.hal_config.frame_size);
+    TEST_ASSERT_EQUAL_UINT16(800, params.width);
+    TEST_ASSERT_EQUAL_UINT16(600, params.height);
 }
 
 /**
@@ -210,17 +212,17 @@ void test_get_params_after_init()
 {
     MockCameraHal hal;
     // Conservative: SVGA (800x600) max
-    hal.capabilities = {3, 12, 1, 0, 800, 600};
+    hal.capabilities = {hal::FrameSize::SVGA, 12, 1, 0, 800, 600};
 
     hal::CameraConfig config;
-    config.frame_size = 5;        // UXGA (1600x1200) — will be clamped to SVGA
+    config.frame_size = hal::FrameSize::UXGA;  // 1600x1200 — will be clamped to SVGA
     CameraController ctrl(hal, config);
 
     hal.init_result = hal::CameraInitResult::SUCCESS;
     ctrl.init();
 
     const ResolvedCameraParams& params = ctrl.get_params();
-    TEST_ASSERT_EQUAL_UINT8(3, params.framesize);
+    TEST_ASSERT_EQUAL(hal::FrameSize::SVGA, params.hal_config.frame_size);
     TEST_ASSERT_EQUAL_UINT16(800, params.width);
     TEST_ASSERT_EQUAL_UINT16(600, params.height);
 }
@@ -528,6 +530,95 @@ void test_init_unsupported_rotation_270_clamped_to_zero()
 }
 
 // ============================================================
+// Resolution mapping regression (hal::FrameSize contract)
+// ============================================================
+
+/**
+ * @brief Each config string maps to the correct hal::FrameSize and dimensions.
+ */
+void test_build_camera_config_framesize_mapping()
+{
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService log{log_backend, time};
+
+    struct Mapping
+    {
+        const char* name;
+        hal::FrameSize framesize;
+        uint16_t width;
+        uint16_t height;
+    };
+
+    const Mapping MAPPINGS[] =
+    {
+        {"QQVGA",  hal::FrameSize::QQVGA,  160,  120},
+        {"QVGA",   hal::FrameSize::QVGA,   320,  240},
+        {"VGA",    hal::FrameSize::VGA,    640,  480},
+        {"SVGA",   hal::FrameSize::SVGA,   800,  600},
+        {"XGA",    hal::FrameSize::XGA,   1024,  768},
+        {"HD",     hal::FrameSize::HD,    1280,  720},
+        {"UXGA",   hal::FrameSize::UXGA,  1600, 1200},
+    };
+
+    for (const Mapping& m : MAPPINGS)
+    {
+        CameraImageConfig user_config;
+        user_config.resolution = m.name;
+        user_config.jpeg_quality = 10;
+
+        auto params = build_camera_config(user_config, log);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "resolution %s", m.name);
+        TEST_ASSERT_EQUAL_MESSAGE(m.framesize, params.hal_config.frame_size, msg);
+        TEST_ASSERT_EQUAL_UINT16_MESSAGE(m.width, params.width, msg);
+        TEST_ASSERT_EQUAL_UINT16_MESSAGE(m.height, params.height, msg);
+    }
+}
+
+/**
+ * @brief Unknown resolution defaults to VGA (hal::FrameSize::VGA, 640x480).
+ */
+void test_build_camera_config_unknown_defaults_to_vga_framesize()
+{
+    MockLogBackend log_backend;
+    RealTimeService time;
+    LoggingService log{log_backend, time};
+
+    CameraImageConfig user_config;
+    user_config.resolution = "UNKNOWN";
+
+    auto params = build_camera_config(user_config, log);
+    TEST_ASSERT_EQUAL(hal::FrameSize::VGA, params.hal_config.frame_size);
+    TEST_ASSERT_EQUAL_UINT16(640, params.width);
+    TEST_ASSERT_EQUAL_UINT16(480, params.height);
+}
+
+/**
+ * @brief With PSRAM capabilities (max_framesize = UXGA), an HD config
+ *        must NOT be clamped (HD <= UXGA).
+ */
+void test_psram_capabilities_do_not_clamp_hd()
+{
+    MockCameraHal hal;
+    hal.capabilities = hal::PSRAM_CAPABILITIES;
+
+    hal::CameraConfig config;
+    config.frame_size = hal::FrameSize::HD;
+    CameraController ctrl(hal, config);
+
+    hal.init_result = hal::CameraInitResult::SUCCESS;
+    ctrl.init();
+
+    TEST_ASSERT_EQUAL(hal::FrameSize::HD, hal.last_init_config.frame_size);
+
+    const ResolvedCameraParams& params = ctrl.get_params();
+    TEST_ASSERT_EQUAL(hal::FrameSize::HD, params.hal_config.frame_size);
+    TEST_ASSERT_EQUAL_UINT16(1280, params.width);
+    TEST_ASSERT_EQUAL_UINT16(720, params.height);
+}
+
+// ============================================================
 // Full lifecycle
 // ============================================================
 
@@ -617,6 +708,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_init_rotation_0_passed_to_hal);
     RUN_TEST(test_init_unsupported_rotation_90_clamped_to_zero);
     RUN_TEST(test_init_unsupported_rotation_270_clamped_to_zero);
+
+    // resolution mapping regression
+    RUN_TEST(test_build_camera_config_framesize_mapping);
+    RUN_TEST(test_build_camera_config_unknown_defaults_to_vga_framesize);
+    RUN_TEST(test_psram_capabilities_do_not_clamp_hd);
 
     // Full lifecycle
     RUN_TEST(test_full_lifecycle);

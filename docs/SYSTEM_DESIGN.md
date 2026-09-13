@@ -220,7 +220,7 @@ package "HAL value types" {
     }
 
     class CameraCapabilities <<struct>> {
-        +max_framesize : uint8_t
+        +max_framesize : FrameSize
         +min_jpeg_quality : uint8_t
         +max_fb_count : uint8_t
         +max_width : uint16_t
@@ -229,10 +229,20 @@ package "HAL value types" {
 
     class CameraConfig <<struct>> {
         +jpeg_quality : uint8_t
-        +frame_size : uint8_t
+        +frame_size : FrameSize
         +fb_count : uint8_t
         +grab_mode : uint8_t
         +rotation : uint16_t
+    }
+
+    class FrameSize <<enumeration>> {
+        QQVGA
+        QVGA
+        VGA
+        SVGA
+        XGA
+        HD
+        UXGA
     }
 }
 
@@ -769,7 +779,6 @@ package "Configuration / camera data structures" {
         +hal_config : CameraConfig
         +width : uint16_t
         +height : uint16_t
-        +framesize : uint8_t
     }
 }
 
@@ -1509,17 +1518,19 @@ Two `init()` overloads are available:
 
 ### Resolution Mapping
 
-The free function `build_camera_config()` (`include/camera_controller.h`) provides the authoritative resolution mapping, replacing the former `VideoController::map_resolution()`:
+The HAL owns the application-facing frame-size vocabulary `hal::FrameSize` (`include/hal/camera_hal.h`); application code works only with that enum and pixel dimensions, never with the platform's native frame-size values. The free function `build_camera_config()` (`include/camera_controller.h`) provides the authoritative config-string resolution mapping:
 
-| Config String | `framesize_t` | Resolution |
-|--------------|---------------|------------|
-| `QQVGA` | `FRAMESIZE_QQVGA` | 160×120 |
-| `QVGA` | `FRAMESIZE_QVGA` | 320×240 |
-| `VGA` | `FRAMESIZE_VGA` | 640×480 |
-| `SVGA` | `FRAMESIZE_SVGA` | 800×600 |
-| `XGA` | `FRAMESIZE_XGA` | 1024×768 |
-| `HD` | `FRAMESIZE_HD` | 1280×720 |
-| `UXGA` | `FRAMESIZE_UXGA` | 1600×1200 |
+| Config String | `hal::FrameSize` | Resolution |
+|--------------|-------------------|------------|
+| `QQVGA` | `FrameSize::QQVGA` | 160×120 |
+| `QVGA` | `FrameSize::QVGA` | 320×240 |
+| `VGA` | `FrameSize::VGA` | 640×480 |
+| `SVGA` | `FrameSize::SVGA` | 800×600 |
+| `XGA` | `FrameSize::XGA` | 1024×768 |
+| `HD` | `FrameSize::HD` | 1280×720 |
+| `UXGA` | `FrameSize::UXGA` | 1600×1200 |
+
+The ESP32 camera driver (`CameraHalImpl`, below the HAL) owns the mapping from `hal::FrameSize` to the esp32-camera `framesize_t` enum via named `FRAMESIZE_*` constants, keeping all platform-specific frame-size knowledge in the driver implementation. Capability presets (`PSRAM_CAPABILITIES`, `NO_PSRAM_CAPABILITIES`) are typed with `hal::FrameSize`, so capability clamping compares enum values directly.
 
 Capabilities-based clamping: `CameraController::init()` queries `CameraHal::get_capabilities()` and clamps the requested frame size, JPEG quality, and frame buffer count against the hardware's capabilities before calling HAL init. This keeps PSRAM-aware decision-making in the HAL layer.
 

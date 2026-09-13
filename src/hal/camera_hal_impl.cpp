@@ -3,6 +3,40 @@
 #include "camera_pins.h"
 #include "esp_camera.h"
 
+namespace
+{
+
+/**
+ * @brief Maps a HAL frame size to the corresponding esp32-camera
+ *        framesize_t value.
+ *
+ * This is the single place where the HAL-owned FrameSize vocabulary is
+ * linked to the platform's native frame-size enum; it uses the named
+ * FRAMESIZE_* constants from esp32-camera, so it self-corrects against
+ * the library enum.
+ *
+ * @param frame_size HAL frame size selection.
+ * @return The esp32-camera framesize_t value for that selection; falls
+ *         back to FRAMESIZE_VGA for an unhandled value (unreachable for
+ *         values clamped by the camera controller).
+ */
+framesize_t to_esp_framesize(hal::FrameSize frame_size)
+{
+    switch (frame_size)
+    {
+        case hal::FrameSize::QQVGA: return FRAMESIZE_QQVGA;
+        case hal::FrameSize::QVGA:  return FRAMESIZE_QVGA;
+        case hal::FrameSize::VGA:   return FRAMESIZE_VGA;
+        case hal::FrameSize::SVGA:  return FRAMESIZE_SVGA;
+        case hal::FrameSize::XGA:   return FRAMESIZE_XGA;
+        case hal::FrameSize::HD:    return FRAMESIZE_HD;
+        case hal::FrameSize::UXGA:  return FRAMESIZE_UXGA;
+        default:                    return FRAMESIZE_VGA;
+    }
+}
+
+} // anonymous namespace
+
 namespace hal
 {
 
@@ -28,7 +62,7 @@ CameraInitResult CameraHalImpl::init(const CameraConfig& cam_config)
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
-    config.frame_size = static_cast<framesize_t>(cam_config.frame_size);
+    config.frame_size = to_esp_framesize(cam_config.frame_size);
     config.pixel_format = PIXFORMAT_JPEG;
     config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
     config.jpeg_quality = cam_config.jpeg_quality;
@@ -115,13 +149,11 @@ CameraCapabilities CameraHalImpl::get_capabilities() const
 {
     if (psramFound())
     {
-        // PSRAM present: UXGA, quality 10, 2 buffers, LATEST grab
-        return {5, 10, 2, 1, 1600, 1200};
+        return PSRAM_CAPABILITIES;
     }
     else
     {
-        // No PSRAM: SVGA, quality 12, 1 buffer, WHEN_EMPTY grab
-        return {3, 12, 1, 0, 800, 600};
+        return NO_PSRAM_CAPABILITIES;
     }
 }
 
