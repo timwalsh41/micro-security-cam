@@ -200,8 +200,9 @@ void test_get_params_before_init()
     CameraController ctrl(hal);
 
     const ResolvedCameraParams& params = ctrl.get_params();
-    TEST_ASSERT_EQUAL_UINT16(640, params.width);
-    TEST_ASSERT_EQUAL_UINT16(480, params.height);
+    TEST_ASSERT_EQUAL(hal::FrameSize::SVGA, params.hal_config.frame_size);
+    TEST_ASSERT_EQUAL_UINT16(800, params.width);
+    TEST_ASSERT_EQUAL_UINT16(600, params.height);
 }
 
 /**

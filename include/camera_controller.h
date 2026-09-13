@@ -170,7 +170,7 @@ class CameraController
          *
          * Contains the clamped HAL config and resolved pixel dimensions.
          * Only valid after a successful init() call. Before init(),
-         * returns default (VGA) values.
+         * returns default (SVGA) values.
          *
          * @return Const reference to the actual applied parameters.
          */
@@ -182,7 +182,7 @@ class CameraController
         bool m_initialized{false};
         bool m_frame_acquired{false};
         hal::CameraFrame m_current_frame{nullptr, 0};
-        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 640, 480};
+        ResolvedCameraParams m_actual_params{hal::CameraConfig{}, 800, 600};
 };
 
 #endif // CAMERA_CONTROLLER_H
