@@ -29,16 +29,24 @@ class MockLogBackend : public hal::LogBackend
         /** All messages written, in order. */
         std::vector<std::string> messages;
 
+        /** The severity level of the most recent write call. */
+        hal::LogLevel last_level{hal::LogLevel::DEBUG};
+
+        /** All severity levels written, in order. */
+        std::vector<hal::LogLevel> levels;
+
         // ============================================================
         // Interface implementation
         // ============================================================
 
-        void write(const char* line) override
+        void write(hal::LogLevel level, const char* line) override
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             write_call_count++;
+            last_level = level;
             last_message = std::string(line);
             messages.push_back(last_message);
+            levels.push_back(level);
         }
 
         /** Clears all captured state so the mock can be reused between tests. */
@@ -48,6 +56,8 @@ class MockLogBackend : public hal::LogBackend
             write_call_count = 0;
             last_message.clear();
             messages.clear();
+            levels.clear();
+            last_level = hal::LogLevel::DEBUG;
         }
 
     private:

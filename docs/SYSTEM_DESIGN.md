@@ -107,6 +107,8 @@ package "HAL interfaces" as HAL_IF {
         +seek(pos : uint32_t) : bool
         +create_dir(path : const char*) : bool
         +exists(path : const char*) : bool
+        +remove(path : const char*) : bool
+        +list_dir(dir_path : const char*, callback : function) : bool
         +close()
         +is_initialized() : bool
     }
@@ -166,7 +168,8 @@ package "HAL interfaces" as HAL_IF {
     }
 
     interface LogBackend {
-        +write(line : const char*)
+        +write(level : LogLevel, line : const char*)
+        +tick()
     }
 }
 
@@ -221,6 +224,30 @@ package "ESP32 implementations" as HAL_IMPL {
 
     class SerialLogBackend {
         -m_serial : SerialHal&
+    }
+
+    class SdLogWriter {
+        -m_sd_controller : SdController&
+        -m_time : TimeService&
+        -m_min_level : LogLevel
+        -m_retention_days : uint8_t
+        -m_buffer : char[4096]
+        -m_buffer_pos : size_t
+        -m_current_date : char[9]
+        +write(level, line)
+        +tick()
+        +current_log_path() : const char*
+        +current_date() : const char*
+    }
+
+    class MultiLogBackend {
+        -m_backends : LogBackend*[4]
+        -m_min_levels : LogLevel[4]
+        -m_backend_count : size_t
+        +add_backend(backend, min_level) : bool
+        +write(level, line)
+        +tick()
+        +backend_count() : size_t
     }
 }
 
@@ -303,6 +330,12 @@ together {
 together {
     HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.SerialLogBackend
 }
+together {
+    HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.SdLogWriter
+}
+together {
+    HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.MultiLogBackend
+}
 
 CameraHalImpl -up-|> CameraHal
 SdCardHalImpl -up-|> SdCardHal
@@ -313,8 +346,13 @@ WebServerHalImpl -up-|> WebServerHal
 AsyncRequestRef .up.|> RequestRef
 AsyncJpegStreamResponse -up-|> AsyncWebServerResponse
 SerialLogBackend -up-|> LogBackend
+SdLogWriter -up-|> LogBackend
+MultiLogBackend -up-|> LogBackend
 
 SerialLogBackend - SerialHal : writes log lines
+SdLogWriter - SdController : buffered SD writes
+SdLogWriter - TimeService : day rotation timestamps
+MultiLogBackend -up- LogBackend : fans out to
 WebServerHalImpl - AsyncRequestRef : creates per request
 RequestRef - StreamFrameChannel : send_stream_response()
 AsyncJpegStreamResponse - StreamFrameChannel : pulls parts
@@ -349,7 +387,7 @@ package "Services" {
         -m_offset_pair : atomic<uint64_t>
     }
 
-    enum LogLevel {
+    enum LogLevel <<hal>> {
         DEBUG
         INFO
         WARNING
@@ -401,6 +439,8 @@ package "Services" {
         +write_at_sync(path, offset, data, len) : bool
         +create_dir_sync(path) : bool
         +exists_sync(path) : bool
+        +remove_sync(path) : bool
+        +list_dir_sync(dir_path, callback) : bool
     }
 
     interface IStreamService {
@@ -1089,13 +1129,47 @@ The `/stream` endpoint requires streaming mode to be explicitly active (an expli
 
 **File**: `include/logging_service.h`
 
-Syslog-style structured logging with timestamp, subsystem name, and severity level. Output format:
+Syslog-style structured logging with wall-clock time, uptime, subsystem name, and severity level. Output format:
 
 ```
-[00001234] [CAMERA] [INFO ] Photo saved successfully
+[2024-01-15 14:30:00] [00001234] [CAMERA] [INFO ] Photo saved successfully
 ```
 
-Provides convenience methods (`debug()`, `info()`, `warn()`, `error()`) with printf-style variadic formatting. Delegates output to a pluggable `LogBackend`.
+The wall-clock time is in UTC. The `LogLevel` enum is defined in the `hal` namespace (`hal::LogLevel`) for use by both `LogBackend` implementations and the `LoggingService`. A backward-compatible `using LogLevel = hal::LogLevel` alias is provided.
+
+Provides convenience methods (`debug()`, `info()`, `warn()`, `error()`) with printf-style variadic formatting. Delegates output to a pluggable `LogBackend` with level-aware filtering.
+
+### LogBackend Interface
+
+**File**: `include/hal/log_backend.h`
+
+Abstract interface for log output destinations. The interface is level-aware: `write(hal::LogLevel level, const char* line)` receives both the severity level and the formatted log line. Backends filter by their configured minimum level. A `tick()` method with a default no-op implementation allows buffered backends to flush data periodically.
+
+### MultiLogBackend
+
+**Files**: `include/hal/multi_log_backend.h`, `src/hal/multi_log_backend.cpp`
+
+Composite `LogBackend` that fans out log lines to up to 4 child backends, each with its own minimum severity level. This enables independent verbosity control per sink (e.g., serial vs SD card). The `tick()` method propagates to all registered backends, allowing buffered backends to flush.
+
+### SdLogWriter
+
+**Files**: `include/hal/sd_log_writer.h`, `src/hal/sd_log_writer.cpp`
+
+Buffered log writer for SD card storage. Implements `hal::LogBackend` to receive formatted log lines, buffers them in internal DRAM (4 KB buffer), and flushes to SD card on `tick()`. Supports daily log file rotation at UTC midnight and configurable retention of old log files.
+
+- **Log file location**: `/logs/YYYYMMDD.log` (dedicated directory, clean separation from media)
+- **Line format**: Same as serial output: `[YYYY-MM-DD HH:MM:SS] [uptime] [subsystem] [LEVEL ] message`
+- **Buffering**: Log lines are buffered in a 4 KB internal buffer. The buffer is flushed to SD when full or on each `tick()` call from the main loop.
+- **Day rotation**: When the day changes (detected by comparing current UTC date with stored date), the buffer is flushed and a new log file is started.
+- **Retention**: Old log files are deleted based on `retention_days` config setting (default: 7 days). Deletion happens at day rollover.
+
+**Memory overhead**: ~4 KB DRAM for the write buffer, plus ~100 bytes for object state.
+
+### SerialLogBackend
+
+**Files**: `include/hal/serial_log_backend.h`, `src/hal/serial_log_backend.cpp`
+
+Concrete `LogBackend` that writes log lines via a `SerialHal` interface. Lines are transmitted atomically (line + CRLF in a single UART write) to prevent interleaving with ESP-IDF UART0 writes from other cores.
 
 ---
 
@@ -1132,6 +1206,13 @@ resolution=VGA
 clip_duration_s=60
 max_file_size_mb=0
 jpeg_quality=10
+
+[logging]
+sd_enabled=true
+serial_enabled=true
+serial_min_level=info
+sd_min_level=info
+retention_days=7
 ```
 
 - Sections are denoted by `[name]`
@@ -1172,12 +1253,18 @@ struct ConfigData
                           uint8_t jpeg_quality;
                           bool audio_enabled{false};
                           uint8_t mic_gain{2}; };
+    struct LoggingConfig { bool sd_enabled{true};
+                           bool serial_enabled{true};
+                           char serial_min_level[64]{"info"};
+                           char sd_min_level[64]{"info"};
+                           uint8_t retention_days{7}; };
 
     WifiConfig wifi;
     ApConfig ap;
     WebConfig web;
     CameraConfig camera;
     VideoConfig video;
+    LoggingConfig logging;
 };
 ```
 
@@ -1227,7 +1314,7 @@ The composition root loads the config at boot in a fixed precedence order; each 
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `CONFIG_BUFFER_SIZE` | 1024 | Maximum buffer size for config reads and persistence validation |
+| `CONFIG_BUFFER_SIZE` | 1280 | Maximum buffer size for config reads and persistence validation |
 | `DEFAULT_CONFIG_PATH` | `/config.ini` | Path on SD card where config file is looked up |
 | `READ_TIMEOUT_MS` | 5000 | Timeout for SD card read operations |
 | `NVS_NAMESPACE` | `config` | NVS namespace holding the persisted config |

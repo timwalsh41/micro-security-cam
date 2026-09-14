@@ -273,3 +273,20 @@ bool SdController::write_at_sync(const char* path, uint32_t offset, const uint8_
     cs_deassert();
     return ok;
 }
+
+bool SdController::remove_sync(const char* path)
+{
+    cs_assert();
+    bool ok = m_sd_hal.remove(path);
+    cs_deassert();
+    return ok;
+}
+
+bool SdController::list_dir_sync(const char* dir_path,
+                                 std::function<bool(const char* entry)> callback)
+{
+    cs_assert();
+    bool ok = m_sd_hal.list_dir(dir_path, callback);
+    cs_deassert();
+    return ok;
+}

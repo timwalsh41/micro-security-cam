@@ -77,7 +77,7 @@ void test_default_config_path()
  */
 void test_config_buffer_size()
 {
-    TEST_ASSERT_EQUAL_UINT32(1024, ConfigService::CONFIG_BUFFER_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(1280, ConfigService::CONFIG_BUFFER_SIZE);
 }
 
 /**

@@ -4,6 +4,8 @@
 #include "hal/serial_hal_impl.h"
 #include "hal/serial_log_backend.h"
 #include "hal/sd_card_hal_impl.h"
+#include "hal/sd_log_writer.h"
+#include "hal/multi_log_backend.h"
 #include "hal/wifi_hal_impl.h"
 #include "hal/web_server_hal_impl.h"
 #include "hal/nvs_hal_impl.h"
@@ -43,8 +45,7 @@ namespace constants
 // --- HAL implementations ---
 RealTimeService real_time;
 hal::SerialHalImpl serial_hal{115200};
-hal::SerialLogBackend log_backend{serial_hal};
-LoggingService logger{log_backend, real_time};
+hal::SerialLogBackend serial_log_backend{serial_hal};
 hal::SdCardHalImpl sd_hal{hal::SD_CS_PIN};
 hal::CameraHalImpl camera_hal;
 hal::TimerHalImpl timer_hal;
@@ -55,6 +56,10 @@ SemaphoreHandle_t sd_active_mutex = nullptr;
 
 // --- Service-layer objects ---
 SdController sd_controller{real_time, sd_hal, cs_signal};
+// --- SD logging (must be after sd_controller) ---
+SdLogWriter sd_log_writer{sd_controller, real_time, hal::LogLevel::INFO, 7};
+MultiLogBackend multi_log_backend;
+LoggingService logger{multi_log_backend, real_time};
 LedStateMachine led_sm{real_time};
 CameraController camera_ctrl{camera_hal};
 CaptureSchedulerEsp32 capture_scheduler{timer_hal};
@@ -136,6 +141,10 @@ void setup()
 
     // Add delay for PlatformIO terminal to connect
     real_time.delay_ms(10000);
+
+    // --- Add serial backend to multi_log_backend early so log messages ---
+    // --- before SD init are captured by serial output.               ---
+    multi_log_backend.add_backend(&serial_log_backend, hal::LogLevel::INFO);
 
     logger.info("MAIN", "Starting initialization");
     
@@ -238,6 +247,19 @@ void setup()
     // --- Initialize web server ---
     web_server_service.init(config_service.config().web);
 
+    // --- Initialize SD logging (after SD card is ready) ---
+    if (sd_controller.is_card_available())
+    {
+        multi_log_backend.add_backend(&serial_log_backend, hal::LogLevel::INFO);
+        multi_log_backend.add_backend(&sd_log_writer, hal::LogLevel::INFO);
+        logger.info("MAIN", "SD logging ready");
+    }
+    else
+    {
+        multi_log_backend.add_backend(&serial_log_backend, hal::LogLevel::INFO);
+        logger.info("MAIN", "SD logging disabled: no card");
+    }
+
     logger.info("MAIN", "Initialization complete");
 }
 
@@ -260,6 +282,9 @@ void loop()
         last_log_heartbeat_time_ms = real_time.now();
         last_log_heartbeat_time_ms -= last_log_heartbeat_time_ms % constants::LOG_HEARTBEAT_TIME_MS;
     }
+
+    // --- Flush SD log buffer ---
+    multi_log_backend.tick();
 
     real_time.delay_us(constants::MAIN_LOOP_TIME_US);
 }

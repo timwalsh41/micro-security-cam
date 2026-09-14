@@ -104,6 +104,43 @@ bool SdCardHalImpl::exists(const char* path)
     return SD.exists(path);
 }
 
+bool SdCardHalImpl::remove(const char* path)
+{
+    return SD.remove(path);
+}
+
+bool SdCardHalImpl::list_dir(const char* dir_path,
+                            std::function<bool(const char* entry)> callback)
+{
+    File dir = SD.open(dir_path);
+    if (!dir || !dir.isDirectory())
+    {
+        if (dir)
+        {
+            dir.close();
+        }
+        return false;
+    }
+
+    File entry = dir.openNextFile();
+    while (entry)
+    {
+        const char* name = entry.name();
+        if (name != nullptr)
+        {
+            if (!callback(name))
+            {
+                break;
+            }
+        }
+        entry.close();
+        entry = dir.openNextFile();
+    }
+
+    dir.close();
+    return true;
+}
+
 bool SdCardHalImpl::is_initialized() const
 {
     return m_initialized;

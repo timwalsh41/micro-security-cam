@@ -272,6 +272,30 @@ class SdController
         bool exists_sync(const char* path);
 
         /**
+         * @brief Synchronous file removal: asserts CS, removes file, de-asserts CS.
+         *
+         * All SD I/O goes through this controller so the shared CS/LED pin
+         * remains properly arbitrated.
+         *
+         * @param path File path to remove.
+         * @return true if the file was removed (or did not exist), false on error.
+         */
+        bool remove_sync(const char* path);
+
+        /**
+         * @brief Synchronous directory listing: asserts CS, lists entries, de-asserts CS.
+         *
+         * All SD I/O goes through this controller so the shared CS/LED pin
+         * remains properly arbitrated.
+         *
+         * @param dir_path Directory path to list.
+         * @param callback Function called with each entry name.
+         * @return true if the directory was opened successfully, false otherwise.
+         */
+        bool list_dir_sync(const char* dir_path,
+                           std::function<bool(const char* entry)> callback);
+
+        /**
          * @brief Synchronous seek-and-write: asserts CS, opens, seeks, writes, closes.
          *
          * Used for overwriting the AVI header at position 0 after recording.

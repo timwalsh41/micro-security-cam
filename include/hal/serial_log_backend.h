@@ -42,9 +42,10 @@ class SerialLogBackend : public LogBackend
         /**
          * @brief Write a formatted log line via the SerialHal.
          *
-         * @param line The formatted log line to output. Null-terminated.
+         * @param level The severity level of the log message.
+         * @param line  The formatted log line to output. Null-terminated.
          */
-        void write(const char* line) override;
+        void write(hal::LogLevel level, const char* line) override;
 
     private:
         SerialHal& m_serial;

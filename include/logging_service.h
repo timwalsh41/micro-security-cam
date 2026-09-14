@@ -27,14 +27,10 @@
 
 /**
  * @brief Severity levels for log messages.
+ *
+ * Re-exported from hal::LogLevel for backward compatibility.
  */
-enum class LogLevel : uint8_t
-{
-    DEBUG,
-    INFO,
-    WARNING,
-    ERROR
-};
+using LogLevel = hal::LogLevel;
 
 /**
  * @class LoggingService
@@ -123,14 +119,17 @@ class LoggingService
         /**
          * @brief Format a complete log line into the output buffer.
          *
-         * @param out       Output string buffer.
-         * @param level     Severity level.
-         * @param subsystem Subsystem name.
-         * @param msg       Pre-formatted message body.
+         * @param out           Output string buffer.
+         * @param level         Severity level.
+         * @param subsystem     Subsystem name.
+         * @param msg           Pre-formatted message body.
+         * @param timestamp     Uptime in milliseconds.
+         * @param unix_seconds  Unix timestamp for wall-clock time (UTC).
          */
         static void format_line(String& out, LogLevel level,
                                 const char* subsystem, const char* msg,
-                                hal::millis_t timestamp);
+                                hal::millis_t timestamp,
+                                uint32_t unix_seconds);
 
         /**
          * @brief Get the string representation of a log level.

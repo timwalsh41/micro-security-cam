@@ -111,6 +111,20 @@ struct ConfigData
     WebConfig web;
     CameraConfig camera;
     VideoConfig video;
+
+    /**
+     * @brief Logging configuration.
+     */
+    struct LoggingConfig
+    {
+        bool sd_enabled{true};
+        bool serial_enabled{true};
+        char serial_min_level[CONFIG_FIELD_MAX_LENGTH]{"info"};
+        char sd_min_level[CONFIG_FIELD_MAX_LENGTH]{"info"};
+        uint8_t retention_days{7};
+    };
+
+    LoggingConfig logging;
 };
 
 /**
