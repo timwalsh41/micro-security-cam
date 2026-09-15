@@ -250,13 +250,11 @@ void setup()
     // --- Initialize SD logging (after SD card is ready) ---
     if (sd_controller.is_card_available())
     {
-        multi_log_backend.add_backend(&serial_log_backend, hal::LogLevel::INFO);
         multi_log_backend.add_backend(&sd_log_writer, hal::LogLevel::INFO);
         logger.info("MAIN", "SD logging ready");
     }
     else
     {
-        multi_log_backend.add_backend(&serial_log_backend, hal::LogLevel::INFO);
         logger.info("MAIN", "SD logging disabled: no card");
     }
 

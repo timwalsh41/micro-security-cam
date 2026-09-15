@@ -238,6 +238,93 @@ void test_log_dir_created_on_write()
     TEST_ASSERT_EQUAL_STRING("/logs", sd_hal.last_create_dir_path);
 }
 
+/**
+ * @brief A failed create_dir falls back to exists: the directory
+ *        persisting from a previous session still allows writes.
+ */
+void test_write_succeeds_when_dir_already_exists()
+{
+    // Simulate a reboot onto a card that already has /logs: mkdir
+    // reports failure, but the directory is present.
+    sd_hal.create_dir_result = false;
+    sd_hal.directories.insert("/logs");
+
+    SdLogWriterFixture f(hal::LogLevel::INFO);
+
+    f.writer.write(hal::LogLevel::INFO, "after reboot");
+    f.writer.tick();
+
+    std::string content = f.get_log_content("/logs/19700101.log");
+    TEST_ASSERT_TRUE(content.find("after reboot") != std::string::npos);
+}
+
+// ============================================================
+// Retention cleanup
+// ============================================================
+
+/**
+ * @brief Retention deletes only log files older than the cutoff,
+ *        leaving non-log entries and newer logs untouched.
+ */
+void test_retention_deletes_expired_logs()
+{
+    const uint8_t content_bytes[] = {'o', 'l', 'd'};
+    sd_hal.seed_file("/logs/19691220.log",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+    sd_hal.seed_file("/logs/19691231.log",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+    sd_hal.seed_file("/logs/readme.txt",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+
+    SdLogWriterFixture f(hal::LogLevel::INFO, 7);
+
+    // Epoch time is 19700101; cutoff is 19691225.
+    f.writer.write(hal::LogLevel::INFO, "today");
+    f.writer.tick();
+
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/19691220.log") ==
+                     sd_hal.files.end());
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/19691231.log") !=
+                     sd_hal.files.end());
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/readme.txt") !=
+                     sd_hal.files.end());
+
+    std::string content = f.get_log_content("/logs/19700101.log");
+    TEST_ASSERT_TRUE(content.find("today") != std::string::npos);
+}
+
+/**
+ * @brief Maximum retention does not wrap into deleting the current
+ *        day's log file.
+ */
+void test_retention_maximum_does_not_delete_current_log()
+{
+    const uint8_t content_bytes[] = {'o', 'l', 'd'};
+    sd_hal.seed_file("/logs/19690401.log",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+    sd_hal.seed_file("/logs/19690422.log",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+
+    SdLogWriterFixture f(hal::LogLevel::INFO, 255);
+
+    // Epoch time is 19700101; cutoff is 19690421.
+    f.writer.write(hal::LogLevel::INFO, "today");
+    f.writer.tick();
+
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/19690401.log") ==
+                     sd_hal.files.end());
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/19690422.log") !=
+                     sd_hal.files.end());
+
+    std::string content = f.get_log_content("/logs/19700101.log");
+    TEST_ASSERT_TRUE(content.find("today") != std::string::npos);
+}
+
 // ============================================================
 // Test runner
 // ============================================================
@@ -245,6 +332,7 @@ void test_log_dir_created_on_write()
 void setUp()
 {
     sd_hal.files.clear();
+    sd_hal.directories.clear();
     sd_hal.init_call_count = 0;
     sd_hal.open_call_count = 0;
     sd_hal.write_call_count = 0;
@@ -303,6 +391,11 @@ int main()
 
     // Log directory creation
     RUN_TEST(test_log_dir_created_on_write);
+    RUN_TEST(test_write_succeeds_when_dir_already_exists);
+
+    // Retention cleanup
+    RUN_TEST(test_retention_deletes_expired_logs);
+    RUN_TEST(test_retention_maximum_does_not_delete_current_log);
 
     return UNITY_END();
 }

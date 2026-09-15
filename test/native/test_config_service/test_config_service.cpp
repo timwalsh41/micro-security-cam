@@ -135,6 +135,32 @@ void test_load_valid_config()
 }
 
 /**
+ * @brief load() parses the [logging] section into typed fields.
+ */
+void test_load_logging_config()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+
+    const char* ini =
+        "[logging]\n"
+        "sd_enabled=false\n"
+        "serial_enabled=false\n"
+        "serial_min_level=warning\n"
+        "sd_min_level=error\n"
+        "retention_days=14\n";
+
+    TEST_ASSERT_TRUE(svc.load(reinterpret_cast<const uint8_t*>(ini), strlen(ini)));
+
+    const ConfigData& cfg = svc.config();
+    TEST_ASSERT_FALSE(cfg.logging.sd_enabled);
+    TEST_ASSERT_FALSE(cfg.logging.serial_enabled);
+    TEST_ASSERT_EQUAL_STRING("warning", cfg.logging.serial_min_level);
+    TEST_ASSERT_EQUAL_STRING("error", cfg.logging.sd_min_level);
+    TEST_ASSERT_EQUAL_UINT8(14, cfg.logging.retention_days);
+}
+
+/**
  * @brief load() logs the parsed buffer size.
  */
 void test_load_logs_parse_size()
@@ -800,6 +826,7 @@ int main(int argc, char** argv)
 
     // Successful load
     RUN_TEST(test_load_valid_config);
+    RUN_TEST(test_load_logging_config);
     RUN_TEST(test_load_logs_parse_size);
     RUN_TEST(test_load_logs_wifi_ssid_when_set);
     RUN_TEST(test_load_logs_video_config);

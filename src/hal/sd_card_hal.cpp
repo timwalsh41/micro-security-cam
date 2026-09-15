@@ -106,6 +106,10 @@ bool SdCardHalImpl::exists(const char* path)
 
 bool SdCardHalImpl::remove(const char* path)
 {
+    if (!SD.exists(path))
+    {
+        return true;
+    }
     return SD.remove(path);
 }
 

@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
+#include <vector>
 
 // Out-of-class definition for ODR-use (C++11 constexpr static member)
 constexpr char SdLogWriter::LOG_DIR[];
@@ -111,6 +113,12 @@ bool SdLogWriter::ensure_log_dir()
     }
 
     bool result = m_sd_controller.create_dir_sync(LOG_DIR);
+    if (!result)
+    {
+        // A failed create may mean the directory already exists; a
+        // present directory satisfies the invariant either way.
+        result = m_sd_controller.exists_sync(LOG_DIR);
+    }
     if (result)
     {
         m_dir_created = true;
@@ -147,37 +155,40 @@ void SdLogWriter::check_rotate()
 
 void SdLogWriter::delete_old_logs()
 {
-    // Compute the cutoff date (today - retention_days)
+    // Compute the cutoff date: daily log files strictly older than
+    // (today - retention_days) are expired.
     time_t today = static_cast<time_t>(m_time.unix_now());
-    struct tm today_utc;
-    gmtime_r(&today, &today_utc);
+    time_t cutoff = today - (static_cast<time_t>(m_retention_days) * 86400);
+    struct tm cutoff_utc;
+    gmtime_r(&cutoff, &cutoff_utc);
 
-    // Calculate cutoff date in YYYYMMDD format
-    // We'll enumerate dates back from today and delete files
-    // older than retention_days
-    for (uint8_t day_offset = m_retention_days + 1; day_offset <= 255; ++day_offset)
-    {
-        // Calculate the date for this offset
-        time_t cutoff = today - (static_cast<time_t>(day_offset) * 86400);
-        struct tm cutoff_utc;
-        gmtime_r(&cutoff, &cutoff_utc);
+    char cutoff_date[9];
+    snprintf(cutoff_date, sizeof(cutoff_date), "%04d%02d%02d",
+             cutoff_utc.tm_year + 1900, cutoff_utc.tm_mon + 1, cutoff_utc.tm_mday);
 
-        char old_date[9];
-        snprintf(old_date, sizeof(old_date), "%04d%02d%02d",
-                 cutoff_utc.tm_year + 1900, cutoff_utc.tm_mon + 1, cutoff_utc.tm_mday);
-
-        // Build the path for the old log file
-        char old_path[32];
-        snprintf(old_path, sizeof(old_path), "%s/%s.log", LOG_DIR, old_date);
-
-        // Try to remove the old log file
-        m_sd_controller.remove_sync(old_path);
-
-        // If the date is before the cutoff, stop
-        if (day_offset > 254)
+    // Collect expired log files in a single directory scan, then
+    // remove them after the scan completes so the directory is not
+    // modified while it is being iterated.
+    std::vector<std::string> expired;
+    m_sd_controller.list_dir_sync(LOG_DIR,
+        [this, &cutoff_date, &expired](const char* entry)
         {
-            break;
-        }
+            // Daily log files are named YYYYMMDD.log
+            if (strlen(entry) == 12 &&
+                strncmp(entry + 8, ".log", 4) == 0 &&
+                strncmp(entry, cutoff_date, 8) < 0)
+            {
+                char old_path[32];
+                snprintf(old_path, sizeof(old_path), "%s/%s",
+                         LOG_DIR, entry);
+                expired.push_back(old_path);
+            }
+            return true;
+        });
+
+    for (const std::string& path : expired)
+    {
+        m_sd_controller.remove_sync(path.c_str());
     }
 }
 

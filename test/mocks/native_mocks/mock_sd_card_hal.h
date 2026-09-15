@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -64,6 +65,14 @@ class MockSdCardHal : public hal::SdCardHal
          * preserves and positions at 0, READ positions at 0.
          */
         std::map<std::string, std::vector<uint8_t>> files;
+
+        /**
+         * @brief In-memory set of directories simulating SD card folders.
+         *
+         * create_dir() records created paths here; exists() reports a
+         * path as present when it is a known directory or file.
+         */
+        std::set<std::string> directories;
 
         // ============================================================
         // Call tracking (inspect after calling the method)
@@ -345,6 +354,11 @@ class MockSdCardHal : public hal::SdCardHal
                 }
             }
 
+            if (create_dir_result)
+            {
+                directories.insert(path);
+            }
+
             return create_dir_result;
         }
 
@@ -365,7 +379,6 @@ class MockSdCardHal : public hal::SdCardHal
             }
             return true;
         }
-
         bool list_dir(const char* dir_path,
                       std::function<bool(const char* entry)> callback) override
         {
@@ -402,7 +415,8 @@ class MockSdCardHal : public hal::SdCardHal
         {
             exists_call_count++;
             last_exists_path = path;
-            return files.find(path) != files.end();
+            return files.find(path) != files.end() ||
+                   directories.find(path) != directories.end();
         }
 
         /**
