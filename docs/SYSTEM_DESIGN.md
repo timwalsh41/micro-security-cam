@@ -58,7 +58,7 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 
 | Task | Created By | Layer | Core | Stack (bytes) | Priority | Scope / Responsibility |
 |------|-----------|-------|------|---------------|----------|------------------------|
-| `loopTask` | Arduino framework | Arduino framework | 1 | framework-managed | framework-managed | Runs `setup()` then `loop()`. `loop()` ticks the `CommandHandler` (polls serial/web transports), the `SystemOrchestrator`, and the `LedStateMachine`, and emits the periodic heartbeat log. |
+| `loopTask` | Arduino framework | Arduino framework | 1 | framework-managed | framework-managed | Runs `setup()` then `loop()`. `loop()` ticks the `CommandHandler` (polls serial/web transports), the `SystemOrchestrator`, and the `LedStateMachine`, emits the periodic heartbeat log, and ticks the `MultiLogBackend` so buffered backends (e.g. `SdLogWriter`) flush. |
 | `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task — the sole executor of capture-pipeline state. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_dispatch_frame()`, which first executes queued pipeline commands (start/stop of recording and streaming, consumer registration) against executor-owned state, then captures a frame and dispatches it to registered consumers. Exits (and signals an exit semaphore) when `stop()` is requested. |
 | `async_tcp` | `AsyncTCP` library | Arduino framework | 1 | library-managed | library-managed | AsyncTCP event loop task that services TCP connections for the `ESPAsyncWebServer`. |
 | `wifi` | ESP-IDF | ESP-IDF framework | 0 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF WiFi driver task handling the WiFi MAC/PHY event loop. |
@@ -605,7 +605,7 @@ package "Command dispatch framework" {
     }
 
     class CommandHandler {
-        +MAX_RESPONSE_SIZE = 1024
+        +MAX_RESPONSE_SIZE = 1280
         -m_log : LoggingService&
         -m_handlers : HandlerEntry[16]
         -m_transports : CommandTransport*[4]
@@ -880,7 +880,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | Interface | File | Responsibility |
 |-----------|------|----------------|
 | `CameraHal` | `include/hal/camera_hal.h` | Camera initialization, frame capture/release, capabilities query. Returns `CameraInitResult`, `CameraFrame`. |
-| `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
+| `SdCardHal` | `include/hal/sd_card_hal.h` | SD card initialization, file open/write/read/close/seek, directory creation/existence checks, file removal, and directory listing. Returns `SdInitResult`. File operations contract: must only be called when CS is asserted. |
 | `NvsHal` | `include/hal/nvs_hal.h` | Non-volatile key-value blob storage within a named namespace. Provides `begin(namespace)`, `read_blob(key, buf, size)`, `write_blob(key, data, len)`, and `erase_key(key)`. Used for config persistence. |
 | `TimerHal` | `include/hal/timer_hal.h` | Hardware timer abstraction for periodic ISR callbacks. Provides `init(interval_us, isr)`, `set_frequency()`, `start()`, `stop()`. |
 
@@ -990,8 +990,8 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | Mock | Tracks | Configurable |
 |------|--------|-------------|
 | `MockCameraHal` | `init_call_count`, `capture_call_count`, `release_call_count`, `deinit_call_count` | `init_result`, `capture_result`, `initialized_state`, `capabilities` |
-| `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `file_content` (seed content) |
-| `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines) | N/A — captures output for assertion |
+| `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count`, `remove_call_count`, `list_dir_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `directories` (in-memory set of created directories), `file_content` (seed content) |
+| `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines), `last_level`, `levels` (vector of all captured levels) | N/A — captures output for assertion |
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
 | `MockWebServerHal` | `init_call_count`, `stop_call_count`, `registered_routes` | `init_result`; `MockRequestRef` carries configurable request state (`request_uri`, args, headers, auth) and captures `responses` plus attached streaming responses (`stream_responses` with channel and end callback; `end_stream_response(i)` simulates the transport ending a response) |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
@@ -1055,6 +1055,8 @@ The synchronous methods are intended for use from FreeRTOS task context where bl
 - `create_dir_sync(path)` — asserts CS, creates directory, deasserts CS.
 - `exists_sync(path)` — asserts CS, checks whether the file exists, deasserts CS. All SD I/O goes through this controller so the shared CS/LED pin remains properly arbitrated.
 - `write_at_sync(path, offset, data, len)` — asserts CS, opens file in `READ_WRITE` mode (preserves existing content), seeks to offset, writes, closes, deasserts CS. Used for overwriting the AVI header at position 0 after recording.
+- `remove_sync(path)` — asserts CS, removes the file, deasserts CS. Returns `true` when the file is removed or did not exist.
+- `list_dir_sync(dir_path, callback)` — asserts CS, enumerates directory entries through the callback, deasserts CS. Used by log retention to find expired daily log files in a single directory scan.
 
 ### TimeFormatter
 
@@ -1464,7 +1466,7 @@ The full set of recognised commands, their hex codes, payloads, and transport ma
 
 - **Fixed-size arrays**: Handlers and transports use fixed-size arrays (`MAX_HANDLERS = 16`, `MAX_TRANSPORTS = 4`) rather than dynamic allocation.
 - **Tick-driven**: `tick()` polls all registered transports, dispatches pending requests, and sends responses back through the transport.
-- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (1024) byte buffer for the handler to write response data — sized to carry a full serialized configuration (`ConfigService::CONFIG_BUFFER_SIZE`).
+- **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (1280) byte buffer for the handler to write response data — sized to carry a full serialized configuration (`ConfigService::CONFIG_BUFFER_SIZE`).
 
 #### Testability
 
@@ -2282,6 +2284,7 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 8. **WiFi init** — `WifiService::init()` connects to STA when an SSID is configured (with a timeout); with the blank default SSID it starts AP mode directly.
 9. **Web route registration** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route, `SerialCommandTransport` is added to the `CommandHandler`, and `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. `WebServerService::init()` then registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening: `WebServerHalImpl` buffers registrations made before the server exists and attaches them before `begin()`.
 10. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
+11. **SD logging init** — The `SerialLogBackend` is registered on the `MultiLogBackend` before SD init so pre-card boot messages are captured; once the SD card is available, the `SdLogWriter` is added to the `MultiLogBackend` as a second logging sink (skipped in degraded mode, leaving serial-only logging).
 
 ### Main Loop
 
@@ -2292,6 +2295,7 @@ loop():
   1. Tick CommandHandler (polls command transports, dispatches commands)
   2. Tick LedStateMachine → apply LED state via GpioHal
   3. Tick WebServerHal (implicit via AsyncWebServer)
+  4. Tick MultiLogBackend → flushes buffered backends (SD log writes)
 ```
 
 ---
