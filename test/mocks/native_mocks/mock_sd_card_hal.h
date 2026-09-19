@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -65,6 +66,14 @@ class MockSdCardHal : public hal::SdCardHal
          */
         std::map<std::string, std::vector<uint8_t>> files;
 
+        /**
+         * @brief In-memory set of directories simulating SD card folders.
+         *
+         * create_dir() records created paths here; exists() reports a
+         * path as present when it is a known directory or file.
+         */
+        std::set<std::string> directories;
+
         // ============================================================
         // Call tracking (inspect after calling the method)
         // ============================================================
@@ -120,6 +129,18 @@ class MockSdCardHal : public hal::SdCardHal
 
         /** The path argument from the most recent exists() call. */
         const char* last_exists_path{nullptr};
+
+        /** Number of times remove() has been called. */
+        int remove_call_count{0};
+
+        /** The path argument from the most recent remove() call. */
+        const char* last_remove_path{nullptr};
+
+        /** Number of times list_dir() has been called. */
+        int list_dir_call_count{0};
+
+        /** The path argument from the most recent list_dir() call. */
+        const char* last_list_dir_path{nullptr};
 
         // ============================================================
         // Deterministic park gate (write)
@@ -333,6 +354,11 @@ class MockSdCardHal : public hal::SdCardHal
                 }
             }
 
+            if (create_dir_result)
+            {
+                directories.insert(path);
+            }
+
             return create_dir_result;
         }
 
@@ -341,11 +367,56 @@ class MockSdCardHal : public hal::SdCardHal
             return initialized_state;
         }
 
+        bool remove(const char* path) override
+        {
+            remove_call_count++;
+            last_remove_path = path;
+            auto it = files.find(path);
+            if (it != files.end())
+            {
+                files.erase(it);
+                return true;
+            }
+            return true;
+        }
+        bool list_dir(const char* dir_path,
+                      std::function<bool(const char* entry)> callback) override
+        {
+            list_dir_call_count++;
+            last_list_dir_path = dir_path;
+            // Simulate directory listing: iterate over files whose
+            // paths start with dir_path followed by '/'
+            std::string prefix = std::string(dir_path);
+            if (!prefix.empty() && prefix.back() != '/')
+            {
+                prefix += '/';
+            }
+            for (const auto& pair : files)
+            {
+                const std::string& path = pair.first;
+                if (path.compare(0, prefix.size(), prefix) == 0)
+                {
+                    // Extract the entry name (after the directory prefix)
+                    std::string entry = path.substr(prefix.size());
+                    // Only include entries that don't have further '/'
+                    if (entry.find('/') == std::string::npos)
+                    {
+                        if (!callback(entry.c_str()))
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
         bool exists(const char* path) override
         {
             exists_call_count++;
             last_exists_path = path;
-            return files.find(path) != files.end();
+            return files.find(path) != files.end() ||
+                   directories.find(path) != directories.end();
         }
 
         /**

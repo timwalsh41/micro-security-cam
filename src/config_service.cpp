@@ -43,6 +43,9 @@ const char* field_ptr(const ConfigData& cfg, const char* key)
     if (strcmp(key, "video.resolution") == 0)   return cfg.video.resolution;
     // Web
     if (strcmp(key, "web.password") == 0)       return cfg.web.password;
+    // Logging
+    if (strcmp(key, "logging.serial_min_level") == 0) return cfg.logging.serial_min_level;
+    if (strcmp(key, "logging.sd_min_level") == 0)     return cfg.logging.sd_min_level;
     return nullptr;
 }
 
@@ -72,6 +75,9 @@ bool write_field(ConfigData& cfg, const char* key, const char* value)
     else if (strcmp(key, "video.resolution") == 0)  dest = cfg.video.resolution;
     // Web
     else if (strcmp(key, "web.password") == 0)      dest = cfg.web.password;
+    // Logging
+    else if (strcmp(key, "logging.serial_min_level") == 0) dest = cfg.logging.serial_min_level;
+    else if (strcmp(key, "logging.sd_min_level") == 0)     dest = cfg.logging.sd_min_level;
 
     if (dest == nullptr)
     {
@@ -227,6 +233,21 @@ bool read_typed_field(const ConfigData& cfg, const char* key,
         snprintf(value_out, max_len, "%u", cfg.video.mic_gain);
         return true;
     }
+    if (strcmp(key, "logging.sd_enabled") == 0)
+    {
+        snprintf(value_out, max_len, "%s", cfg.logging.sd_enabled ? "true" : "false");
+        return true;
+    }
+    if (strcmp(key, "logging.serial_enabled") == 0)
+    {
+        snprintf(value_out, max_len, "%s", cfg.logging.serial_enabled ? "true" : "false");
+        return true;
+    }
+    if (strcmp(key, "logging.retention_days") == 0)
+    {
+        snprintf(value_out, max_len, "%u", cfg.logging.retention_days);
+        return true;
+    }
     return false;
 }
 
@@ -344,6 +365,34 @@ bool write_typed_field(ConfigData& cfg, const char* key, const char* value)
             return false;
         }
         cfg.video.mic_gain = static_cast<uint8_t>(parsed);
+        return true;
+    }
+    if (strcmp(key, "logging.sd_enabled") == 0)
+    {
+        if (!parse_bool_value(value, parsed_bool))
+        {
+            return false;
+        }
+        cfg.logging.sd_enabled = parsed_bool;
+        return true;
+    }
+    if (strcmp(key, "logging.serial_enabled") == 0)
+    {
+        if (!parse_bool_value(value, parsed_bool))
+        {
+            return false;
+        }
+        cfg.logging.serial_enabled = parsed_bool;
+        return true;
+    }
+    if (strcmp(key, "logging.retention_days") == 0)
+    {
+        if (!parse_uint_value(value, parsed) ||
+            parsed < 1 || parsed > 255)
+        {
+            return false;
+        }
+        cfg.logging.retention_days = static_cast<uint8_t>(parsed);
         return true;
     }
     return false;

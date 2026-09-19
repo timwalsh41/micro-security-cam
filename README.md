@@ -65,7 +65,7 @@ The firmware ships with sensible defaults compiled in. At startup, the defaults 
 
 Compiled-in defaults: WiFi settings blank (STA connection is skipped and the fallback AP starts immediately), AP SSID `MicroCam` with no password (open network), web port 80 with no password, and the camera/video defaults listed in the table below.
 
-The config file is limited to 1024 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
+The config file is limited to 1280 bytes (content beyond this is ignored) and individual lines are limited to 128 characters.
 
 ### Managing configuration
 
@@ -151,7 +151,7 @@ Boolean keys accept `true` or `false` (case-insensitive); any other value is par
 
 ## SD Card & Degraded Mode
 
-The SD card is optional at boot. If no card is present, or card initialization fails, the system still comes up fully in **streaming-only degraded mode**: camera, WiFi, web server, live streaming, and command dispatch all work; recording and photo capture are unavailable.
+The SD card is optional at boot. If no card is present, or card initialization fails, the system still comes up fully in **streaming-only degraded mode**: camera, WiFi, web server, live streaming, and command dispatch all work; recording, photo capture, and SD card logging are unavailable (serial logging continues to work).
 
 In degraded mode:
 

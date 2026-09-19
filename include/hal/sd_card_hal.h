@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 /**
  * @file sd_card_hal.h
@@ -131,6 +132,31 @@ class SdCardHal
          * @return true if the file exists, false otherwise.
          */
         virtual bool exists(const char* path) = 0;
+
+        /**
+         * @brief Removes a file from the SD card.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         *
+         * @param path The file path to remove.
+         * @return true if the file was removed (or did not exist), false on error.
+         */
+        virtual bool remove(const char* path) = 0;
+
+        /**
+         * @brief Lists directory entries on the SD card.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         * Appends each entry name (without path prefix) to the provided
+         * callback. The directory is opened, iterated, and closed within
+         * this call.
+         *
+         * @param dir_path The directory path to list.
+         * @param callback Function called with each entry name.
+         * @return true if the directory was opened successfully, false otherwise.
+         */
+        virtual bool list_dir(const char* dir_path,
+                              std::function<bool(const char* entry)> callback) = 0;
 
         /**
          * @brief Checks whether the SD card has been successfully initialized, e.g. hardware

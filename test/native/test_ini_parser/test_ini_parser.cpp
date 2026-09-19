@@ -657,10 +657,86 @@ void test_serialize_defaults()
     TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=0"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=10"));
 
+    // Verify logging section and defaults are serialized
+    TEST_ASSERT_NOT_NULL(strstr(buf, "[logging]"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_enabled=true"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "serial_enabled=true"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "serial_min_level=info"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_min_level=info"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "retention_days=7"));
+
     // Verify static IP defaults (empty strings) are serialized
     TEST_ASSERT_NOT_NULL(strstr(buf, "static_ip="));
     TEST_ASSERT_NOT_NULL(strstr(buf, "gateway="));
     TEST_ASSERT_NOT_NULL(strstr(buf, "subnet_mask="));
+}
+
+/**
+ * @brief parse() reads all [logging] keys.
+ */
+void test_logging_all_keys()
+{
+    const char* ini =
+        "[logging]\n"
+        "sd_enabled=false\n"
+        "serial_enabled=false\n"
+        "serial_min_level=warning\n"
+        "sd_min_level=error\n"
+        "retention_days=14\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_FALSE(d.logging.sd_enabled);
+    TEST_ASSERT_FALSE(d.logging.serial_enabled);
+    TEST_ASSERT_EQUAL_STRING("warning", d.logging.serial_min_level);
+    TEST_ASSERT_EQUAL_STRING("error", d.logging.sd_min_level);
+    TEST_ASSERT_EQUAL_UINT8(14, d.logging.retention_days);
+}
+
+/**
+ * @brief parse() retains defaults for missing [logging] keys.
+ */
+void test_logging_partial_keys_retain_defaults()
+{
+    const char* ini = "[logging]\nsd_enabled=false\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_FALSE(d.logging.sd_enabled);
+    TEST_ASSERT_TRUE(d.logging.serial_enabled);
+    TEST_ASSERT_EQUAL_STRING("info", d.logging.serial_min_level);
+    TEST_ASSERT_EQUAL_STRING("info", d.logging.sd_min_level);
+    TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+}
+
+/**
+ * @brief parse() ignores retention_days below the valid range.
+ */
+void test_logging_retention_days_zero_ignored()
+{
+    const char* ini = "[logging]\nretention_days=0\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+}
+
+/**
+ * @brief parse() ignores retention_days above the valid range.
+ */
+void test_logging_retention_days_256_ignored()
+{
+    const char* ini = "[logging]\nretention_days=256\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+}
+
+/**
+ * @brief parse() accepts retention_days at both range boundaries.
+ */
+void test_logging_retention_days_boundaries_accepted()
+{
+    const char* ini = "[logging]\nretention_days=1\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL_UINT8(1, d.logging.retention_days);
+
+    const char* ini_max = "[logging]\nretention_days=255\n";
+    ConfigData d_max = IniParser::parse(ini_max, strlen(ini_max));
+    TEST_ASSERT_EQUAL_UINT8(255, d_max.logging.retention_days);
 }
 
 /**
@@ -683,6 +759,11 @@ void test_serialize_non_default_values()
     d.video.clip_duration_s = 120;
     d.video.max_file_size_mb = 200;
     d.video.jpeg_quality = 5;
+    d.logging.sd_enabled = false;
+    d.logging.serial_enabled = false;
+    strcpy(d.logging.serial_min_level, "warning");
+    strcpy(d.logging.sd_min_level, "error");
+    d.logging.retention_days = 14;
 
     char buf[1024];
     size_t written = IniParser::serialize(d, buf, sizeof(buf));
@@ -702,6 +783,11 @@ void test_serialize_non_default_values()
     TEST_ASSERT_NOT_NULL(strstr(buf, "clip_duration_s=120"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "max_file_size_mb=200"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "jpeg_quality=5"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_enabled=false"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "serial_enabled=false"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "serial_min_level=warning"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_min_level=error"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "retention_days=14"));
 }
 
 /**
@@ -732,6 +818,8 @@ void test_roundtrip_defaults()
                              parsed.video.max_file_size_mb);
     TEST_ASSERT_EQUAL_UINT8(original.video.jpeg_quality,
                             parsed.video.jpeg_quality);
+    TEST_ASSERT_EQUAL_UINT8(original.logging.retention_days,
+                            parsed.logging.retention_days);
 }
 
 /**
@@ -755,6 +843,11 @@ void test_roundtrip_custom_values()
     original.video.max_file_size_mb = 200;
     original.video.jpeg_quality = 5;
     original.camera.rotation = 180;
+    original.logging.sd_enabled = false;
+    original.logging.serial_enabled = false;
+    strcpy(original.logging.serial_min_level, "debug");
+    strcpy(original.logging.sd_min_level, "warning");
+    original.logging.retention_days = 30;
 
     char buf[1024];
     IniParser::serialize(original, buf, sizeof(buf));
@@ -780,6 +873,15 @@ void test_roundtrip_custom_values()
                             parsed.video.jpeg_quality);
     TEST_ASSERT_EQUAL_UINT16(original.camera.rotation,
                             parsed.camera.rotation);
+    TEST_ASSERT_EQUAL(original.logging.sd_enabled, parsed.logging.sd_enabled);
+    TEST_ASSERT_EQUAL(original.logging.serial_enabled,
+                      parsed.logging.serial_enabled);
+    TEST_ASSERT_EQUAL_STRING(original.logging.serial_min_level,
+                             parsed.logging.serial_min_level);
+    TEST_ASSERT_EQUAL_STRING(original.logging.sd_min_level,
+                             parsed.logging.sd_min_level);
+    TEST_ASSERT_EQUAL_UINT8(original.logging.retention_days,
+                            parsed.logging.retention_days);
 }
 
 /**
@@ -1019,6 +1121,12 @@ int main(int argc, char** argv)
     RUN_TEST(test_video_fps_minimum_accepted);
     RUN_TEST(test_video_fps_maximum_accepted);
     RUN_TEST(test_video_jpeg_quality_out_of_range_ignored);
+
+    RUN_TEST(test_logging_all_keys);
+    RUN_TEST(test_logging_partial_keys_retain_defaults);
+    RUN_TEST(test_logging_retention_days_zero_ignored);
+    RUN_TEST(test_logging_retention_days_256_ignored);
+    RUN_TEST(test_logging_retention_days_boundaries_accepted);
 
     // Camera section parsing — rotation
     RUN_TEST(test_camera_rotation_180_parsed);

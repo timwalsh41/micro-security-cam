@@ -90,7 +90,8 @@ ConfigData IniParser::parse_into(ConfigData config,
         AP,
         WEB,
         CAMERA,
-        VIDEO
+        VIDEO,
+        LOGGING
     };
 
     Section current_section = Section::NONE;
@@ -174,6 +175,10 @@ ConfigData IniParser::parse_into(ConfigData config,
                 else if (section_len == 5 && strncasecmp(p, "video", 5) == 0)
                 {
                     current_section = Section::VIDEO;
+                }
+                else if (section_len == 7 && strncasecmp(p, "logging", 7) == 0)
+                {
+                    current_section = Section::LOGGING;
                 }
                 else
                 {
@@ -360,6 +365,34 @@ ConfigData IniParser::parse_into(ConfigData config,
                     }
                     break;
                 }
+                case Section::LOGGING:
+                {
+                    if (key_match(key_start, key_len, "sd_enabled"))
+                    {
+                        config.logging.sd_enabled = get_bool_val(val_start, val_len);
+                    }
+                    else if (key_match(key_start, key_len, "serial_enabled"))
+                    {
+                        config.logging.serial_enabled = get_bool_val(val_start, val_len);
+                    }
+                    else if (key_match(key_start, key_len, "serial_min_level"))
+                    {
+                        get_string_val(val_start, val_len, config.logging.serial_min_level, CONFIG_FIELD_MAX_LENGTH);
+                    }
+                    else if (key_match(key_start, key_len, "sd_min_level"))
+                    {
+                        get_string_val(val_start, val_len, config.logging.sd_min_level, CONFIG_FIELD_MAX_LENGTH);
+                    }
+                    else if (key_match(key_start, key_len, "retention_days"))
+                    {
+                        uint32_t parsed = get_uint_val(val_start, val_len);
+                        if (parsed >= 1 && parsed <= 255)
+                        {
+                            config.logging.retention_days = static_cast<uint8_t>(parsed);
+                        }
+                    }
+                    break;
+                }
                 case Section::NONE:
                     break;
             }
@@ -483,6 +516,25 @@ size_t IniParser::serialize(const ConfigData& data,
     write("\n");
     snprintf(num_buf, sizeof(num_buf), "%u", data.video.mic_gain);
     write("mic_gain=");
+    write(num_buf);
+    write("\n");
+
+    // [logging]
+    write("[logging]\n");
+    write("sd_enabled=");
+    write(data.logging.sd_enabled ? "true" : "false");
+    write("\n");
+    write("serial_enabled=");
+    write(data.logging.serial_enabled ? "true" : "false");
+    write("\n");
+    write("serial_min_level=");
+    write(data.logging.serial_min_level);
+    write("\n");
+    write("sd_min_level=");
+    write(data.logging.sd_min_level);
+    write("\n");
+    snprintf(num_buf, sizeof(num_buf), "%u", data.logging.retention_days);
+    write("retention_days=");
     write(num_buf);
     write("\n");
 

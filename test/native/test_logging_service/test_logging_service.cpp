@@ -229,8 +229,13 @@ void test_full_line_format()
     set_mock_millis(1234);
     log.info("Camera", "Photo saved");
 
-    TEST_ASSERT_EQUAL_STRING("[00001234] [Camera] [INFO ] Photo saved",
-                             mock_backend.last_message.c_str());
+    // The format is [YYYY-MM-DD HH:MM:SS] [uptime] [subsystem] [LEVEL ] msg
+    // With default Unix offset of 0, 1234ms = 1s into epoch
+    TEST_ASSERT_TRUE(mock_backend.last_message.find("[1970-01-01 00:00:01]") != std::string::npos);
+    TEST_ASSERT_TRUE(mock_backend.last_message.find("[00001234]") != std::string::npos);
+    TEST_ASSERT_TRUE(mock_backend.last_message.find("[Camera]") != std::string::npos);
+    TEST_ASSERT_TRUE(mock_backend.last_message.find("[INFO ]") != std::string::npos);
+    TEST_ASSERT_TRUE(mock_backend.last_message.find("Photo saved") != std::string::npos);
 }
 
 /**

@@ -39,6 +39,9 @@ class SdCardHalImpl : public SdCardHal
         bool seek(uint32_t pos) override;
         bool create_dir(const char* path) override;
         bool exists(const char* path) override;
+        bool remove(const char* path) override;
+        bool list_dir(const char* dir_path,
+                      std::function<bool(const char* entry)> callback) override;
         bool is_initialized() const override;
 
     private:
