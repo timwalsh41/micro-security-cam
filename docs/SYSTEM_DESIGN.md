@@ -12,10 +12,10 @@ The design follows a layered architecture that separates hardware access from ap
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                  Application  (main.cpp)                    │
-│  setup() / loop() — wires components, runs the              │
-│  photo capture cycle, video capture pipeline,               │
-│  and system orchestration tick                              │
+│                Application (CameraRunner)                   │
+│  CameraRunner singleton: owns all objects, drives           │
+│  setup() / loop(). main.cpp is trivial: delegates to        │
+│  CameraRunner::init() and CameraRunner::loop()              │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -43,6 +43,7 @@ The design follows a layered architecture that separates hardware access from ap
 │  CameraHal       SdCardHal      LogBackend                  │
 │  GpioHal         TimeHal        WifiHal    SerialHal        │
 │  WebServerHal    StreamFrameChannel                         │
+│  HardwarePeripheralManager   (shared pin arbitration)        │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -75,7 +76,7 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 
 ### Class Diagrams
 
-The firmware is split into four class diagrams, one per architectural layer. Classes that a layer depends on but does not own (e.g. HAL interfaces used by services) appear in the dependent layer's diagram as reduced "external" stubs, marked with their home diagram. A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, and `main.cpp` is a composition root wiring all components via global instances and free functions (`setup()`, `loop()`, `cs_signal()`, `update_led()`). The `lib/` directory currently contains only a `README` and no production code.
+The firmware is split into four class diagrams, one per architectural layer. Classes that a layer depends on but does not own (e.g. HAL interfaces used by services) appear in the dependent layer's diagram as reduced "external" stubs, marked with their home diagram. A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, and `main.cpp` is a trivial composition root that delegates to `CameraRunner`. `CameraRunner` (defined in `src/camera_runner.cpp`) owns all application objects as private members of its singleton and drives the setup/loop lifecycle, while `main.cpp` just calls `CameraRunner::init()` and `CameraRunner::loop()`. The `lib/` directory currently contains only a `README` and no production code.
 
 #### 1. Hardware Abstraction Layer (`include/hal/`, `src/hal/`)
 
@@ -171,6 +172,13 @@ package "HAL interfaces" as HAL_IF {
         +write(level : LogLevel, line : const char*)
         +tick()
     }
+
+    interface HardwarePeripheralManager {
+        +cs_signal(signal : SdSignal)
+        +update_led(led_on : bool)
+        +read_temperature() : float
+        +setup_shared_pin()
+    }
 }
 
 package "ESP32 implementations" as HAL_IMPL {
@@ -248,6 +256,10 @@ package "ESP32 implementations" as HAL_IMPL {
         +write(level, line)
         +tick()
         +backend_count() : size_t
+    }
+
+    class HardwarePeripheralManagerImpl {
+        -m_sd_active_mutex : SemaphoreHandle_t
     }
 }
 
@@ -348,6 +360,7 @@ AsyncJpegStreamResponse -up-|> AsyncWebServerResponse
 SerialLogBackend -up-|> LogBackend
 SdLogWriter -up-|> LogBackend
 MultiLogBackend -up-|> LogBackend
+HardwarePeripheralManagerImpl -up-|> HardwarePeripheralManager
 
 SerialLogBackend - SerialHal : writes log lines
 SdLogWriter - SdController : buffered SD writes
@@ -869,7 +882,7 @@ CameraImageConfig ..> ResolvedCameraParams : build_camera_config()\n(free functi
 @enduml
 ```
 
-Notes: all four utility classes are static-only (no instance state). The free function `check_basic_auth(auth_header, password)` (`web_auth_util.h`) is shared by `WebServerService` and `WebCommandTransport` for HTTP Basic validation and is likewise not a class. `PlatformInitializer` is instantiated once by the composition root and called at the top of `setup()`.
+Notes: all four utility classes are static-only (no instance state). The free function `check_basic_auth(auth_header, password)` (`web_auth_util.h`) is shared by `WebServerService` and `WebCommandTransport` for HTTP Basic validation and is likewise not a class. `PlatformInitializer` is instantiated once by `CameraRunnerImpl` and called at the top of `setup()`.
 
 ---
 
@@ -913,6 +926,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
+| `HardwarePeripheralManagerImpl` | FreeRTOS mutex for shared GPIO pin (LED/SD CS) arbitration; `temperatureRead()` for core temperature; delegates to `hal::digital_write()` and `hal::set_pin_as_output()` from `gpio_hal.h`. |
 
 **Camera rotation** — `hal::CameraConfig` carries a `rotation` field (`0` or `180` only; any other value is clamped to `0` by `CameraController` before reaching the HAL). After a successful `esp_camera_init()`, `CameraHalImpl::init()` applies `rotation == 180` by writing the sensor hmirror + vflip registers via `esp_camera_sensor_get()`. Applying inside `init()` (rather than once at boot) re-applies rotation automatically on every camera re-init, since sensor flip state resets to defaults on each `esp_camera_init()` cycle. 90/270 degrees are not supported; they would require a software JPEG decode/rotate/re-encode path (see the `msc-image-rotation-feasibility` report §3.2).
 
@@ -1330,7 +1344,7 @@ The composition root loads the config at boot in a fixed precedence order; each 
 
 ### Integration
 
-In `main.cpp`, during boot:
+In `CameraRunner::init()`, during boot:
 1. The SD card is initialized. A missing card or a failed initialization does not abort boot: the system proceeds in streaming-only mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
 2. `ConfigService::load_nvs()` overlays saved NVS settings onto the compiled-in defaults.
 3. `ConfigService::load_sd()` overlays `/config.ini` settings when the card is readable.
@@ -1809,7 +1823,7 @@ The following diagram shows the continuous recording flow, including normal fram
 @startuml
 title Continuous Video Recording Flow
 
-participant "main.cpp\n(loop)" as MAIN
+participant "CameraRunner\n(loop)" as MAIN
 participant "CaptureScheduler\nEsp32" as CS
 participant "TimerHalImpl\n(ISR)" as TMR
 participant "Capture Task\n(CPU0)" as TASK
@@ -2211,7 +2225,7 @@ bool init(const ConfigData::VideoConfig& config,
           uint16_t width, uint16_t height);
 ```
 
-Width and height come from `build_camera_config()` (called in `main.cpp` before `VideoController::init()`). This decouples `VideoController` from resolution string parsing and makes it compatible with future mode switching.
+Width and height come from `build_camera_config()` (called in `CameraRunner::init()` before `VideoController::init()`). This decouples `VideoController` from resolution string parsing and makes it compatible with future mode switching.
 
 ### Testability
 
@@ -2265,21 +2279,25 @@ Pure format logic with no hardware or I/O dependencies. Tests verify every byte 
 
 ## Application Layer
 
-**File**: `src/main.cpp`
+**Files**: `include/camera_runner.h`, `src/camera_runner.cpp`, `src/main.cpp`
 
-The `setup()` function composes all system components in a layered initialization sequence. Global instances are declared at file scope, organized into two groups:
+The application layer is organized around `CameraRunner`, a singleton class that owns all application objects and drives the setup/loop lifecycle. `main.cpp` is trivial — it just delegates to `CameraRunner::init()` and `CameraRunner::loop()`.
 
-1. **Core services** — always present: `RealTimeService`, `SerialHalImpl`, `LoggingService`, `ConfigService`, `CameraController`, `VideoController`, `SdController`, `PlatformInitializer`.
-2. **Network & command services** — WiFi, web, commands, orchestrator: `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `StreamService`, `SystemOrchestrator`.
+`CameraRunner` encapsulates:
+1. **Core services** — `RealTimeService`, `SerialHalImpl`, `LoggingService`, `ConfigService`, `CameraController`, `VideoController`, `SdController`, `PlatformInitializer`.
+2. **Network & command services** — `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `StreamService`, `SystemOrchestrator`.
+3. **Hardware peripheral manager** — `HardwarePeripheralManagerImpl` (created internally, no injection).
+
+All objects are private members of the `CameraRunnerImpl` singleton. The `SdController` callback is a lambda that captures `this` and delegates to `hw_periph.cs_signal()`.
 
 ### Shared Pin Protocol
 
-On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) and the SD card chip-select (active LOW). A FreeRTOS mutex (`sd_active_mutex`) protects concurrent access. The `SdController` is constructed with a `CsSignalFn` callback that acquires/releases the mutex around CS transitions.
+On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) and the SD card chip-select (active LOW). `HardwarePeripheralManager` provides the abstract interface for this arbitration, and `HardwarePeripheralManagerImpl` implements it using a FreeRTOS mutex. The `SdController` callback delegates to `HardwarePeripheralManager::cs_signal()`, and the LED update is driven by `HardwarePeripheralManager::update_led()`.
 
 ### Initialization Sequence
 
 1. **Platform init** — `PlatformInitializer::init()` configures ESP-IDF and basic hardware.
-2. **LED init** — GPIO 21 configured as output, LED set to OFF via `LedStateMachine`.
+2. **LED init** — GPIO 21 configured as output via `HardwarePeripheralManager::setup_shared_pin()`, LED set to OFF via `LedStateMachine`.
 3. **SD card init (optional)** — `SdController::init_card()` mounts the SD card. A missing card (`NO_SD_CARD`) or a failed initialization (`HW_INIT_FAILURE`) does not abort boot: the failure is logged and the system proceeds in streaming-only degraded mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
 4. **Config load** — Compiled-in defaults are overlaid from NVS (`ConfigService::load_nvs()`, using a saved config blob when its schema version matches), then from `/config.ini` on the SD card when readable (`ConfigService::load_sd()`). Precedence: defaults < NVS < SD file.
 5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
@@ -2297,7 +2315,7 @@ The `loop()` function runs on regular intervals to tick the major services to ha
 ```
 loop():
   1. Tick CommandHandler (polls command transports, dispatches commands)
-  2. Tick LedStateMachine → apply LED state via GpioHal
+  2. Tick LedStateMachine → apply LED state via HardwarePeripheralManager
   3. Tick WebServerHal (implicit via AsyncWebServer)
   4. Tick MultiLogBackend → flushes buffered backends (SD log writes)
 ```
@@ -2323,7 +2341,7 @@ title Command Registration & Web Dispatch Flow
 ' ==================================================================
 ' Participant declarations
 ' ==================================================================
-participant "main()\nsetup" as MAIN
+participant "CameraRunner\ninit" as MAIN
 participant "SystemOrchestrator" as ORCH
 participant "CommandHandler" as CMDH
 participant "WebCommandTransport" as WCT
@@ -2479,6 +2497,7 @@ test/
   hardware/                         ← ESP32 integration tests
     test_timer_hal_impl/            ← TimerHalImpl periodic ISR behavior
     test_capture_scheduler_esp32/   ← CaptureSchedulerEsp32 task/timer lifecycle
+    test_hardware_peripheral_manager/ ← HardwarePeripheralManagerImpl GPIO/LED/temperature
     test_sd_card_hal_impl/          ← Real SD card open-mode semantics
     test_video_controller_esp32/    ← End-to-end AVI clip recording
   mocks/
