@@ -4,7 +4,7 @@ This document describes the architecture and key components of the ESP32 Photo C
 
 ## Overview
 
-This project is a still photo and video camera built on the **Seeed XIAO ESP32S3 Sense** platform, which includes an onboard OV2640 camera and MicroSD card slot. The firmware captures JPEG images at a configurable interval and records MJPEG video in AVI containers to the SD card, while an LED provides visual status feedback.
+This project is a still photo and video camera built on the **Seeed XIAO ESP32S3 Sense** platform, which includes an onboard OV2640 camera and MicroSD card slot. The firmware captures JPEG images at a configurable interval and records MJPEG video in AVI containers to the SD card — optionally with PCM audio from the onboard PDM microphone in a dual-stream AVI — while an LED provides visual status feedback.
 
 The design follows a layered architecture that separates hardware access from application logic, enabling thorough unit testing on a native host machine without any hardware dependencies.
 
@@ -216,6 +216,10 @@ package "ESP32 implementations" as HAL_IMPL {
 
     class TimerHalImpl {
         ESP-IDF timer_group ISR timer
+    }
+
+    class MicHalImpl {
+        -m_initialized : bool
     }
 
     class WifiHalImpl {
@@ -671,7 +675,11 @@ package "Controllers" {
         -m_config : VideoConfig
         -m_width : uint16_t
         -m_height : uint16_t
+        -m_mic : MicService*
+        -m_audio_buffer : vector<int16_t>
+        -m_audio_chunk_size : size_t
         +init(config : VideoConfig, width, height) : bool
+        +set_mic_service(mic : MicService*)
         +start_recording() : bool
         +stop_recording()
         +capture_photo(path : const char*) : bool
@@ -685,6 +693,7 @@ package "Controllers" {
         +is_streaming() : bool
         +is_capture_active() : bool
         -capture_and_dispatch_frame()
+        -drain_audio_to_clip()
         -handle_clip_closure()
         -process_requests() / execute_request()
         -executor_take_photo(path)
@@ -697,15 +706,19 @@ package "Controllers" {
         -m_close_requested : atomic<bool>
         -m_close_pending : bool
         -m_frames_recorded : atomic<uint32_t>
+        -m_audio_samples_recorded : atomic<uint32_t>
         -m_file_size : atomic<uint32_t>
         -m_file_path : char[64]
         -m_clip_path : char[64]
         +open() : bool
         +close()
         +append_frame(data, len)
+        +append_audio_chunk(data, len)
         +request_close() / consume_close_request() : bool
         +is_open() / close_pending() : bool
         +frames_recorded() / file_size() : uint32_t
+        +audio_samples_recorded() : uint32_t
+        +is_audio_enabled() : bool
     }
 
     class AviWriter {
@@ -944,6 +957,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | `READ_WRITE` | Open for reading/writing; preserves existing content, writes at seek position (maps to `"r+"` in `SdCardHalImpl`) |
 | `GpioHal` | `include/hal/gpio_hal.h` | Thin forwarding wrappers for `pinMode()` and `digitalWrite()`. No logic — pure indirection. |
 | `TimeHal` | `include/hal/time_hal.h` | Forwarding functions for Arduino `millis()`, `delay()`, and microsecond delays. Defines the `millis_t` type alias. |
+| `MicHal` | `include/hal/mic_hal.h` | I2S PDM microphone initialization, capture start/stop, and sample read. Returns `MicInitResult` and takes a `MicConfig` (sample rate, bit depth, channels, DMA buffer layout, PDM pins). |
 | `LogBackend` | `include/hal/log_backend.h` | Abstract interface for log output destinations. Receives fully formatted log lines from `LoggingService`. |
 | `SerialHal` | `include/hal/serial_hal.h` | UART serial port abstraction. Wraps the Arduino `HardwareSerial` interface (`available`, `read`, `write`, `flush`) behind a mockable interface. |
 
@@ -958,6 +972,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `NvsHalImpl` | ESP32 `Preferences` library (NVS) — `Preferences::begin()`, `getBytes()`, `putBytes()`, `remove()` |
 | `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks. `init()` and `stop()` are the sole toggle points for the registered ISR callback: `init()` attaches it, `stop()` removes it (along with pausing the counter) so no delayed alarm dispatch can invoke the callback after stop returns. Removal is idempotent by design — an attach-state flag guards both removal sites (`stop()` and `init()`'s repeat-teardown), since the ESP-IDF v4.4.7 driver frees the interrupt handle in `timer_isr_callback_remove()` without nulling its internally stored handle, making a second unguarded remove a use-after-free. `init()` re-arms the callback on every call; the ESP-IDF v4.4.7 driver re-initializes an in-use timer in place rather than refusing `timer_init()`, so the repeat-teardown in `init()` is what keeps each start cycle clean. `set_frequency()` only retargets the alarm value and does not affect callback attachment: it requires a running timer (one whose `init()` has attached the callback and whose `stop()` has not detached it) — after `stop()`, a restart must go through `init()` before callbacks dispatch again. |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
+| `MicHalImpl` | ESP-IDF I2S driver — `i2s_driver_install()`, `i2s_set_pin()` (PDM RX mode), `i2s_read()`, `i2s_driver_uninstall()` |
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
@@ -1044,6 +1059,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | `MockSdCardHal` | `init_call_count`, `open_call_count`, `write_call_count`, `close_call_count`, `seek_call_count`, `exists_call_count`, `remove_call_count`, `list_dir_call_count` | `init_result`, `open_result`, `write_result`, `seek_result`, `files` (in-memory file store with real open-mode semantics), `directories` (in-memory set of created directories), `file_content` (seed content) |
 | `MockLogBackend` | `write_call_count`, `last_message`, `messages` (vector of all captured lines), `last_level`, `levels` (vector of all captured levels) | N/A — captures output for assertion |
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
+| `MockMicHal` | `init_call_count`, `start_call_count`, `stop_call_count`, `deinit_call_count`, `read_samples_call_count` | `init_result`, `initialized_state`, `sample_data` (vector of PCM samples served sequentially by `read_samples()`), `samples_per_read` (chunk size per read; 0 = all at once), plus `fill_sample_data()` / `fill_incremental_sample_data()` helpers |
 | `MockWebServerHal` | `init_call_count`, `stop_call_count`, `registered_routes` | `init_result`; `MockRequestRef` carries configurable request state (`request_uri`, args, headers, auth) and captures `responses` plus attached streaming responses (`stream_responses` with channel and end callback; `end_stream_response(i)` simulates the transport ending a response) |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
 
@@ -1225,6 +1241,33 @@ Buffered log writer for SD card storage. Implements `hal::LogBackend` to receive
 **Files**: `include/hal/serial_log_backend.h`, `src/hal/serial_log_backend.cpp`
 
 Concrete `LogBackend` that writes log lines via a `SerialHal` interface. Lines are transmitted atomically (line + CRLF in a single UART write) to prevent interleaving with ESP-IDF UART0 writes from other cores.
+
+### MicService
+
+**Files**: `include/mic_service.h`, `src/mic_service.cpp`
+
+#### Responsibility
+
+Records 16 kHz / 16-bit / mono (32 KB/s) microphone audio into a PSRAM ring buffer. Owns the mic task lifecycle (`mic_task`, pinned to CPU 1, 4096-byte stack) and the lock-free producer/consumer handoff: the mic task reads samples through the injected `MicHal` (`read_samples()`), applies the `video.mic_gain` gain (with int16 clamping), and writes them into the ring buffer; the capture task drains chunks with `get_audio_chunk()` at activation boundaries (see [VideoController](#videocontroller)). The mic task never touches the SD card — the capture task remains the sole SD writer (see the [FreeRTOS Tasks](#freertos-tasks) table).
+
+#### Dependencies
+
+- `MicHal &` — abstract microphone interface; the ESP32 implementation is `MicHalImpl` (I2S PDM RX), the native test double is `MockMicHal`.
+- `LoggingService &` — diagnostic output.
+- `ConfigService &` — live `video.mic_gain` setting.
+
+#### Ring Buffer
+
+The ring buffer holds `RING_BUFFER_SAMPLES` = 960,000 samples (60 seconds of 16 kHz mono, ~1.9 MB), allocated in PSRAM at `init()` (falling back to internal RAM if PSRAM is unavailable). Producer and consumer indices are `std::atomic<size_t>` updated with acquire/release ordering, so `get_audio_chunk()` never blocks or locks; if the buffer is empty it returns fewer (or zero) samples, which the capture task simply skips writing. Overflow wraps and silently overwrites the oldest samples (bounded by the 60 s capacity relative to clip duration).
+
+#### Lifecycle and Thread Safety
+
+`init()` — installs the I2S driver via `MicHal::init()` and allocates the ring buffer.
+`start()` — starts the HAL and spawns the mic task; no-op while already capturing.
+`stop()` — clears the capturing flag, deletes the mic task, and stops the HAL.
+`deinit()` — stops capture if needed, frees the ring buffer, and deinits the HAL.
+
+The capturing flag is a `volatile bool` observed by the mic loop; ring-buffer indices are the only cross-task mutable state and are lock-free.
 
 ---
 
@@ -1764,7 +1807,7 @@ Fully testable on native via `MockCameraHal`, which provides configurable return
 
 ### Responsibility
 
-Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture, AVI container formatting, and per-frame SD writing into a recording session. Delegates all capture scheduling to an injected `ICaptureScheduler`, keeping this class free of platform-specific code. The `ICaptureScheduler` interface has two implementations: `CaptureSchedulerEsp32` (FreeRTOS task + hardware timer) and `MockCaptureScheduler` (synchronous callback for native tests).
+Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture, AVI container formatting, and per-frame SD writing into a recording session. When a `MicService` is attached and audio is enabled, it also drains the microphone ring buffer at frame activation boundaries and writes audio chunks into the same AVI clip (see [MicService](#micservice)). Delegates all capture scheduling to an injected `ICaptureScheduler`, keeping this class free of platform-specific code. The `ICaptureScheduler` interface has two implementations: `CaptureSchedulerEsp32` (FreeRTOS task + hardware timer) and `MockCaptureScheduler` (synchronous callback for native tests).
 
 ### Dependencies
 
@@ -1774,6 +1817,7 @@ Orchestrates MJPEG video recording to SD card. Coordinates camera frame capture,
 - `LoggingService &` — for diagnostic output.
 - `ICaptureScheduler &` — for platform-agnostic capture scheduling. The scheduler invokes `capture_and_dispatch_frame()` at the configured FPS interval. On ESP32, `CaptureSchedulerEsp32` handles FreeRTOS task creation, timer ISR, and task notifications. On native, `MockCaptureScheduler` invokes the callback synchronously.
 - `AviClipSession` — owned; the clip/AVI session owner (writer, clip paths, per-clip counters, close/rotation request). All clip operations except the lock-free `append_frame()` pump path run under the owning controller's executor token (locking contract in `include/avi_clip_session.h`).
+- `MicService *` — optional; the audio producer drained at activation boundaries. `set_mic_service()` must be called before `start_recording()`. When null or `video.audio_enabled` is false, recording is video-only. The executor path starts the mic at `executor_start_recording()` and stops it at `executor_stop_recording()`; `drain_audio_to_clip()` pulls one chunk per activation from the ring buffer and writes it via `AviClipSession::append_audio_chunk()`.
 
 ### Consumer Registry (Activity Model)
 
@@ -2223,10 +2267,11 @@ Frames are written to SD incrementally during recording:
 
 1. Each frame's JPEG data is written immediately via `SdController::write_sync()`.
 2. `AviWriter::last_frame_chunk()` provides the formatted AVI chunk for each frame.
-3. At clip close, the AVI header is patched via `SdController::write_at_sync()` (seek to offset 0, overwrite with patched header). `write_at_sync()` opens the file in `READ_WRITE` mode so existing content is preserved and only the header bytes are replaced — the clip is never truncated.
-4. The frame index is appended via `SdController::write_sync()`.
+3. When audio is enabled, the capture task drains one chunk from the `MicService` ring buffer at the same activation boundary (after the frame is dispatched and released) and writes it via `AviClipSession::append_audio_chunk()` — an additional `write_sync()` transaction per frame.
+4. At clip close, the AVI header is patched via `SdController::write_at_sync()` (seek to offset 0, overwrite with patched header). `write_at_sync()` opens the file in `READ_WRITE` mode so existing content is preserved and only the header bytes are replaced — the clip is never truncated.
+5. The frame index is appended via `SdController::write_sync()`.
 
-This approach avoids large RAM buffers and enables reasonable clip-close times (~1 SD transaction per frame).
+This approach avoids large RAM buffers and enables reasonable clip-close times (~1 SD transaction per frame; ~2 when audio is enabled).
 
 ### File Naming
 
@@ -2278,6 +2323,7 @@ A format-only utility class that builds AVI file structures in memory. Does not 
 
 ### AVI File Layout
 
+Video-only (single-stream) layout:
 ```
 RIFF header
 └─ LIST hdrl
@@ -2290,21 +2336,28 @@ RIFF header
 └─ idx1 (frame index: chunk ID, flags, offset, size per frame)
 ```
 
+Dual-stream layout (after `open_audio()`): the header grows to two `LIST strl`
+blocks (video + PCM audio stream with a `strh` and a WAVEFORMATEX `strf`),
+`movi` carries interleaved audio chunks (`0x01wb` + size + PCM data + padding)
+alongside the frame chunks, and `idx1` contains entries for both chunk types.
+
 ### Lifecycle
 
 ```
-open() → write_frame() × N → close()
+open() → [open_audio()] → write_frame() / write_audio_chunk() × N → close()
 ```
 
-- `open(path, fps, width, height)` — generates a 224-byte AVI header template.
+- `open(path, fps, width, height)` — generates a 224-byte AVI header template (video-only) or, when `open_audio()` follows before the first `write_frame()`, a 336-byte dual-stream header.
+- `open_audio(sample_rate, bits_per_sample, channels)` — enables the audio stream; must be called after `open()` and before the first frame or audio chunk is written. On failure the writer continues in video-only mode.
 - `write_frame(jpeg_data, jpeg_len)` — formats a JPEG frame as an AVI chunk with DWORD-aligned padding.
-- `close()` — patches the header with final frame count and file size, builds the frame index.
+- `write_audio_chunk(audio_data, audio_len)` — formats PCM data as an AVI audio chunk (`0x01wb`) with DWORD-aligned padding.
+- `close()` — patches the header with final frame count and file size, builds the combined frame + audio index.
 
 ### Key Design Points
 
-- The AVI header is generated once at `open()` and patched at `close()` with final statistics (RIFF size, frame count, movi list size).
-- Each frame chunk includes an 8-byte header (0x00dc marker + data size), the JPEG data, and 0-3 bytes of zero-padding for DWORD alignment.
-- The frame index (`idx1`) accumulates 16-byte entries in RAM (one per frame).
+- The AVI header is generated once at `open()` (plus `open_audio()`) and patched at `close()` with final statistics (RIFF size, frame count, movi list size).
+- Each frame chunk includes an 8-byte header (0x00dc marker + data size), the JPEG data, and 0-3 bytes of zero-padding for DWORD alignment; audio chunks use the same 8-byte chunk header scheme with the 0x01wb marker.
+- The index (`idx1`) accumulates 16-byte entries in RAM (one per frame and per audio chunk).
 
 ### Testability
 
@@ -2320,8 +2373,9 @@ The application layer is organized around `CameraRunner`, a singleton class that
 
 `CameraRunner` encapsulates:
 1. **Core services** — `RealTimeService`, `SerialHalImpl`, `LoggingService`, `ConfigService`, `CameraController`, `VideoController`, `SdController`, `PlatformInitializer`.
-2. **Network & command services** — `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `StreamService`, `SystemOrchestrator`.
-3. **Hardware peripheral manager** — `HardwarePeripheralManagerImpl` (created internally, no injection).
+2. **Audio services** — `MicHalImpl`, `MicService` (created when `video.audio_enabled` is set; the mic task is spawned only while recording runs).
+3. **Network & command services** — `WifiService`, `WebServerService`, `CommandHandler`, `WebCommandTransport`, `SerialCommandTransport`, `StreamService`, `SystemOrchestrator`.
+4. **Hardware peripheral manager** — `HardwarePeripheralManagerImpl` (created internally, no injection).
 
 All objects are private members of the `CameraRunnerImpl` singleton. The `SdController` callback is a lambda that captures `this` and delegates to `hw_periph.cs_signal()`.
 
@@ -2336,7 +2390,7 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 3. **SD card init (optional)** — `SdController::init_card()` mounts the SD card. A missing card (`NO_SD_CARD`) or a failed initialization (`HW_INIT_FAILURE`) does not abort boot: the failure is logged and the system proceeds in streaming-only degraded mode (see [SD-Optional Boot and Degraded Mode](#sd-optional-boot-and-degraded-mode)).
 4. **Config load** — Compiled-in defaults are overlaid from NVS (`ConfigService::load_nvs()`, using a saved config blob when its schema version matches), then from `/config.ini` on the SD card when readable (`ConfigService::load_sd()`). Precedence: defaults < NVS < SD file.
 5. **Camera init** — Builds a `ResolvedCameraParams` from `CameraImageConfig` (resolution + JPEG quality from config) via `build_camera_config()`, which maps the resolution string to framesize/dimensions. The camera controller then clamps the config against `CameraHal::get_capabilities()` at init time.
-6. **Video init** — `VideoController::init()` receives the `[video]` config section plus the validated width/height from the camera config step. On ESP32, the capture task is created and pinned to CPU0.
+6. **Video init** — When `video.audio_enabled` is set, `MicService::init()` runs first (I2S PDM driver install via `MicHalImpl`); a failure is logged and boot continues with audio disabled. `VideoController::init()` then receives the `[video]` config section plus the validated width/height from the camera config step, computes the per-frame audio chunk size, and (on ESP32) the capture task is created and pinned to CPU0.
 7. **Stream init** — `StreamService::init(max_streams)` configures the concurrent stream slot count; `VideoController::set_stream_service(&stream_service)` wires frame delivery.
 8. **WiFi init** — `WifiService::init()` connects to STA when an SSID is configured (with a timeout); with the blank default SSID it starts AP mode directly.
 9. **Web route registration** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route, `SerialCommandTransport` is added to the `CommandHandler`, and `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. `WebServerService::init()` then registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening: `WebServerHalImpl` buffers registrations made before the server exists and attaches them before `begin()`.
@@ -2521,6 +2575,7 @@ test/
     test_ini_parser/                ← INI parser including video config
     test_led_state_machine/         ← LED state machine tests
     test_logging_service/           ← Logging output tests
+    test_mic_service/               ← MicService lifecycle, ring buffer, gain tests
     test_sd_controller/             ← SD write controller tests
     test_stream_service/            ← StreamService slot/delivery tests
     test_system_orchestrator/       ← System orchestrator commands
