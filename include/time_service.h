@@ -52,6 +52,11 @@ class TimeService
         virtual void set_unix_offset(uint32_t unix_time, uint32_t system_ms) = 0;
 
         /**
+         * @brief Returns whether the real-time clock has been set via set_unix_offset().
+         */
+        virtual bool is_time_set() const = 0;
+
+        /**
          * @brief Returns the current Unix timestamp (seconds since epoch).
          */
         virtual uint32_t unix_now() const = 0;
@@ -76,12 +81,15 @@ class RealTimeService : public TimeService
         void delay_ms(hal::millis_t ms) override;
         void delay_us(hal::millis_t us) override;
         void set_unix_offset(uint32_t unix_time, uint32_t system_ms) override;
+        bool is_time_set() const override;
         uint32_t unix_now() const override;
         std::tm localtime() const override;
 
     private:
         /** (unix_offset << 32) | system_ms_at_offset, published atomically. */
         std::atomic<uint64_t> m_offset_pair{0};
+        /** Whether set_unix_offset() has been called at least once. */
+        std::atomic<bool> m_time_set{false};
 };
 
 #endif // TIME_SERVICE_H

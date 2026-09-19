@@ -63,6 +63,23 @@ bool IniParser::get_bool_val(const char* val_start, size_t val_len)
     return false;
 }
 
+SdEnabledMode IniParser::get_sd_enabled_val(const char* val_start, size_t val_len)
+{
+    if (val_len == 4 && strncasecmp(val_start, "true", 4) == 0)
+    {
+        return SdEnabledMode::TRUE;
+    }
+    if (val_len == 5 && strncasecmp(val_start, "false", 5) == 0)
+    {
+        return SdEnabledMode::FALSE;
+    }
+    if (val_len == 13 && strncasecmp(val_start, "after_set_time", 13) == 0)
+    {
+        return SdEnabledMode::AFTER_SET_TIME;
+    }
+    return SdEnabledMode::AFTER_SET_TIME;
+}
+
 ConfigData IniParser::parse(const char* content, size_t length)
 {
     return parse_into(ConfigData{}, content, length);
@@ -369,7 +386,7 @@ ConfigData IniParser::parse_into(ConfigData config,
                 {
                     if (key_match(key_start, key_len, "sd_enabled"))
                     {
-                        config.logging.sd_enabled = get_bool_val(val_start, val_len);
+                        config.logging.sd_enabled = get_sd_enabled_val(val_start, val_len);
                     }
                     else if (key_match(key_start, key_len, "serial_enabled"))
                     {
@@ -522,7 +539,12 @@ size_t IniParser::serialize(const ConfigData& data,
     // [logging]
     write("[logging]\n");
     write("sd_enabled=");
-    write(data.logging.sd_enabled ? "true" : "false");
+    switch (data.logging.sd_enabled)
+    {
+        case SdEnabledMode::TRUE:          write("true"); break;
+        case SdEnabledMode::FALSE:         write("false"); break;
+        case SdEnabledMode::AFTER_SET_TIME: write("after_set_time"); break;
+    }
     write("\n");
     write("serial_enabled=");
     write(data.logging.serial_enabled ? "true" : "false");

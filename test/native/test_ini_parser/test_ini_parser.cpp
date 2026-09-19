@@ -659,7 +659,7 @@ void test_serialize_defaults()
 
     // Verify logging section and defaults are serialized
     TEST_ASSERT_NOT_NULL(strstr(buf, "[logging]"));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_enabled=true"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "sd_enabled=after_set_time"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "serial_enabled=true"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "serial_min_level=info"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "sd_min_level=info"));
@@ -684,7 +684,7 @@ void test_logging_all_keys()
         "sd_min_level=error\n"
         "retention_days=14\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
-    TEST_ASSERT_FALSE(d.logging.sd_enabled);
+    TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, d.logging.sd_enabled);
     TEST_ASSERT_FALSE(d.logging.serial_enabled);
     TEST_ASSERT_EQUAL_STRING("warning", d.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING("error", d.logging.sd_min_level);
@@ -698,11 +698,71 @@ void test_logging_partial_keys_retain_defaults()
 {
     const char* ini = "[logging]\nsd_enabled=false\n";
     ConfigData d = IniParser::parse(ini, strlen(ini));
-    TEST_ASSERT_FALSE(d.logging.sd_enabled);
+    TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, d.logging.sd_enabled);
     TEST_ASSERT_TRUE(d.logging.serial_enabled);
     TEST_ASSERT_EQUAL_STRING("info", d.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING("info", d.logging.sd_min_level);
     TEST_ASSERT_EQUAL_UINT8(7, d.logging.retention_days);
+}
+
+/**
+ * @brief parse() accepts sd_enabled=after_set_time.
+ */
+void test_logging_sd_enabled_after_set_time()
+{
+    const char* ini = "[logging]\nsd_enabled=after_set_time\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, d.logging.sd_enabled);
+}
+
+/**
+ * @brief parse() accepts sd_enabled=true.
+ */
+void test_logging_sd_enabled_true()
+{
+    const char* ini = "[logging]\nsd_enabled=true\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL(SdEnabledMode::TRUE, d.logging.sd_enabled);
+}
+
+/**
+ * @brief parse() accepts sd_enabled=false.
+ */
+void test_logging_sd_enabled_false()
+{
+    const char* ini = "[logging]\nsd_enabled=false\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, d.logging.sd_enabled);
+}
+
+/**
+ * @brief parse() defaults sd_enabled to AFTER_SET_TIME when not specified.
+ */
+void test_logging_sd_enabled_default_after_set_time()
+{
+    const char* ini = "[logging]\nserial_enabled=true\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, d.logging.sd_enabled);
+}
+
+/**
+ * @brief parse() defaults sd_enabled to AFTER_SET_TIME on unrecognized value.
+ */
+void test_logging_sd_enabled_unrecognized_defaults_to_after_set_time()
+{
+    const char* ini = "[logging]\nsd_enabled=invalid\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, d.logging.sd_enabled);
+}
+
+/**
+ * @brief parse() treats sd_enabled case-insensitively.
+ */
+void test_logging_sd_enabled_case_insensitive()
+{
+    const char* ini = "[logging]\nsd_enabled=AFTER_SET_TIME\n";
+    ConfigData d = IniParser::parse(ini, strlen(ini));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, d.logging.sd_enabled);
 }
 
 /**
@@ -759,7 +819,7 @@ void test_serialize_non_default_values()
     d.video.clip_duration_s = 120;
     d.video.max_file_size_mb = 200;
     d.video.jpeg_quality = 5;
-    d.logging.sd_enabled = false;
+    d.logging.sd_enabled = SdEnabledMode::FALSE;
     d.logging.serial_enabled = false;
     strcpy(d.logging.serial_min_level, "warning");
     strcpy(d.logging.sd_min_level, "error");
@@ -843,7 +903,7 @@ void test_roundtrip_custom_values()
     original.video.max_file_size_mb = 200;
     original.video.jpeg_quality = 5;
     original.camera.rotation = 180;
-    original.logging.sd_enabled = false;
+    original.logging.sd_enabled = SdEnabledMode::FALSE;
     original.logging.serial_enabled = false;
     strcpy(original.logging.serial_min_level, "debug");
     strcpy(original.logging.sd_min_level, "warning");
@@ -1124,6 +1184,12 @@ int main(int argc, char** argv)
 
     RUN_TEST(test_logging_all_keys);
     RUN_TEST(test_logging_partial_keys_retain_defaults);
+    RUN_TEST(test_logging_sd_enabled_after_set_time);
+    RUN_TEST(test_logging_sd_enabled_true);
+    RUN_TEST(test_logging_sd_enabled_false);
+    RUN_TEST(test_logging_sd_enabled_default_after_set_time);
+    RUN_TEST(test_logging_sd_enabled_unrecognized_defaults_to_after_set_time);
+    RUN_TEST(test_logging_sd_enabled_case_insensitive);
     RUN_TEST(test_logging_retention_days_zero_ignored);
     RUN_TEST(test_logging_retention_days_256_ignored);
     RUN_TEST(test_logging_retention_days_boundaries_accepted);

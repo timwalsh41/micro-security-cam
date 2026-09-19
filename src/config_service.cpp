@@ -235,7 +235,12 @@ bool read_typed_field(const ConfigData& cfg, const char* key,
     }
     if (strcmp(key, "logging.sd_enabled") == 0)
     {
-        snprintf(value_out, max_len, "%s", cfg.logging.sd_enabled ? "true" : "false");
+        switch (cfg.logging.sd_enabled)
+        {
+            case SdEnabledMode::TRUE:          snprintf(value_out, max_len, "true"); break;
+            case SdEnabledMode::FALSE:         snprintf(value_out, max_len, "false"); break;
+            case SdEnabledMode::AFTER_SET_TIME: snprintf(value_out, max_len, "after_set_time"); break;
+        }
         return true;
     }
     if (strcmp(key, "logging.serial_enabled") == 0)
@@ -369,12 +374,22 @@ bool write_typed_field(ConfigData& cfg, const char* key, const char* value)
     }
     if (strcmp(key, "logging.sd_enabled") == 0)
     {
-        if (!parse_bool_value(value, parsed_bool))
+        if (ci_equals(value, "true"))
         {
-            return false;
+            cfg.logging.sd_enabled = SdEnabledMode::TRUE;
+            return true;
         }
-        cfg.logging.sd_enabled = parsed_bool;
-        return true;
+        if (ci_equals(value, "false"))
+        {
+            cfg.logging.sd_enabled = SdEnabledMode::FALSE;
+            return true;
+        }
+        if (ci_equals(value, "after_set_time"))
+        {
+            cfg.logging.sd_enabled = SdEnabledMode::AFTER_SET_TIME;
+            return true;
+        }
+        return false;
     }
     if (strcmp(key, "logging.serial_enabled") == 0)
     {

@@ -232,7 +232,7 @@ class ConfigService
          * version is discarded (no migration) in favor of the
          * compiled-in defaults.
          */
-        static constexpr uint32_t NVS_SCHEMA_VERSION = 1U;
+        static constexpr uint32_t NVS_SCHEMA_VERSION = 2U;
 
     private:
         static constexpr const char* SUBSYSTEM = "CONF";
