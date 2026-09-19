@@ -68,6 +68,9 @@ void test_start_after_init()
     svc.init();
     TEST_ASSERT_TRUE(svc.start());
     TEST_ASSERT_TRUE(svc.is_capturing());
+    // Stop the capture so the mic task thread is joined before the
+    // service and fixture go out of scope.
+    TEST_ASSERT_TRUE(svc.stop());
 }
 
 /**
