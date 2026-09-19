@@ -1577,6 +1577,21 @@ if (m_config.audio_enabled) m_mic_service->start_capture();
 - audio_enabled=false → video-only AVI
 - No temp WAV after recording stops
 
+### Slice 4 Deviation Record
+
+**Option A: PSRAM ring buffer drained in capture context** (implemented)
+
+The original plan specified mic_task writing WAV directly to SD, merged at close. This deviated to Option A per the captain's decision:
+
+- `mic_task` reads I2S into a PSRAM ring buffer only (does NOT write SD)
+- The capture task drains audio from the ring buffer at frame activation boundaries
+- The capture task writes audio chunks to the AVI file (interleaved with video frames)
+- The capture task remains the sole SD writer; race-free by affinity
+- ~1.9 MB PSRAM for 60s clips at 16kHz/16-bit/mono (32 KB/s)
+- Honors the executor discipline and gives VLC-sync dual-stream AVI playback
+
+Rationale: The executor model requires the capture task to be the sole SD-I/O owner during loop activity. The mic_task writing directly to SD would create cross-task SD writes, violating the single-writer discipline established in §5.1/§5.2.
+
 ---
 
 ## Slice 5 — Full Web UI + File Browser

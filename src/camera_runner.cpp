@@ -11,6 +11,7 @@
 #include "hal/timer_hal_impl.h"
 #include "hal/gpio_hal.h"
 #include "hal/hardware_peripheral_manager_impl.h"
+#include "hal/mic_hal_impl.h"
 #include "camera_controller.h"
 #include "video_controller.h"
 #include "capture_scheduler_esp32.h"
@@ -19,6 +20,7 @@
 #include "sd_controller.h"
 #include "led_state_machine.h"
 #include "config_service.h"
+#include "mic_service.h"
 #include "wifi_service.h"
 #include "web_server_service.h"
 #include "command_handler.h"
@@ -141,6 +143,20 @@ public:
                     m_camera_ctrl.get_params().width,
                     m_camera_ctrl.get_params().height);
 
+        // --- Initialize MicService if audio is enabled ---
+        if (m_config_service.config().video.audio_enabled)
+        {
+            if (m_mic_service.init())
+            {
+                m_video_controller.set_mic_service(&m_mic_service);
+                m_logger.info("RUNNER", "MicService initialized");
+            }
+            else
+            {
+                m_logger.warn("RUNNER", "MicService initialization failed - audio disabled");
+            }
+        }
+
         // --- Initialize video controller with validated dimensions ---
         m_video_controller.init(m_config_service.config().video,
                               m_camera_ctrl.get_params().width,
@@ -221,7 +237,10 @@ private:
     LedStateMachine m_led_sm{m_real_time};
     CameraController m_camera_ctrl{m_camera_hal};
     CaptureSchedulerEsp32 m_capture_scheduler{m_timer_hal};
-    VideoController m_video_controller{m_camera_ctrl, m_sd_controller, m_real_time, m_logger, m_capture_scheduler};
+    ConfigService m_config_service{m_logger};
+    hal::MicHalImpl m_mic_hal;
+    MicService m_mic_service{m_mic_hal, m_logger, m_config_service};
+    VideoController m_video_controller{m_camera_ctrl, m_sd_controller, m_real_time, m_logger, m_capture_scheduler, &m_mic_service};
     PlatformInitializer m_platform_init;
     hal::WifiHalImpl m_wifi_hal_impl;
     hal::WebServerHalImpl m_web_server_hal_impl;
@@ -230,7 +249,6 @@ private:
     WebCommandTransport m_web_transport{m_web_server_hal_impl, m_command_handler};
     SerialCommandTransport m_serial_transport{m_serial_hal, m_real_time};
     WebServerService m_web_server_service{m_web_server_hal_impl, m_logger};
-    ConfigService m_config_service{m_logger};
     StreamService m_stream_service{m_logger};
     SystemOrchestrator m_system_orchestrator{
         m_video_controller, m_camera_ctrl, m_command_handler,

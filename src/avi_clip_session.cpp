@@ -69,6 +69,17 @@ bool AviClipSession::open()
         return false;
     }
 
+    // Enable audio stream if configured
+    if (m_config.audio_enabled)
+    {
+        // Audio parameters: 16kHz, 16-bit, mono (matching MicService)
+        if (!m_avi_writer.open_audio(16000, 16, 1))
+        {
+            m_log.warn(SUBSYSTEM, "Audio stream enable failed");
+            // Continue without audio; the writer still works for video
+        }
+    }
+
     // Write placeholder header to SD at position 0. This is the real
     // card probe: a failing write means no clip can be recorded, so
     // the open fails before the close-pending guard is latched and
@@ -87,6 +98,7 @@ bool AviClipSession::open()
 
     // Reset clip state
     m_frames_recorded = 0;
+    m_audio_samples_recorded = 0;
     m_file_size = 0;
     return true;
 }
@@ -117,6 +129,7 @@ void AviClipSession::close()
 
     // Clean up
     m_frames_recorded = 0;
+    m_audio_samples_recorded = 0;
     m_file_size = 0;
     m_close_requested = false;
     m_avi_writer = AviWriter();  // Reset writer state
@@ -159,6 +172,28 @@ void AviClipSession::append_frame(const uint8_t* data, size_t len)
     }
 }
 
+void AviClipSession::append_audio_chunk(const uint8_t* data, size_t len)
+{
+    if (!m_config.audio_enabled || !m_avi_writer.is_open())
+    {
+        return;
+    }
+
+    // Format as AVI audio chunk and write to SD
+    m_avi_writer.write_audio_chunk(data, len);
+
+    AviBytes chunk = m_avi_writer.last_audio_chunk();
+    if (chunk.data && chunk.len > 0)
+    {
+        if (write_to_sd(chunk.data, chunk.len))
+        {
+            m_file_size += static_cast<uint32_t>(chunk.len);
+        }
+    }
+
+    m_audio_samples_recorded += len / 2;  // 16-bit samples
+}
+
 void AviClipSession::request_close()
 {
     m_close_requested = true;
@@ -197,6 +232,16 @@ uint32_t AviClipSession::frames_recorded() const
 uint32_t AviClipSession::file_size() const
 {
     return m_file_size;
+}
+
+uint32_t AviClipSession::audio_samples_recorded() const
+{
+    return m_audio_samples_recorded;
+}
+
+bool AviClipSession::is_audio_enabled() const
+{
+    return m_config.audio_enabled;
 }
 
 const char* AviClipSession::file_path() const

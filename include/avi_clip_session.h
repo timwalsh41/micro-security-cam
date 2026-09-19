@@ -108,6 +108,18 @@ class AviClipSession
         void append_frame(const uint8_t* data, size_t len);
 
         /**
+         * @brief Appends an audio chunk to the current AVI clip.
+         *
+         * Formats one audio chunk as an AVI chunk and writes it to SD.
+         * Called from the capture task at frame activation boundaries
+         * after draining the PSRAM ring buffer.
+         *
+         * @param data PCM audio bytes.
+         * @param len  Number of audio bytes.
+         */
+        void append_audio_chunk(const uint8_t* data, size_t len);
+
+        /**
          * @brief Requests clip closure (explicit stop or rotation).
          *
          * Lock-free; safe from any task context.
@@ -156,6 +168,17 @@ class AviClipSession
          *        (bytes).
          */
         uint32_t file_size() const;
+
+        /**
+         * @brief Returns the number of audio samples recorded in the
+         *        current clip.
+         */
+        uint32_t audio_samples_recorded() const;
+
+        /**
+         * @brief Returns whether audio is enabled for the current clip.
+         */
+        bool is_audio_enabled() const;
 
         /**
          * @brief Returns the generated file path of the current clip.
@@ -219,6 +242,9 @@ class AviClipSession
 
         /** File path of the currently open clip (persistent across close/open). */
         char m_clip_path[64]{};
+
+        /** Per-clip audio sample counter. */
+        std::atomic<uint32_t> m_audio_samples_recorded{0};
 };
 
 #endif // AVI_CLIP_SESSION_H

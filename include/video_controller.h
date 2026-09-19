@@ -16,6 +16,7 @@
 #include "ini_parser.h"
 #include "path_utils.h"
 #include "time_formatter.h"
+#include "mic_service.h"
 
 /** Forward declaration for the minimal stream-sink interface. */
 class IStreamService;
@@ -118,12 +119,14 @@ class VideoController
          * @param time      Reference to TimeService for frame pacing.
          * @param log       Reference to LoggingService for diagnostics.
          * @param scheduler Reference to ICaptureScheduler for frame scheduling.
+         * @param mic       Optional MicService for audio recording.
          */
         VideoController(CameraController& cam,
                         SdController& sd,
                         TimeService& time,
                         LoggingService& log,
-                        ICaptureScheduler& scheduler);
+                        ICaptureScheduler& scheduler,
+                        MicService* mic = nullptr);
 
         /**
          * @brief Initializes the video controller with the given configuration.
@@ -286,6 +289,16 @@ class VideoController
          *        additional consumers).
          */
         static constexpr size_t MAX_FRAME_CONSUMERS = 3;
+
+        /**
+         * @brief Sets the MicService for audio recording.
+         *
+         * Must be called before start_recording(). If null, audio
+         * recording is disabled.
+         *
+         * @param mic Optional MicService instance.
+         */
+        void set_mic_service(MicService* mic);
 
         /**
          * @brief Registers a frame consumer with the capture pipeline.
@@ -575,6 +588,15 @@ class VideoController
         /** @brief Executor-side stop_recording; true if it detached. */
         bool executor_stop_recording();
 
+        /**
+         * @brief Drains audio from the ring buffer and writes chunks to AVI.
+         *
+         * Called from the capture task at activation boundaries after
+         * dispatching the video frame. Writes audio chunks to the current
+         * AVI clip.
+         */
+        void drain_audio_to_clip();
+
         /** @brief Executor-side start_streaming. */
         bool executor_start_streaming();
 
@@ -646,6 +668,14 @@ class VideoController
         TimeService& m_time;
         LoggingService& m_log;
         ICaptureScheduler& m_scheduler;
+
+        /** Optional MicService for audio recording (may be null). */
+        MicService* m_mic{nullptr};
+
+        /** Buffered audio chunk (16-bit PCM). Filled at activation boundaries. */
+        std::vector<int16_t> m_audio_buffer;
+        /** Size of audio buffer to drain per frame (samples). */
+        size_t m_audio_chunk_size{0};
 
         /** Optional stream-sink for frame delivery (may be null). */
         IStreamService* m_stream_service{nullptr};

@@ -27,11 +27,53 @@ bool AviWriter::open(const char* path, uint16_t fps, uint16_t width, uint16_t he
     m_frame_count = 0;
     m_data_size = 0;
 
+    // Audio defaults
+    m_audio_enabled = false;
+    m_audio_data_size = 0;
+    m_audio_sample_count = 0;
+    m_audio_sample_rate = 16000;
+    m_audio_bits_per_sample = 16;
+    m_audio_channels = 1;
+
+    // Header size is video-only by default; audio may be added before
+    // the first frame via open_audio().
+    m_header_size = AVI_HEADER_SIZE_VIDEO_ONLY;
+    m_movi_list_size_offset = MOVI_LIST_SIZE_OFFSET;
+    m_movi_data_offset = MOVI_DATA_OFFSET;
+    m_audio_strl_offset = 0;
+    m_audio_strl_size = 0;
+    m_audio_strh_offset = 0;
+    m_audio_strf_offset = 0;
+
     m_index_entries.clear();
     m_index_buffer.clear();
 
     build_header();
     m_open = true;
+    return true;
+}
+
+bool AviWriter::open_audio(uint32_t sample_rate, uint16_t bits_per_sample,
+                           uint16_t channels)
+{
+    if (!m_open || m_frame_count > 0)
+    {
+        return false;
+    }
+
+    m_audio_enabled = true;
+    m_audio_sample_rate = sample_rate;
+    m_audio_bits_per_sample = bits_per_sample;
+    m_audio_channels = channels;
+    m_audio_data_size = 0;
+    m_audio_sample_count = 0;
+
+    // Recompute header with audio stream
+    m_header_size = AVI_HEADER_SIZE_DUAL_STREAM;
+    m_movi_list_size_offset = DUAL_MOVI_LIST_SIZE_OFFSET;
+    m_movi_data_offset = 4;
+
+    build_header();
     return true;
 }
 
@@ -66,15 +108,65 @@ bool AviWriter::write_frame(const uint8_t* jpeg_data, size_t jpeg_len)
     }
 
     // Record index entry: offset is from start of movi data to chunk header
-    uint32_t chunk_offset = MOVI_DATA_OFFSET + m_data_size;
+    uint32_t chunk_offset = static_cast<uint32_t>(m_movi_data_offset) + m_data_size;
     IndexEntry entry;
     entry.offset = chunk_offset;
     entry.size = static_cast<uint32_t>(jpeg_len);
+    entry.is_audio = false;
     m_index_entries.push_back(entry);
 
     // Update counters
     m_data_size += static_cast<uint32_t>(aligned_size);
     m_frame_count++;
+
+    return true;
+}
+
+bool AviWriter::write_audio_chunk(const uint8_t* audio_data, size_t audio_len)
+{
+    if (!m_open || !m_audio_enabled || !audio_data || audio_len == 0)
+    {
+        return false;
+    }
+
+    // Calculate DWORD-aligned total chunk size
+    size_t raw_size = CHUNK_HEADER_SIZE + audio_len;
+    size_t aligned_size = dword_align(raw_size);
+    size_t padding = aligned_size - raw_size;
+
+    // Build audio chunk: marker(4) + size(4) + data + padding
+    m_audio_chunk.resize(aligned_size);
+
+    // Write chunk ID: stream 1, audio = "01wb" FourCC
+    write_four_cc(m_audio_chunk, 0, "01wb");
+
+    // Write data size (audio only, not including header or padding)
+    write_u32(m_audio_chunk, 4, static_cast<uint32_t>(audio_len));
+
+    // Copy audio data
+    memcpy(&m_audio_chunk[CHUNK_HEADER_SIZE], audio_data, audio_len);
+
+    // Zero-fill padding
+    if (padding > 0)
+    {
+        memset(&m_audio_chunk[raw_size], 0, padding);
+    }
+
+    // Record index entry: offset is from start of movi data to chunk header
+    // Audio chunks are interleaved with video, so the offset is based on
+    // m_data_size (which includes both video and audio data).
+    uint32_t chunk_offset = static_cast<uint32_t>(m_movi_data_offset) + m_data_size;
+    IndexEntry entry;
+    entry.offset = chunk_offset;
+    entry.size = static_cast<uint32_t>(audio_len);
+    entry.is_audio = true;
+    m_index_entries.push_back(entry);
+
+    // Update counters
+    m_data_size += static_cast<uint32_t>(aligned_size);
+    m_audio_data_size += static_cast<uint32_t>(audio_len);
+    // audio_len is in bytes; divide by bytes_per_sample to get sample count
+    m_audio_sample_count += audio_len / (m_audio_bits_per_sample / 8);
 
     return true;
 }
@@ -113,7 +205,8 @@ uint32_t AviWriter::file_size() const
         return 0;
     }
     // Total = header + movi data + idx1 header + index data
-    return AVI_HEADER_SIZE + m_data_size + CHUNK_HEADER_SIZE +
+    return static_cast<uint32_t>(m_header_size) + m_data_size +
+           CHUNK_HEADER_SIZE +
            static_cast<uint32_t>(m_index_entries.size() * INDEX_ENTRY_SIZE);
 }
 
@@ -144,6 +237,15 @@ AviBytes AviWriter::last_frame_chunk() const
     return {m_frame_chunk.data(), m_frame_chunk.size()};
 }
 
+AviBytes AviWriter::last_audio_chunk() const
+{
+    if (m_audio_chunk.empty())
+    {
+        return {nullptr, 0};
+    }
+    return {m_audio_chunk.data(), m_audio_chunk.size()};
+}
+
 AviBytes AviWriter::index() const
 {
     if (m_index_buffer.empty())
@@ -168,7 +270,7 @@ AviBytes AviWriter::patched_header() const
 
 void AviWriter::build_header()
 {
-    m_header.resize(AVI_HEADER_SIZE, 0);
+    m_header.resize(m_header_size, 0);
 
     // ---- RIFF header ----
     write_four_cc(m_header, 0, "RIFF");
@@ -177,7 +279,8 @@ void AviWriter::build_header()
 
     // ---- LIST hdrl ----
     write_four_cc(m_header, 12, "LIST");
-    write_u32(m_header, HDRL_LIST_SIZE_OFFSET, 192);
+    // hdrl list size patched at close()
+    write_u32(m_header, HDRL_LIST_SIZE_OFFSET, 0);  // Placeholder
     write_four_cc(m_header, 20, "hdrl");
 
     // ---- avih (Main AVI Header) ----
@@ -189,7 +292,7 @@ void AviWriter::build_header()
     write_u32(m_header, 44, 0x910);  // dwFlags = AVIF_HASINDEX | AVIF_WASCAPKEYFRAME | AVIF_TRUSTCKTYPE
     // dwTotalFrames patched at close() (offset 48)
     // dwInitialFrames = 0 (offset 52)
-    write_u32(m_header, 56, 1);  // dwStreams = 1
+    write_u32(m_header, 56, m_audio_enabled ? 2 : 1);  // dwStreams
     // dwSuggestedBufferSize = 0 (offset 60)
     write_u32(m_header, 64, m_width);
     write_u32(m_header, 68, m_height);
@@ -197,10 +300,10 @@ void AviWriter::build_header()
 
     // ---- LIST strl (video stream) ----
     write_four_cc(m_header, 88, "LIST");
-    write_u32(m_header, STRL_LIST_SIZE_OFFSET, 116);
+    write_u32(m_header, STRL_LIST_SIZE_OFFSET, 116);  // Video strl size
     write_four_cc(m_header, 96, "strl");
 
-    // ---- strh (Stream Header) ----
+    // ---- strh (Video Stream Header) ----
     write_four_cc(m_header, 100, "strh");
     write_u32(m_header, 104, 56);  // data size
     write_four_cc(m_header, 108, "vids");  // stream type: video
@@ -217,7 +320,7 @@ void AviWriter::build_header()
     write_u32(m_header, 148, 0xFFFFFFFF);  // dwQuality = default (-1)
     // dwSampleSize = 0 (offset 152)
 
-    // ---- strf (Stream Format: BITMAPINFOHEADER) ----
+    // ---- strf (Video Stream Format: BITMAPINFOHEADER) ----
     write_four_cc(m_header, 164, "strf");
     write_u32(m_header, 168, 40);  // data size
     write_u32(m_header, 172, 40);  // biSize
@@ -232,10 +335,56 @@ void AviWriter::build_header()
     // biClrUsed = 0 (offset 204)
     // biClrImportant = 0 (offset 208)
 
+    // If audio is enabled, build the audio stream header
+    if (m_audio_enabled)
+    {
+        build_audio_stream_header();
+    }
+
     // ---- LIST movi ----
-    write_four_cc(m_header, 212, "LIST");
-    // movi list size patched at close() (offset 216)
-    write_four_cc(m_header, 220, "movi");
+    // LIST FourCC is at movi_list_size_offset - 4
+    write_four_cc(m_header, m_movi_list_size_offset - 4, "LIST");
+    // movi list size patched at close()
+    write_u32(m_header, m_movi_list_size_offset, 0);  // Placeholder
+    write_four_cc(m_header, m_movi_list_size_offset + 4, "movi");
+}
+
+void AviWriter::build_audio_stream_header()
+{
+    // Audio strl list
+    write_four_cc(m_header, AUDIO_STRL_LIST_OFFSET, "LIST");
+    write_u32(m_header, AUDIO_STRL_LIST_SIZE_OFFSET, 116);  // Audio strl size
+    write_four_cc(m_header, AUDIO_STRL_LIST_OFFSET + 8, "strl");
+
+    // Audio strh (Stream Header)
+    write_four_cc(m_header, AUDIO_STRH_OFFSET, "strh");
+    write_u32(m_header, AUDIO_STRH_OFFSET + 4, 56);  // data size
+    write_four_cc(m_header, AUDIO_STRH_DATA_OFFSET, "auds");  // stream type: audio
+    write_four_cc(m_header, AUDIO_STRH_DATA_OFFSET + 4, "  \0");  // handler: no handler (PCM)
+    // dwFlags = 0 (offset AUDIO_STRH_DATA_OFFSET + 8)
+    // wPriority = 0 (offset AUDIO_STRH_DATA_OFFSET + 12)
+    // wLanguage = 0 (offset AUDIO_STRH_DATA_OFFSET + 14)
+    // dwInitialFrames = 0 (offset AUDIO_STRH_DATA_OFFSET + 16)
+    write_u32(m_header, AUDIO_STRH_DATA_OFFSET + 20, 1);  // dwScale
+    write_u32(m_header, AUDIO_STRH_DATA_OFFSET + 24, m_audio_sample_rate);  // dwRate
+    // dwStart = 0 (offset AUDIO_STRH_DATA_OFFSET + 28)
+    // dwLength patched at close() (offset AUDIO_STRH_DATA_OFFSET + 32)
+    // dwSuggestedBufferSize = 0 (offset AUDIO_STRH_DATA_OFFSET + 36)
+    write_u32(m_header, AUDIO_STRH_DATA_OFFSET + 40, 0xFFFFFFFF);  // dwQuality = default (-1)
+    write_u32(m_header, AUDIO_STRH_DATA_OFFSET + 44,
+              static_cast<uint32_t>(m_audio_bits_per_sample * m_audio_channels / 8));  // dwSampleSize
+
+    // Audio strf (Stream Format: WAVEFORMATEX)
+    write_four_cc(m_header, AUDIO_STRF_OFFSET, "strf");
+    write_u32(m_header, AUDIO_STRF_DATA_OFFSET, 16);  // data size (WAVEFORMATEX)
+    write_u16(m_header, AUDIO_STRF_DATA_OFFSET + 4, 1);  // wFormatTag = PCM
+    write_u16(m_header, AUDIO_STRF_DATA_OFFSET + 6, m_audio_channels);  // nChannels
+    write_u32(m_header, AUDIO_STRF_DATA_OFFSET + 8, m_audio_sample_rate);  // nSamplesPerSec
+    write_u32(m_header, AUDIO_STRF_DATA_OFFSET + 12,
+              m_audio_sample_rate * m_audio_bits_per_sample * m_audio_channels / 8);  // nAvgBytesPerSec
+    write_u16(m_header, AUDIO_STRF_DATA_OFFSET + 16,
+              m_audio_bits_per_sample * m_audio_channels / 8);  // nBlockAlign
+    write_u16(m_header, AUDIO_STRF_DATA_OFFSET + 18, m_audio_bits_per_sample);  // wBitsPerSample
 }
 
 // ============================================================
@@ -251,11 +400,30 @@ void AviWriter::patch_header()
     // avih: dwTotalFrames
     write_u32(m_header, AVIH_FRAME_COUNT_OFFSET, m_frame_count);
 
-    // strh: dwLength (frame count)
+    // video strh: dwLength (frame count)
     write_u32(m_header, STRH_FRAME_COUNT_OFFSET, m_frame_count);
 
+    // LIST hdrl size
+    if (m_audio_enabled)
+    {
+        // hdrl = avih(64) + video_strl(124) + audio_strl(124) = 312
+        write_u32(m_header, HDRL_LIST_SIZE_OFFSET, 304);
+    }
+    else
+    {
+        // hdrl = avih(64) + video_strl(124) = 192
+        write_u32(m_header, HDRL_LIST_SIZE_OFFSET, 192);
+    }
+
     // LIST movi size = 4 ("movi") + total frame data with padding
-    write_u32(m_header, MOVI_LIST_SIZE_OFFSET, MOVI_DATA_OFFSET + m_data_size);
+    write_u32(m_header, m_movi_list_size_offset, MOVI_DATA_OFFSET + m_data_size);
+
+    // Audio strh: dwLength (sample count) - patched at close
+    // dwLength is at offset 32 from the start of the strh data block
+    if (m_audio_enabled)
+    {
+        write_u32(m_header, AUDIO_STRH_DATA_OFFSET + 32, m_audio_sample_count);
+    }
 }
 
 // ============================================================
@@ -277,7 +445,15 @@ void AviWriter::build_index()
         size_t offset = CHUNK_HEADER_SIZE + (i * INDEX_ENTRY_SIZE);
         const IndexEntry& entry = m_index_entries[i];
 
-        write_four_cc(m_index_buffer, offset, "00dc");     // ckid
+        // Use "01wb" for audio chunks, "00dc" for video chunks
+        if (entry.is_audio)
+        {
+            write_four_cc(m_index_buffer, offset, "01wb");
+        }
+        else
+        {
+            write_four_cc(m_index_buffer, offset, "00dc");
+        }
         write_u32(m_index_buffer, offset + 4, 0x10);       // dwFlags = AVIIF_KEYFRAME
         write_u32(m_index_buffer, offset + 8, entry.offset); // dwOffset
         write_u32(m_index_buffer, offset + 12, entry.size);  // dwSize

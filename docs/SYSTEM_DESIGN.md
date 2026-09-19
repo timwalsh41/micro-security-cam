@@ -32,7 +32,7 @@ The design follows a layered architecture that separates hardware access from ap
 │                Service / Controller Layer                   │
 │  CameraController    VideoController   LedStateMachine      │
 │  SdController   AviClipSession     StreamService        │
-│  TimeService         LoggingService                         │
+│  MicService          TimeService         LoggingService     │
 │  ConfigService       IniParser                              │
 │  WifiService         WebServerService                       │
 └─────────────────────────────────────────────────────────────┘
@@ -42,7 +42,7 @@ The design follows a layered architecture that separates hardware access from ap
 │                Hardware Abstraction Layer (HAL)             │
 │  CameraHal       SdCardHal      LogBackend                  │
 │  GpioHal         TimeHal        WifiHal    SerialHal        │
-│  WebServerHal    StreamFrameChannel                         │
+│  MicHal          WebServerHal   StreamFrameChannel          │
 │  HardwarePeripheralManager   (shared pin arbitration)        │
 └─────────────────────────────────────────────────────────────┘
                          │
@@ -60,7 +60,8 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 | Task | Created By | Layer | Core | Stack (bytes) | Priority | Scope / Responsibility |
 |------|-----------|-------|------|---------------|----------|------------------------|
 | `loopTask` | Arduino framework | Arduino framework | 1 | framework-managed | framework-managed | Runs `setup()` then `loop()`. `loop()` ticks the `CommandHandler` (polls serial/web transports), the `SystemOrchestrator`, and the `LedStateMachine`, emits the periodic heartbeat log, and ticks the `MultiLogBackend` so buffered backends (e.g. `SdLogWriter`) flush. |
-| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task — the sole executor of capture-pipeline state. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_dispatch_frame()`, which first executes queued pipeline commands (start/stop of recording and streaming, consumer registration) against executor-owned state, then captures a frame and dispatches it to registered consumers. Exits (and signals an exit semaphore) when `stop()` is requested. |
+| `capture` | `CaptureSchedulerEsp32::start()` | Application | 0 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS capture task — the sole executor of capture-pipeline state. Blocks on a task notification from the timer ISR, then invokes `VideoController::capture_and_dispatch_frame()`, which first executes queued pipeline commands (start/stop of recording and streaming, consumer registration) against executor-owned state, drains audio from the PSRAM ring buffer (when audio is enabled), then captures a frame and dispatches it to registered consumers. Exits (and signals an exit semaphore) when `stop()` is requested. |
+| `mic_task` | `MicService::start()` | Application | 1 | 4096 | `configMAX_PRIORITIES - 1` | FreeRTOS mic task — reads I2S PDM samples into a PSRAM ring buffer. Runs continuously while recording is active. The capture task drains audio from the ring buffer at frame activation boundaries and writes audio chunks to the AVI file. The mic task never writes to SD — the capture task is the sole SD writer. |
 | `async_tcp` | `AsyncTCP` library | Arduino framework | 1 | library-managed | library-managed | AsyncTCP event loop task that services TCP connections for the `ESPAsyncWebServer`. |
 | `wifi` | ESP-IDF | ESP-IDF framework | 0 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF WiFi driver task handling the WiFi MAC/PHY event loop. |
 | `ipc0` / `ipc1` | ESP-IDF | ESP-IDF framework | 0 / 1 | ESP-IDF-managed | ESP-IDF-managed | ESP-IDF inter-processor call tasks used for cross-core function calls (e.g. cache flush, flash operations). |
@@ -150,6 +151,15 @@ package "HAL interfaces" as HAL_IF {
         +init(port : uint16_t) : bool
         +on(uri, method, handler)
         +stop()
+    }
+
+    interface MicHal {
+        +init(config : MicConfig) : MicInitResult
+        +start()
+        +stop()
+        +deinit()
+        +read_samples(buffer, count) : size_t
+        +is_initialized() : bool
     }
 
     interface RequestRef {
@@ -709,6 +719,30 @@ package "Controllers" {
         +last_frame_chunk() : AviBytes
         +patched_header() : AviBytes
         +index() : AviBytes
+        +open_audio(sample_rate, bits_per_sample, channels) : bool
+        +write_audio_chunk(audio_data, audio_len) : bool
+        +last_audio_chunk() : AviBytes
+    }
+
+    class MicService {
+        -m_hal : MicHal&
+        -m_log : LoggingService&
+        -m_config : ConfigService&
+        -m_ring_buffer : int16_t*
+        -m_write_idx : atomic<size_t>
+        -m_read_idx : atomic<size_t>
+        -m_capturing : volatile bool
+        -m_task_handle : void*
+        +init() : bool
+        +start() : bool
+        +stop() : bool
+        +deinit()
+        +get_audio_chunk(buffer, max_samples) : size_t
+        +available_samples() : size_t
+        +generate_wav_header(header, header_size, data_size) : bool
+        +sample_rate() : uint32_t
+        +is_capturing() : bool
+        +mic_loop()
     }
 
     interface ICaptureScheduler {
@@ -807,6 +841,7 @@ VideoController --> SdController_ext : sync writes
 VideoController --> LoggingService_ext : diagnostics
 VideoController --> TimeService_ext : clip duration
 VideoController --> ICaptureScheduler : frame pacing
+VideoController --> MicService : audio drain (optional)
 VideoController --> "0..1" IStreamService_ext : optional frame sink + viewer teardown
 VideoController --> StreamService_ext : set_stream_service() wiring
 VideoController o-right-> "0..3" IFrameConsumer : consumer registry
