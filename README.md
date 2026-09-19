@@ -114,6 +114,13 @@ max_file_size_mb=0
 jpeg_quality=10
 audio_enabled=false
 mic_gain=2
+
+[logging]
+sd_enabled=after_set_time
+serial_enabled=true
+serial_min_level=info
+sd_min_level=info
+retention_days=7
 ```
 
 ### Sections and Keys
@@ -144,10 +151,17 @@ mic_gain=2
 | `[video]` | `jpeg_quality` | integer | `10` | JPEG quality (0–63, lower = better) |
 | `[video]` | `audio_enabled` | bool | `false` | Enable audio recording |
 | `[video]` | `mic_gain` | integer | `2` | Microphone gain (1–8) |
+| `[logging]` | `sd_enabled` | string | `after_set_time` | SD logging mode: `true` (always), `false` (disabled), `after_set_time` (enabled only after `set_time` command) |
+| `[logging]` | `serial_enabled` | bool | `true` | Enable serial logging |
+| `[logging]` | `serial_min_level` | string | `info` | Minimum log level for serial output |
+| `[logging]` | `sd_min_level` | string | `info` | Minimum log level for SD card output |
+| `[logging]` | `retention_days` | integer | `7` | Number of days to retain SD log files (1–255) |
 
 Comments (`#` or `;`) and blank lines are ignored. Section and key names are case-insensitive. Unknown sections and keys are silently ignored.
 
 Boolean keys accept `true` or `false` (case-insensitive); any other value is parsed as `false`.
+
+String keys like `sd_enabled` accept `true`, `false`, and `after_set_time` (case-insensitive).
 
 ## SD Card & Degraded Mode
 
@@ -159,6 +173,16 @@ In degraded mode:
 - `RECORD_STOP` remains a successful no-op.
 - `GET /status` (and serial `STATUS`) reports the latched card state in the additive `"sd": false` field.
 - `CONFIG_SAVE sd` fails with `SD_UNAVAILABLE`; use `CONFIG_SAVE nvs` instead.
+
+### SD Logging Mode
+
+The `sd_enabled` configuration option in the `[logging]` section controls when SD card logging is activated:
+
+- `true` — Always enabled (SD log files are written immediately if the card is present)
+- `false` — Completely disabled
+- `after_set_time` — Enabled only after the real-time clock has been set via the `set_time` command (default). This avoids writing meaningless timestamped log files before the device knows the current time.
+
+When `after_set_time` is active, the device logs a message indicating that SD logging is deferred until the time is set. Once `set_time` is called, SD logging begins automatically.
 
 Late SD insertion is **not** detected at runtime. To recover from degraded mode, insert a card (if missing) and power-cycle the device.
 

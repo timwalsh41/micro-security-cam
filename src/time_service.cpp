@@ -43,6 +43,12 @@ void RealTimeService::set_unix_offset(uint32_t unix_time, uint32_t system_ms)
     // Relaxed suffices — the pair is self-contained and no other
     // shared state is ordered against this store.
     m_offset_pair.store(packed, std::memory_order_relaxed);
+    m_time_set.store(true, std::memory_order_relaxed);
+}
+
+bool RealTimeService::is_time_set() const
+{
+    return m_time_set.load(std::memory_order_relaxed);
 }
 
 uint32_t RealTimeService::unix_now() const

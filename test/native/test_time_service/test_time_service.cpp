@@ -324,6 +324,43 @@ void test_localtime_concurrent_with_offset_writers()
     TEST_ASSERT_EQUAL_INT(0, torn_calls.load());
 }
 
+// ============================================================
+// is_time_set() tests
+// ============================================================
+
+/**
+ * @brief is_time_set() returns false before set_unix_offset() is called.
+ */
+void test_is_time_set_returns_false_before_set()
+{
+    RealTimeService time;
+    TEST_ASSERT_FALSE(time.is_time_set());
+}
+
+/**
+ * @brief is_time_set() returns true after set_unix_offset() is called.
+ */
+void test_is_time_set_returns_true_after_set()
+{
+    RealTimeService time;
+    set_mock_millis(1000);
+    time.set_unix_offset(1600000000, 1000);
+    TEST_ASSERT_TRUE(time.is_time_set());
+}
+
+/**
+ * @brief is_time_set() returns true after a second set_unix_offset().
+ */
+void test_is_time_set_stays_true_after_second_set()
+{
+    RealTimeService time;
+    set_mock_millis(1000);
+    time.set_unix_offset(1600000000, 1000);
+    set_mock_millis(12345678);
+    time.set_unix_offset(1600000100, 12345678);
+    TEST_ASSERT_TRUE(time.is_time_set());
+}
+
 void setUp()
 {
 }
@@ -352,6 +389,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_localtime_returns_broken_down_time);
     RUN_TEST(test_unix_now_concurrent_with_offset_writers);
     RUN_TEST(test_localtime_concurrent_with_offset_writers);
+
+    // is_time_set() tests
+    RUN_TEST(test_is_time_set_returns_false_before_set);
+    RUN_TEST(test_is_time_set_returns_true_after_set);
+    RUN_TEST(test_is_time_set_stays_true_after_second_set);
 
     return UNITY_END();
 }

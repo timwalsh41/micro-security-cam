@@ -378,6 +378,7 @@ package "Services" {
         +delay_ms(ms)
         +delay_us(us)
         +set_unix_offset(unix_time, system_ms)
+        +is_time_set() : bool
         +unix_now() : uint32_t
         +localtime() : std::tm
         +{static} elapsed_ms(since, now) : millis_t
@@ -385,6 +386,7 @@ package "Services" {
 
     class RealTimeService {
         -m_offset_pair : atomic<uint64_t>
+        -m_time_set : atomic<bool>
     }
 
     enum LogLevel <<hal>> {
@@ -1008,6 +1010,8 @@ Abstract interface for time acquisition. Provides `now()` (current milliseconds)
 
 `RealTimeService` delegates to the `TimeHal` functions (`hal::get_millis()`, `hal::delay_ms()`). A mock implementation returns a programmable value for deterministic testing.
 
+`RealTimeService` also tracks whether `set_unix_offset()` has been called via an atomic `m_time_set` flag. `is_time_set()` returns this flag, allowing callers to gate time-dependent operations (e.g. SD log writing) until the real-time clock has been set via the `set_time` command.
+
 ### LedStateMachine
 
 **File**: `include/led_state_machine.h`
@@ -1210,7 +1214,7 @@ max_file_size_mb=0
 jpeg_quality=10
 
 [logging]
-sd_enabled=true
+sd_enabled=after_set_time
 serial_enabled=true
 serial_min_level=info
 sd_min_level=info
@@ -1255,7 +1259,7 @@ struct ConfigData
                           uint8_t jpeg_quality;
                           bool audio_enabled{false};
                           uint8_t mic_gain{2}; };
-    struct LoggingConfig { bool sd_enabled{true};
+    struct LoggingConfig { SdEnabledMode sd_enabled{SdEnabledMode::AFTER_SET_TIME};
                            bool serial_enabled{true};
                            char serial_min_level[64]{"info"};
                            char sd_min_level[64]{"info"};
@@ -1322,7 +1326,7 @@ The composition root loads the config at boot in a fixed precedence order; each 
 | `NVS_NAMESPACE` | `config` | NVS namespace holding the persisted config |
 | `NVS_KEY` | `config` | NVS key holding the serialized config blob |
 | `NVS_SCHEMA_KEY` | `schema_version` | NVS key holding the config schema version (`uint32_t`) |
-| `NVS_SCHEMA_VERSION` | 1 | Current config schema version; increment on incompatible layout changes |
+| `NVS_SCHEMA_VERSION` | 2 | Current config schema version; increment on incompatible layout changes |
 
 ### Integration
 

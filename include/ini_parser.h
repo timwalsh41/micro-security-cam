@@ -5,6 +5,16 @@
 #include <cstddef>
 
 /**
+ * @brief Enum for SD logging enable modes.
+ */
+enum class SdEnabledMode : uint8_t
+{
+    TRUE,           // Always enabled
+    FALSE,          // Completely disabled
+    AFTER_SET_TIME  // Enabled only after set_time command
+};
+
+/**
  * @file ini_parser.h
  * @brief INI-style configuration file parser and data structures.
  *
@@ -117,7 +127,7 @@ struct ConfigData
      */
     struct LoggingConfig
     {
-        bool sd_enabled{true};
+        SdEnabledMode sd_enabled{SdEnabledMode::AFTER_SET_TIME};
         bool serial_enabled{true};
         char serial_min_level[CONFIG_FIELD_MAX_LENGTH]{"info"};
         char sd_min_level[CONFIG_FIELD_MAX_LENGTH]{"info"};
@@ -270,6 +280,18 @@ class IniParser
          * @return true if the value matches "true", false otherwise.
          */
         static bool get_bool_val(const char* val_start, size_t val_len);
+
+        /**
+         * @brief Parses a value as an SdEnabledMode.
+         *
+         * Accepts "true", "false", "after_set_time" (case-insensitive).
+         * Defaults to AFTER_SET_TIME on unrecognized value.
+         *
+         * @param val_start Pointer to the start of the value.
+         * @param val_len   Length of the value.
+         * @return Parsed SdEnabledMode value.
+         */
+        static SdEnabledMode get_sd_enabled_val(const char* val_start, size_t val_len);
 };
 
 #endif // INI_PARSER_H

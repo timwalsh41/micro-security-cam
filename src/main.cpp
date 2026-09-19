@@ -83,6 +83,7 @@ SystemOrchestrator system_orchestrator{
 
 // --- Global state variables ---
 millis_t last_log_heartbeat_time_ms = 0;
+bool sd_logging_pending = false;
 
 // --- Free helper functions ---
 /**
@@ -250,8 +251,20 @@ void setup()
     // --- Initialize SD logging (after SD card is ready) ---
     if (sd_controller.is_card_available())
     {
-        multi_log_backend.add_backend(&sd_log_writer, hal::LogLevel::INFO);
-        logger.info("MAIN", "SD logging ready");
+        switch (config_service.config().logging.sd_enabled)
+        {
+            case SdEnabledMode::TRUE:
+                multi_log_backend.add_backend(&sd_log_writer, hal::LogLevel::INFO);
+                logger.info("MAIN", "SD logging ready");
+                break;
+            case SdEnabledMode::FALSE:
+                logger.info("MAIN", "SD logging disabled: config");
+                break;
+            case SdEnabledMode::AFTER_SET_TIME:
+                sd_logging_pending = true;
+                logger.info("MAIN", "SD logging deferred: waiting for set_time");
+                break;
+        }
     }
     else
     {
@@ -283,6 +296,17 @@ void loop()
 
     // --- Flush SD log buffer ---
     multi_log_backend.tick();
+
+    // --- Enable SD logging if deferred and time is now set ---
+    if (sd_logging_pending && real_time.is_time_set())
+    {
+        if (sd_controller.is_card_available())
+        {
+            multi_log_backend.add_backend(&sd_log_writer, hal::LogLevel::INFO);
+            logger.info("MAIN", "SD logging enabled: time set");
+        }
+        sd_logging_pending = false;
+    }
 
     real_time.delay_us(constants::MAIN_LOOP_TIME_US);
 }

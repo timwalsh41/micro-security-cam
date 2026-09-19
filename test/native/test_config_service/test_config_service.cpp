@@ -153,7 +153,7 @@ void test_load_logging_config()
     TEST_ASSERT_TRUE(svc.load(reinterpret_cast<const uint8_t*>(ini), strlen(ini)));
 
     const ConfigData& cfg = svc.config();
-    TEST_ASSERT_FALSE(cfg.logging.sd_enabled);
+    TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, cfg.logging.sd_enabled);
     TEST_ASSERT_FALSE(cfg.logging.serial_enabled);
     TEST_ASSERT_EQUAL_STRING("warning", cfg.logging.serial_min_level);
     TEST_ASSERT_EQUAL_STRING("error", cfg.logging.sd_min_level);
@@ -798,6 +798,88 @@ void test_typed_set_serialize_round_trip()
 }
 
 // ============================================================
+// SdEnabledMode enum tests
+// ============================================================
+
+/**
+ * @brief Default sd_enabled is AFTER_SET_TIME.
+ */
+void test_sd_enabled_default_is_after_set_time()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, svc.config().logging.sd_enabled);
+}
+
+/**
+ * @brief set/get sd_enabled with "true" returns SdEnabledMode::TRUE.
+ */
+void test_sd_enabled_set_get_true()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_TRUE(svc.set_config_value("logging.sd_enabled", "true"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::TRUE, svc.config().logging.sd_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("logging.sd_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("true", value);
+}
+
+/**
+ * @brief set/get sd_enabled with "false" returns SdEnabledMode::FALSE.
+ */
+void test_sd_enabled_set_get_false()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_TRUE(svc.set_config_value("logging.sd_enabled", "false"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, svc.config().logging.sd_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("logging.sd_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("false", value);
+}
+
+/**
+ * @brief set/get sd_enabled with "after_set_time" returns SdEnabledMode::AFTER_SET_TIME.
+ */
+void test_sd_enabled_set_get_after_set_time()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    char value[CONFIG_FIELD_MAX_LENGTH];
+    TEST_ASSERT_TRUE(svc.set_config_value("logging.sd_enabled", "after_set_time"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, svc.config().logging.sd_enabled);
+    TEST_ASSERT_TRUE(svc.get_config_value("logging.sd_enabled", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("after_set_time", value);
+}
+
+/**
+ * @brief Unrecognized sd_enabled value is rejected.
+ */
+void test_sd_enabled_unrecognized_rejected()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    TEST_ASSERT_FALSE(svc.set_config_value("logging.sd_enabled", "invalid"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, svc.config().logging.sd_enabled);
+}
+
+/**
+ * @brief sd_enabled case-insensitive parsing works.
+ */
+void test_sd_enabled_case_insensitive()
+{
+    LoggingService log = make_logger();
+    ConfigService svc(log);
+    TEST_ASSERT_TRUE(svc.set_config_value("logging.sd_enabled", "TRUE"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::TRUE, svc.config().logging.sd_enabled);
+    TEST_ASSERT_TRUE(svc.set_config_value("logging.sd_enabled", "FALSE"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::FALSE, svc.config().logging.sd_enabled);
+    TEST_ASSERT_TRUE(svc.set_config_value("logging.sd_enabled", "After_Set_Time"));
+    TEST_ASSERT_EQUAL(SdEnabledMode::AFTER_SET_TIME, svc.config().logging.sd_enabled);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -866,6 +948,14 @@ int main(int argc, char** argv)
     RUN_TEST(test_set_numeric_unparseable_rejected);
     RUN_TEST(test_unknown_typed_key_rejected);
     RUN_TEST(test_typed_set_serialize_round_trip);
+
+    // SdEnabledMode enum
+    RUN_TEST(test_sd_enabled_default_is_after_set_time);
+    RUN_TEST(test_sd_enabled_set_get_true);
+    RUN_TEST(test_sd_enabled_set_get_false);
+    RUN_TEST(test_sd_enabled_set_get_after_set_time);
+    RUN_TEST(test_sd_enabled_unrecognized_rejected);
+    RUN_TEST(test_sd_enabled_case_insensitive);
 
     return UNITY_END();
 }
