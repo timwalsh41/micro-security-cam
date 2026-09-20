@@ -12,6 +12,8 @@
 #include "hal/gpio_hal.h"
 #include "hal/hardware_peripheral_manager_impl.h"
 #include "hal/mic_hal_impl.h"
+#include "hal/mic_task_runner_esp32.h"
+#include "hal/memory_allocator_esp32.h"
 #include "camera_controller.h"
 #include "video_controller.h"
 #include "capture_scheduler_esp32.h"
@@ -239,7 +241,10 @@ private:
     CaptureSchedulerEsp32 m_capture_scheduler{m_timer_hal};
     ConfigService m_config_service{m_logger};
     hal::MicHalImpl m_mic_hal;
-    MicService m_mic_service{m_mic_hal, m_logger, m_config_service};
+    MicTaskRunnerEsp32 m_mic_task_runner;
+    MemoryAllocatorEsp32 m_mic_allocator;
+    MicService m_mic_service{m_mic_hal, m_logger, m_config_service,
+                              m_mic_task_runner, m_mic_allocator};
     VideoController m_video_controller{m_camera_ctrl, m_sd_controller, m_real_time, m_logger, m_capture_scheduler, &m_mic_service};
     PlatformInitializer m_platform_init;
     hal::WifiHalImpl m_wifi_hal_impl;

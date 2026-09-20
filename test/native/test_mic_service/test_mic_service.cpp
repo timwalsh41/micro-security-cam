@@ -4,6 +4,8 @@
 #include "mock_log_backend.h"
 #include "config_service.h"
 #include "time_service.h"
+#include "mock_mic_task_runner.h"
+#include "mock_memory_allocator.h"
 #include <cstring>
 #include <vector>
 
@@ -18,12 +20,14 @@ struct TestFixture
     RealTimeService time;
     LoggingService logger;
     ConfigService config;
+    MockMicTaskRunner task_runner;
+    MockMemoryAllocator allocator;
     MicService svc;
 
     TestFixture()
         : logger(log_backend, time)
         , config(logger)
-        , svc(mic_hal, logger, config)
+        , svc(mic_hal, logger, config, task_runner, allocator)
     {
     }
 };

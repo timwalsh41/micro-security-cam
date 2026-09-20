@@ -2,90 +2,19 @@
 #include <cstring>
 #include <cstdio>
 
-#ifndef UNIT_TESTING
-
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <esp_heap_caps.h>
-
-static void mic_task_func(void* param)
-{
-    static_cast<MicService*>(param)->mic_loop();
-}
-
-static void create_mic_task(MicService* service, void** handle)
-{
-    xTaskCreatePinnedToCore(mic_task_func, "mic_task", 4096,
-                            service, 5,
-                            static_cast<TaskHandle_t*>(handle), 1);
-}
-
-static void delete_mic_task(void* handle)
-{
-    if (handle != nullptr)
-    {
-        vTaskDelete(static_cast<TaskHandle_t>(handle));
-    }
-}
-
-static void task_delay_ms(uint32_t ms)
-{
-    vTaskDelay(pdMS_TO_TICKS(ms));
-}
-
-static void task_yield()
-{
-    taskYIELD();
-}
-
-#else
-
-#include <thread>
-#include <chrono>
-
-static std::thread* s_mic_thread = nullptr;
-
-static void create_mic_task(MicService* service, void** handle)
-{
-    s_mic_thread = new std::thread([service, handle]()
-    {
-        service->mic_loop();
-        *handle = nullptr;
-    });
-}
-
-static void delete_mic_task(void* handle)
-{
-    (void)handle;
-    if (s_mic_thread != nullptr)
-    {
-        s_mic_thread->join();
-        delete s_mic_thread;
-        s_mic_thread = nullptr;
-    }
-}
-
-static void task_delay_ms(uint32_t ms)
-{
-    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-}
-
-static void task_yield()
-{
-    std::this_thread::yield();
-}
-
-#endif
-
 // ============================================================
 // Construction
 // ============================================================
 
 MicService::MicService(hal::MicHal& hal, LoggingService& log,
-                       ConfigService& config)
+                       ConfigService& config,
+                       IMicTaskRunner& task_runner,
+                       IMemoryAllocator& allocator)
     : m_hal(hal)
     , m_log(log)
     , m_config(config)
+    , m_task_runner(task_runner)
+    , m_memory_allocator(allocator)
 {
 }
 
@@ -97,24 +26,13 @@ bool MicService::init()
 {
     // Read audio parameters from config
     const ConfigData::VideoConfig& vconfig = m_config.config().video;
-    m_sample_rate = 16000;
+    m_sample_rate = SAMPLE_RATE;
     m_bits_per_sample = 16;
     m_channels = 1;
 
     // Allocate PSRAM ring buffer
     size_t ring_buffer_size = RING_BUFFER_SAMPLES * sizeof(int16_t);
-#ifdef UNIT_TESTING
-    m_ring_buffer = new int16_t[RING_BUFFER_SAMPLES];
-#else
-    m_ring_buffer = static_cast<int16_t*>(
-        heap_caps_malloc(ring_buffer_size, MALLOC_CAP_SPIRAM));
-    if (m_ring_buffer == nullptr)
-    {
-        // Fallback to regular heap
-        m_ring_buffer = static_cast<int16_t*>(
-            heap_caps_malloc(ring_buffer_size, MALLOC_CAP_8BIT));
-    }
-#endif
+    m_ring_buffer = static_cast<int16_t*>(m_memory_allocator.alloc(ring_buffer_size));
 
     if (m_ring_buffer == nullptr)
     {
@@ -124,22 +42,13 @@ bool MicService::init()
     memset(m_ring_buffer, 0, ring_buffer_size);
 
     // Allocate read buffer for I2S reads
-#ifdef UNIT_TESTING
-    m_read_buffer = new int16_t[MAX_DMA_BUFFER_SAMPLES];
-#else
     m_read_buffer = static_cast<int16_t*>(
-        heap_caps_malloc(MAX_DMA_BUFFER_SAMPLES * sizeof(int16_t),
-                         MALLOC_CAP_8BIT));
-#endif
+        m_memory_allocator.alloc(MAX_DMA_BUFFER_SAMPLES * sizeof(int16_t)));
 
     if (m_read_buffer == nullptr)
     {
         m_log.error(SUBSYSTEM, "Failed to allocate read buffer");
-#ifdef UNIT_TESTING
-        delete[] m_ring_buffer;
-#else
-        heap_caps_free(m_ring_buffer);
-#endif
+        m_memory_allocator.free(m_ring_buffer);
         m_ring_buffer = nullptr;
         return false;
     }
@@ -154,13 +63,8 @@ bool MicService::init()
     if (result != hal::MicInitResult::SUCCESS)
     {
         m_log.error(SUBSYSTEM, "Mic hardware init failed");
-#ifdef UNIT_TESTING
-        delete[] m_ring_buffer;
-        delete[] m_read_buffer;
-#else
-        heap_caps_free(m_ring_buffer);
-        heap_caps_free(m_read_buffer);
-#endif
+        m_memory_allocator.free(m_ring_buffer);
+        m_memory_allocator.free(m_read_buffer);
         m_ring_buffer = nullptr;
         m_read_buffer = nullptr;
         return false;
@@ -190,7 +94,7 @@ bool MicService::start()
     m_hal.start();
     m_capturing = true;
 
-    create_mic_task(this, &m_task_handle);
+    m_task_runner.start([this]() { mic_loop(); });
 
     m_log.info(SUBSYSTEM, "Mic capture started");
     return true;
@@ -205,8 +109,7 @@ bool MicService::stop()
 
     m_capturing = false;
 
-    delete_mic_task(m_task_handle);
-    m_task_handle = nullptr;
+    m_task_runner.stop();
 
     m_hal.stop();
 
@@ -223,19 +126,8 @@ void MicService::deinit()
 
     m_hal.deinit();
 
-#ifdef UNIT_TESTING
-    delete[] m_ring_buffer;
-    delete[] m_read_buffer;
-#else
-    if (m_ring_buffer != nullptr)
-    {
-        heap_caps_free(m_ring_buffer);
-    }
-    if (m_read_buffer != nullptr)
-    {
-        heap_caps_free(m_read_buffer);
-    }
-#endif
+    m_memory_allocator.free(m_ring_buffer);
+    m_memory_allocator.free(m_read_buffer);
 
     m_ring_buffer = nullptr;
     m_read_buffer = nullptr;
@@ -342,11 +234,6 @@ bool MicService::is_capturing() const
 // Mic task (reads I2S into ring buffer)
 // ============================================================
 
-void MicService::mic_task_entry(void* param)
-{
-    static_cast<MicService*>(param)->mic_loop();
-}
-
 void MicService::mic_loop()
 {
     while (m_capturing)
@@ -355,7 +242,7 @@ void MicService::mic_loop()
 
         if (samples_read == 0)
         {
-            task_delay_ms(1);
+            m_task_runner.delay_ms(1);
             continue;
         }
 
@@ -376,7 +263,7 @@ void MicService::mic_loop()
         m_write_idx.store((write_pos + samples_read) % RING_BUFFER_SAMPLES,
                           std::memory_order_release);
 
-        task_delay_ms(1);  // Yield to other tasks
+        m_task_runner.delay_ms(1);  // Yield to other tasks
     }
 }
 

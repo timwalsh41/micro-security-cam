@@ -1,7 +1,5 @@
 #include "hal/mic_hal_impl.h"
 
-#ifndef UNIT_TESTING
-
 #include <driver/i2s.h>
 #include <esp_log.h>
 #include <cstring>
@@ -105,5 +103,3 @@ bool MicHalImpl::is_initialized() const
 }
 
 } // namespace hal
-
-#endif // UNIT_TESTING

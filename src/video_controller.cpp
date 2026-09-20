@@ -65,7 +65,7 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
                               : 0;
 
     // Compute audio chunk size: samples per frame at 16kHz/16-bit/mono
-    m_audio_chunk_size = 16000 / m_config.fps;  // samples per frame
+    m_audio_chunk_size = MicService::SAMPLE_RATE / m_config.fps;  // samples per frame
     m_audio_buffer.resize(m_audio_chunk_size);
 
     m_log.info(SUBSYSTEM, "Init: %ufps %ux%u, clip %us, quality %u",
@@ -74,7 +74,8 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
 
     if (m_config.audio_enabled)
     {
-        m_log.info(SUBSYSTEM, "Audio enabled: 16kHz 16-bit mono, chunk %u samples",
+        m_log.info(SUBSYSTEM, "Audio enabled: %ukHz 16-bit mono, chunk %u samples",
+                   static_cast<unsigned>(MicService::SAMPLE_RATE / 1000),
                    static_cast<unsigned>(m_audio_chunk_size));
     }
 

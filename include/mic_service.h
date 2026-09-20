@@ -9,6 +9,8 @@
 #include "hal/mic_hal.h"
 #include "logging_service.h"
 #include "config_service.h"
+#include "mic_task_runner.h"
+#include "memory_allocator.h"
 
 /**
  * @file mic_service.h
@@ -19,8 +21,7 @@
  * the ring buffer; the capture task reads audio chunks from the ring
  * buffer and writes them to the AVI file.
  *
- * This approach follows the Option A architecture: mic_task writes to
- * ring buffer only, capture task is the sole SD writer.
+ * The mic task writes to ring buffer only; the capture task is the sole SD writer.
  *
  * Audio parameters: 16kHz, 16-bit, mono (32 KB/s).
  * PSRAM ring buffer: ~1.9 MB for 60s clips.
@@ -72,15 +73,22 @@ struct WavHeader
 class MicService
 {
     public:
+        /** @brief Audio sample rate in Hz. */
+        static constexpr uint32_t SAMPLE_RATE = 16000;
+
         /**
          * @brief Constructs the MicService with injected dependencies.
          *
-         * @param hal  Reference to MicHal for I2S hardware access.
-         * @param log  Reference to LoggingService for diagnostics.
-         * @param config Reference to ConfigService for gain settings.
+         * @param hal        Reference to MicHal for I2S hardware access.
+         * @param log        Reference to LoggingService for diagnostics.
+         * @param config     Reference to ConfigService for gain settings.
+         * @param task_runner Reference to IMicTaskRunner for task lifecycle.
+         * @param allocator  Reference to IMemoryAllocator for memory allocation.
          */
         MicService(hal::MicHal& hal, LoggingService& log,
-                   ConfigService& config);
+                   ConfigService& config,
+                   IMicTaskRunner& task_runner,
+                   IMemoryAllocator& allocator);
 
         /**
          * @brief Initializes the microphone and ring buffer.
@@ -181,12 +189,6 @@ class MicService
         void mic_loop();
 
     private:
-        /**
-         * @brief Mic task entry point (FreeRTOS task).
-         *
-         * @param param Pointer to the MicService instance.
-         */
-        static void mic_task_entry(void* param);
 
         static constexpr const char* SUBSYSTEM = "MIC";
 
@@ -212,6 +214,8 @@ class MicService
         hal::MicHal& m_hal;
         LoggingService& m_log;
         ConfigService& m_config;
+        IMicTaskRunner& m_task_runner;
+        IMemoryAllocator& m_memory_allocator;
 
         // PSRAM ring buffer
         int16_t* m_ring_buffer{nullptr};  ///< PSRAM-backed ring buffer
@@ -220,7 +224,6 @@ class MicService
 
         // Capture state
         volatile bool m_capturing{false};  ///< Whether capture is active
-        void* m_task_handle{nullptr};      ///< FreeRTOS task handle
 
         // Read buffer (for I2S reads, owned by mic_task)
         int16_t* m_read_buffer{nullptr};

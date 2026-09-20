@@ -3,8 +3,6 @@
 
 #include "hal/mic_hal.h"
 
-#ifndef UNIT_TESTING
-
 #include <driver/i2s.h>
 
 namespace hal
@@ -29,7 +27,5 @@ class MicHalImpl : public MicHal
 };
 
 } // namespace hal
-
-#endif // UNIT_TESTING
 
 #endif // HAL_MIC_HAL_IMPL_H
