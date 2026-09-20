@@ -34,6 +34,15 @@
  */
 struct WavHeader
 {
+    /** Default audio sample rate (Hz). */
+    static constexpr uint32_t DEFAULT_SAMPLE_RATE = 16000;
+
+    /** Default bits per sample. */
+    static constexpr uint16_t DEFAULT_BITS_PER_SAMPLE = 16;
+
+    /** Default number of channels. */
+    static constexpr uint16_t DEFAULT_NUM_CHANNELS = 1;
+
     /** RIFF header. */
     char riff_id[4]{'R', 'I', 'F', 'F'};
     uint32_t riff_size{0};
@@ -43,11 +52,11 @@ struct WavHeader
     char fmt_id[4]{'f', 'm', 't', ' '};
     uint32_t fmt_size{16};
     uint16_t audio_format{1};    // PCM
-    uint16_t num_channels{1};    // Mono
-    uint32_t sample_rate{16000};
-    uint32_t byte_rate{32000};   // sample_rate * bits_per_sample * channels / 8
-    uint16_t block_align{2};     // bits_per_sample * channels / 8
-    uint16_t bits_per_sample{16};
+    uint16_t num_channels{DEFAULT_NUM_CHANNELS};
+    uint32_t sample_rate{DEFAULT_SAMPLE_RATE};
+    uint32_t byte_rate{DEFAULT_SAMPLE_RATE * DEFAULT_BITS_PER_SAMPLE * DEFAULT_NUM_CHANNELS / 8};
+    uint16_t block_align{DEFAULT_BITS_PER_SAMPLE * DEFAULT_NUM_CHANNELS / 8};
+    uint16_t bits_per_sample{DEFAULT_BITS_PER_SAMPLE};
 
     /** data chunk. */
     char data_id[4]{'d', 'a', 't', 'a'};

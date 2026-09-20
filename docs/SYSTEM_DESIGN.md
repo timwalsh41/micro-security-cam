@@ -1907,6 +1907,8 @@ participant "CaptureScheduler\nEsp32" as CS
 participant "TimerHalImpl\n(ISR)" as TMR
 participant "Capture Task\n(CPU0)" as TASK
 participant "VideoController" as VC
+participant "MicService" as MIC
+participant "MicHal" as MICHAL
 participant "RecordSink\n(bound slot)" as RS
 participant "StreamSink\n(bound slot)" as ST
 participant "StreamService" as SS
@@ -1930,6 +1932,13 @@ activate SDC
 SDC -> SD : open(WRITE) → write(224 B) → close()
 SD --> SDC
 deactivate SDC
+VC -> MIC : start()
+activate MIC
+MIC -> MICHAL : start()
+MIC -> MIC : spawn mic_task
+note right: mic_task reads I2S samples into\nthe PSRAM ring buffer continuously;\nthe capture task drains audio at\nframe boundaries
+MIC --> VC : return true
+deactivate MIC
 VC -> VC : ensure_loop_running()
 note right: skipped when another consumer\n(e.g. streaming) already keeps\nthe loop running
 VC -> CS : start(interval_ms, callback)
@@ -1988,6 +1997,31 @@ alt streaming also subscribed
 end
 
 VC -> CAM : release_frame()
+
+== Mic task reads I2S (concurrent, CPU1) ==
+
+note over MIC, MICHAL : mic_task loop (runs continuously while recording)\nreads I2S samples into the PSRAM ring buffer\nvia MicHal::read_samples(), applies gain,\nand writes to ring buffer
+
+== Audio drain at frame boundary ==
+
+VC -> MIC : get_audio_chunk(buffer, max_samples)
+activate MIC
+MIC --> VC : audio samples
+activate VC
+VC -> ACS : append_audio_chunk(audio, len)
+activate ACS
+ACS -> AVI : write_audio_chunk(audio, len)
+note right: Wraps PCM as 0x01wb\nAVI audio chunk with padding
+AVI --> ACS : last_audio_chunk()
+ACS -> SDC : write_sync(path, chunk, APPEND)
+activate SDC
+SDC -> SD : open(APPEND) → write(chunk) → close()
+SD --> SDC
+deactivate SDC
+deactivate ACS
+deactivate VC
+deactivate MIC
+
 ACS -> ACS : frames_recorded++\nfile_size += chunk.len (written bytes only)
 
 ACS -> ACS : check clip limits\n(duration, file size)
@@ -2026,6 +2060,13 @@ activate VC
 VC -> VC : post STOP_RECORDING
 VC -> VC : executor: request_close() +\ndetach_consumer(RecordSink)
 note right: is_recording() false once the\nrequest executes (bounded by\none frame period); start_recording()\nrejected until then (clip close pending)
+VC -> MIC : stop()
+activate MIC
+MIC -> MIC : clear m_capturing flag
+MIC -> MIC : join mic_task
+MIC -> MICHAL : stop()
+MIC --> VC : return
+deactivate MIC
 alt other consumers keep the loop running
     VC -> VC : loop keeps running;
     note right: clip is finalized by the\nnext frame callback\n(one frame period bound);\nstart_recording() rejected\nuntil then (clip close pending)
