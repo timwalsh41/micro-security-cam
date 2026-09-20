@@ -18,16 +18,13 @@ struct TestFixture
     RealTimeService time;
     LoggingService logger;
     ConfigService config;
+    MicService svc;
 
     TestFixture()
         : logger(log_backend, time)
         , config(logger)
+        , svc(mic_hal, logger, config)
     {
-    }
-
-    MicService create_service()
-    {
-        return MicService(mic_hal, logger, config);
     }
 };
 
@@ -42,8 +39,7 @@ void test_init_success()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    TEST_ASSERT_TRUE(svc.init());
+    TEST_ASSERT_TRUE(f.svc.init());
 }
 
 /**
@@ -53,8 +49,7 @@ void test_init_failure()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::HARDWARE_FAILURE;
-    MicService svc = f.create_service();
-    TEST_ASSERT_FALSE(svc.init());
+    TEST_ASSERT_FALSE(f.svc.init());
 }
 
 /**
@@ -64,13 +59,12 @@ void test_start_after_init()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    TEST_ASSERT_TRUE(svc.start());
-    TEST_ASSERT_TRUE(svc.is_capturing());
+    f.svc.init();
+    TEST_ASSERT_TRUE(f.svc.start());
+    TEST_ASSERT_TRUE(f.svc.is_capturing());
     // Stop the capture so the mic task thread is joined before the
     // service and fixture go out of scope.
-    TEST_ASSERT_TRUE(svc.stop());
+    TEST_ASSERT_TRUE(f.svc.stop());
 }
 
 /**
@@ -80,11 +74,10 @@ void test_stop_after_start()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    svc.start();
-    TEST_ASSERT_TRUE(svc.stop());
-    TEST_ASSERT_FALSE(svc.is_capturing());
+    f.svc.init();
+    f.svc.start();
+    TEST_ASSERT_TRUE(f.svc.stop());
+    TEST_ASSERT_FALSE(f.svc.is_capturing());
 }
 
 /**
@@ -94,9 +87,8 @@ void test_deinit_releases_resources()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    svc.deinit();
+    f.svc.init();
+    f.svc.deinit();
     TEST_ASSERT_EQUAL_INT(1, f.mic_hal.deinit_call_count);
 }
 
@@ -107,10 +99,9 @@ void test_get_audio_chunk_empty()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
+    f.svc.init();
     int16_t buffer[100];
-    TEST_ASSERT_EQUAL_UINT32(0, svc.get_audio_chunk(buffer, 100));
+    TEST_ASSERT_EQUAL_UINT32(0, f.svc.get_audio_chunk(buffer, 100));
 }
 
 /**
@@ -120,9 +111,8 @@ void test_sample_rate()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    TEST_ASSERT_EQUAL_UINT32(16000, svc.sample_rate());
+    f.svc.init();
+    TEST_ASSERT_EQUAL_UINT32(16000, f.svc.sample_rate());
 }
 
 /**
@@ -132,9 +122,8 @@ void test_bits_per_sample()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    TEST_ASSERT_EQUAL_UINT16(16, svc.bits_per_sample());
+    f.svc.init();
+    TEST_ASSERT_EQUAL_UINT16(16, f.svc.bits_per_sample());
 }
 
 /**
@@ -144,9 +133,8 @@ void test_channels()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    TEST_ASSERT_EQUAL_UINT16(1, svc.channels());
+    f.svc.init();
+    TEST_ASSERT_EQUAL_UINT16(1, f.svc.channels());
 }
 
 /**
@@ -156,10 +144,9 @@ void test_generate_wav_header()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
+    f.svc.init();
     uint8_t header[44];
-    TEST_ASSERT_TRUE(svc.generate_wav_header(header, sizeof(header), 32000));
+    TEST_ASSERT_TRUE(f.svc.generate_wav_header(header, sizeof(header), 32000));
     // Check RIFF marker
     TEST_ASSERT_EQUAL_UINT8('R', header[0]);
     TEST_ASSERT_EQUAL_UINT8('I', header[1]);
@@ -179,9 +166,8 @@ void test_generate_wav_header_null_buffer()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
-    TEST_ASSERT_FALSE(svc.generate_wav_header(nullptr, 44, 0));
+    f.svc.init();
+    TEST_ASSERT_FALSE(f.svc.generate_wav_header(nullptr, 44, 0));
 }
 
 /**
@@ -191,10 +177,9 @@ void test_generate_wav_header_small_buffer()
 {
     TestFixture f;
     f.mic_hal.init_result = hal::MicInitResult::SUCCESS;
-    MicService svc = f.create_service();
-    svc.init();
+    f.svc.init();
     uint8_t header[10];
-    TEST_ASSERT_FALSE(svc.generate_wav_header(header, sizeof(header), 0));
+    TEST_ASSERT_FALSE(f.svc.generate_wav_header(header, sizeof(header), 0));
 }
 
 // ============================================================
