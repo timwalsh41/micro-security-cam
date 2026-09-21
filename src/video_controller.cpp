@@ -33,12 +33,14 @@ VideoController::VideoController(CameraController& cam,
                                  SdController& sd,
                                  TimeService& time,
                                  LoggingService& log,
-                                 ICaptureScheduler& scheduler)
+                                 ICaptureScheduler& scheduler,
+                                 MicService* mic)
     : m_camera(cam)
     , m_sd(sd)
     , m_time(time)
     , m_log(log)
     , m_scheduler(scheduler)
+    , m_mic(mic)
     , m_clip_session(sd, time, log)
     , m_record_sink(*this)
     , m_stream_sink(*this)
@@ -62,9 +64,20 @@ bool VideoController::init(const ConfigData::VideoConfig& config,
                               ? (1000u / m_config.fps)
                               : 0;
 
+    // Compute audio chunk size: samples per frame at 16kHz/16-bit/mono
+    m_audio_chunk_size = MicService::SAMPLE_RATE / m_config.fps;  // samples per frame
+    m_audio_buffer.resize(m_audio_chunk_size);
+
     m_log.info(SUBSYSTEM, "Init: %ufps %ux%u, clip %us, quality %u",
                m_config.fps, m_width, m_height,
                m_config.clip_duration_s, m_config.jpeg_quality);
+
+    if (m_config.audio_enabled)
+    {
+        m_log.info(SUBSYSTEM, "Audio enabled: %ukHz 16-bit mono, chunk %u samples",
+                   static_cast<unsigned>(MicService::SAMPLE_RATE / 1000),
+                   static_cast<unsigned>(m_audio_chunk_size));
+    }
 
     return true;
 }
@@ -615,6 +628,9 @@ void VideoController::capture_and_dispatch_frame()
 
     m_camera.release_frame();
 
+    // Drain audio from ring buffer and write to AVI at activation boundaries
+    drain_audio_to_clip();
+
     handle_clip_closure();
 
     // Drain a viewer close deferred by a stop_streaming command while
@@ -951,6 +967,12 @@ bool VideoController::executor_start_recording()
 
     bind_slot(id, &m_record_sink);
 
+    // Start mic service if audio is enabled
+    if (m_mic != nullptr && m_config.audio_enabled)
+    {
+        m_mic->start();
+    }
+
     m_log.info(SUBSYSTEM, "Recording started: %s", m_clip_session.file_path());
     return true;
 }
@@ -969,6 +991,13 @@ bool VideoController::executor_stop_recording()
     // reopens instead.
     m_clip_session.request_close();
     detach_consumer(id);
+
+    // Stop mic service
+    if (m_mic != nullptr && m_config.audio_enabled)
+    {
+        m_mic->stop();
+    }
+
     m_log.info(SUBSYSTEM, "Recording stopped");
     return true;
 }
@@ -1110,6 +1139,29 @@ bool VideoController::executor_take_photo(const char* path)
 // ============================================================
 // Path utilities
 // ============================================================
+
+void VideoController::set_mic_service(MicService* mic)
+{
+    m_mic = mic;
+}
+
+void VideoController::drain_audio_to_clip()
+{
+    if (m_mic == nullptr || !m_config.audio_enabled || !m_clip_session.is_audio_enabled())
+    {
+        return;
+    }
+
+    // Drain audio from ring buffer at activation boundaries
+    size_t samples = m_mic->get_audio_chunk(m_audio_buffer.data(), m_audio_chunk_size);
+    if (samples > 0)
+    {
+        // Write audio chunk to AVI clip (interleaved with video frames)
+        m_clip_session.append_audio_chunk(
+            reinterpret_cast<const uint8_t*>(m_audio_buffer.data()),
+            samples * sizeof(int16_t));
+    }
+}
 
 bool VideoController::make_unique_path(const char* base_path, char* out, size_t out_size)
 {

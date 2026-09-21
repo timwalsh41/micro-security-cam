@@ -1044,6 +1044,358 @@ void test_file_size_after_close_no_frames()
 }
 
 // ============================================================
+// Audio stream tests
+// ============================================================
+
+/**
+ * @brief open_audio() enables audio and changes header layout.
+ */
+void test_open_audio_enables_audio()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    TEST_ASSERT_TRUE(writer.open_audio(16000, 16, 1));
+    // Header should now be 336 bytes for dual-stream
+    AviBytes hdr = writer.header();
+    TEST_ASSERT_EQUAL_UINT32(336, hdr.len);
+}
+
+/**
+ * @brief open_audio() returns false before open() is called.
+ */
+void test_open_audio_returns_false_before_open()
+{
+    AviWriter writer;
+    TEST_ASSERT_FALSE(writer.open_audio(16000, 16, 1));
+}
+
+/**
+ * @brief open_audio() returns false after frames have been written.
+ */
+void test_open_audio_returns_false_after_frames()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    uint8_t jpeg[10];
+    memset(jpeg, 0, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    TEST_ASSERT_FALSE(writer.open_audio(16000, 16, 1));
+}
+
+/**
+ * @brief Dual-stream header is 336 bytes.
+ */
+void test_audio_header_size_dual_stream()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    AviBytes hdr = writer.header();
+    TEST_ASSERT_EQUAL_UINT32(336, hdr.len);
+}
+
+/**
+ * @brief Dual-stream header has audio strl at the expected offset.
+ */
+void test_audio_header_has_audio_strl()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    AviBytes hdr = writer.header();
+    // Audio strl LIST at offset 212
+    assert_four_cc(hdr, 212, "LIST");
+    // Audio strl "strl" at offset 220
+    assert_four_cc(hdr, 220, "strl");
+    // Audio strh "auds" at offset 232
+    assert_four_cc(hdr, 232, "auds");
+}
+
+/**
+ * @brief Dual-stream header has dwStreams = 2.
+ */
+void test_audio_header_has_two_streams()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    AviBytes hdr = writer.header();
+    // avih dwStreams at offset 56
+    TEST_ASSERT_EQUAL_UINT32(2, read_u32(hdr.data, 56));
+}
+
+/**
+ * @brief write_audio_chunk() returns true on success.
+ */
+void test_write_audio_chunk_success()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[100];
+    memset(audio, 0x42, sizeof(audio));
+    TEST_ASSERT_TRUE(writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio)));
+}
+
+/**
+ * @brief Audio chunk starts with "01wb" FourCC marker.
+ */
+void test_write_audio_chunk_marker()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[50];
+    memset(audio, 0x42, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    AviBytes chunk = writer.last_audio_chunk();
+    assert_four_cc(chunk, 0, "01wb");
+}
+
+/**
+ * @brief Audio chunk has correct data size field.
+ */
+void test_write_audio_chunk_data_size()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[50];
+    memset(audio, 0x42, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    AviBytes chunk = writer.last_audio_chunk();
+    TEST_ASSERT_EQUAL_UINT32(100, read_u32(chunk.data, 4));  // 50 * 2 bytes
+}
+
+/**
+ * @brief Audio chunk contains correct PCM data.
+ */
+void test_write_audio_chunk_data_content()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[25];
+    for (int i = 0; i < 25; i++) audio[i] = i;
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    AviBytes chunk = writer.last_audio_chunk();
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(
+        reinterpret_cast<const uint8_t*>(audio),
+        &chunk.data[8], sizeof(audio));
+}
+
+/**
+ * @brief Audio chunk is DWORD-aligned.
+ */
+void test_write_audio_chunk_dword_alignment()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    // 25 samples * 2 bytes = 50 bytes -> 8+50=58 -> padded to 60
+    int16_t audio[25];
+    memset(audio, 0, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    AviBytes chunk = writer.last_audio_chunk();
+    TEST_ASSERT_EQUAL_UINT32(60, chunk.len);
+}
+
+/**
+ * @brief write_audio_chunk() returns false when audio is not enabled.
+ */
+void test_write_audio_chunk_returns_false_without_audio()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    int16_t audio[10];
+    TEST_ASSERT_FALSE(writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio)));
+}
+
+/**
+ * @brief write_audio_chunk() returns false before open().
+ */
+void test_write_audio_chunk_returns_false_before_open()
+{
+    AviWriter writer;
+    int16_t audio[10];
+    TEST_ASSERT_FALSE(writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio)));
+}
+
+/**
+ * @brief last_audio_chunk() returns null before any write_audio_chunk().
+ */
+void test_last_audio_chunk_null_before_write()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    AviBytes chunk = writer.last_audio_chunk();
+    TEST_ASSERT_NULL(chunk.data);
+}
+
+/**
+ * @brief last_audio_chunk() returns valid data after write_audio_chunk().
+ */
+void test_last_audio_chunk_valid_after_write()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[10];
+    memset(audio, 0x42, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    AviBytes chunk = writer.last_audio_chunk();
+    TEST_ASSERT_NOT_NULL(chunk.data);
+    TEST_ASSERT_GREATER_THAN(0u, chunk.len);
+}
+
+/**
+ * @brief Dual-stream file size accounts for both video and audio.
+ */
+void test_dual_stream_file_size()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    uint8_t jpeg[100];
+    memset(jpeg, 0, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));  // video frame
+    int16_t audio[50];
+    memset(audio, 0, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));  // audio chunk
+    // header(336) + video_chunk(108) + audio_chunk(108) + idx1(8) + 2_entries(32)
+    // audio: 8 header + 100 data = 108 bytes (already DWORD aligned)
+    TEST_ASSERT_EQUAL_UINT32(336 + 108 + 108 + 8 + 32, writer.file_size());
+}
+
+/**
+ * @brief Dual-stream close patches both video and audio frame counts.
+ */
+void test_dual_stream_close_patches_header()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    uint8_t jpeg[100];
+    memset(jpeg, 0, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    int16_t audio[100];
+    memset(audio, 0, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    writer.close();
+    AviBytes hdr = writer.patched_header();
+    // Video frame count at offset 48 (avih) and 140 (strh)
+    TEST_ASSERT_EQUAL_UINT32(2, read_u32(hdr.data, 48));
+    TEST_ASSERT_EQUAL_UINT32(2, read_u32(hdr.data, 140));
+    // Audio sample count at offset 264 (audio strh dwLength)
+    // 200 bytes / 2 bytes per sample = 100 samples
+    TEST_ASSERT_EQUAL_UINT32(100, read_u32(hdr.data, 264));
+}
+
+/**
+ * @brief Index has both "00dc" and "01wb" entries.
+ */
+void test_dual_stream_index_has_both_types()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    uint8_t jpeg[100];
+    memset(jpeg, 0, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    int16_t audio[50];
+    memset(audio, 0, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    writer.close();
+    AviBytes idx = writer.index();
+    // First entry: "00dc" at offset 8
+    assert_four_cc(idx, 8, "00dc");
+    // Second entry: "01wb" at offset 24
+    assert_four_cc(idx, 24, "01wb");
+}
+
+/**
+ * @brief Interleaved video and audio chunks have correct index offsets.
+ */
+void test_dual_stream_interleaved_index()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    uint8_t jpeg[100];
+    memset(jpeg, 0, sizeof(jpeg));
+    writer.write_frame(jpeg, sizeof(jpeg));
+    int16_t audio[50];
+    memset(audio, 0, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    writer.close();
+    AviBytes idx = writer.index();
+    // Video chunk at movi offset 4, size 100
+    TEST_ASSERT_EQUAL_UINT32(4, read_u32(idx.data, 16));   // entry[0].offset
+    TEST_ASSERT_EQUAL_UINT32(100, read_u32(idx.data, 20));  // entry[0].size
+    // Audio chunk at movi offset 4+108=112, size 100
+    TEST_ASSERT_EQUAL_UINT32(112, read_u32(idx.data, 32));  // entry[1].offset
+    TEST_ASSERT_EQUAL_UINT32(100, read_u32(idx.data, 36));  // entry[1].size
+}
+
+/**
+ * @brief Audio-only chunks work correctly.
+ */
+void test_audio_only_chunks()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[100];
+    memset(audio, 0x42, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));
+    // No video frames, 2 audio chunks
+    TEST_ASSERT_EQUAL_UINT32(0, writer.frame_count());
+    writer.close();
+    AviBytes idx = writer.index();
+    // 2 audio entries
+    TEST_ASSERT_EQUAL_UINT32(32, read_u32(idx.data, 4));  // 2 * 16
+    assert_four_cc(idx, 8, "01wb");
+    assert_four_cc(idx, 24, "01wb");
+}
+
+/**
+ * @brief Audio chunk updates sample count correctly.
+ */
+void test_audio_chunk_updates_sample_count()
+{
+    AviWriter writer;
+    writer.open("/test.avi", 10, 640, 480);
+    writer.open_audio(16000, 16, 1);
+    int16_t audio[100];
+    memset(audio, 0, sizeof(audio));
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));  // 100 samples
+    writer.write_audio_chunk(
+        reinterpret_cast<const uint8_t*>(audio), sizeof(audio));  // 100 more
+    writer.close();
+    AviBytes hdr = writer.patched_header();
+    // Audio sample count at offset 264
+    TEST_ASSERT_EQUAL_UINT32(200, read_u32(hdr.data, 264));
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -1135,6 +1487,29 @@ int main()
     RUN_TEST(test_multiple_open_close_cycles);
     RUN_TEST(test_many_frames_data_integrity);
     RUN_TEST(test_file_size_after_close_no_frames);
+
+    // Audio stream tests
+    RUN_TEST(test_open_audio_enables_audio);
+    RUN_TEST(test_open_audio_returns_false_before_open);
+    RUN_TEST(test_open_audio_returns_false_after_frames);
+    RUN_TEST(test_audio_header_size_dual_stream);
+    RUN_TEST(test_audio_header_has_audio_strl);
+    RUN_TEST(test_audio_header_has_two_streams);
+    RUN_TEST(test_write_audio_chunk_success);
+    RUN_TEST(test_write_audio_chunk_marker);
+    RUN_TEST(test_write_audio_chunk_data_size);
+    RUN_TEST(test_write_audio_chunk_data_content);
+    RUN_TEST(test_write_audio_chunk_dword_alignment);
+    RUN_TEST(test_write_audio_chunk_returns_false_without_audio);
+    RUN_TEST(test_write_audio_chunk_returns_false_before_open);
+    RUN_TEST(test_last_audio_chunk_null_before_write);
+    RUN_TEST(test_last_audio_chunk_valid_after_write);
+    RUN_TEST(test_dual_stream_file_size);
+    RUN_TEST(test_dual_stream_close_patches_header);
+    RUN_TEST(test_dual_stream_index_has_both_types);
+    RUN_TEST(test_dual_stream_interleaved_index);
+    RUN_TEST(test_audio_only_chunks);
+    RUN_TEST(test_audio_chunk_updates_sample_count);
 
     return UNITY_END();
 }
