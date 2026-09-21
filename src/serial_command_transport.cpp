@@ -329,8 +329,8 @@ bool SerialCommandTransport::parse_command(
     }
     else if (strcmp(cmd, "FILES") == 0)
     {
-        // Payload is the directory path with an optional page number
-        // ("/20250101 2"). No args lists the SD root.
+        // Payload is the directory path with an optional start index
+        // ("/20250101 12"). No args lists the SD root.
         code = CommandCode::LIST_FILES;
         if (args == nullptr)
         {

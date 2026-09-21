@@ -101,6 +101,10 @@ class MockRequestRef : public hal::RequestRef
         ArgEntry form_params[2]{};
         size_t form_param_count{0};
 
+        /** Simulated form-value truncation state reported by
+         *  form_value_truncated(). */
+        bool form_truncated{false};
+
         // ============================================================
         // Interface implementation
         // ============================================================
@@ -202,6 +206,12 @@ class MockRequestRef : public hal::RequestRef
                 }
             }
             return "";
+        }
+
+        bool form_value_truncated(const char* name) const override
+        {
+            (void)name;
+            return form_truncated;
         }
 
         bool send_data_response(const char* content_type,

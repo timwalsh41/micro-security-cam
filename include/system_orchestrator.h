@@ -10,6 +10,7 @@
 #include "logging_service.h"
 #include "sd_controller.h"
 #include "hal/nvs_hal.h"
+#include "hal/time_hal.h"
 #include "hal/web_server_hal.h"
 
 /** Forward declarations. */
@@ -94,6 +95,18 @@ class SystemOrchestrator
 
         /** Latched SD availability snapshot from init(). */
         bool m_sd_available{false};
+
+        /** TTL-cached SD storage stats for GET_STATUS (refreshed at
+         *  most every 60 s instead of scanning on every poll). */
+        struct SdStatsCache
+        {
+            bool valid{false};
+            hal::millis_t refreshed_at{0};
+            uint64_t free_bytes{0};
+            unsigned int photos{0};
+            unsigned int videos{0};
+        };
+        SdStatsCache m_sd_stats;
 
         /** Register-time snapshot of the web password for /stream auth. */
         char m_stream_password[CONFIG_FIELD_MAX_LENGTH]{};

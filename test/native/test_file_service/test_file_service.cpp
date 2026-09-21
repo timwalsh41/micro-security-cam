@@ -5,8 +5,10 @@
 #include "mock_web_server_hal.h"
 #include "mock_log_backend.h"
 #include "time_service.h"
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 /**
  * @file test_file_service.cpp
@@ -285,7 +287,8 @@ void test_list_files_sd_unavailable()
 }
 
 /**
- * @brief LIST_FILES pages through a directory under the response cap.
+ * @brief LIST_FILES paginates over emittable entries with absolute
+ *        continuation indices.
  */
 void test_list_files_pagination()
 {
@@ -298,36 +301,143 @@ void test_list_files_pagination()
         f.sd_hal.seed_file(path, {0x01, 0x02});
     }
 
-    size_t len = 0;
-    CommandResult result = f.service.handle_list_files(
-        nullptr, 0, response_buf, len); // placeholder to avoid unused warning
-    (void)result;
-
-    // Page 0 of /20250101
+    // Start 0 of /20250101: entries 0..11 of 32 emittable entries.
     const char* p0 = "/20250101 0";
-    len = 0;
+    size_t len = 0;
     TEST_ASSERT_EQUAL(CommandResult::SUCCESS, f.service.handle_list_files(
         reinterpret_cast<const uint8_t*>(p0), strlen(p0), response_buf, len));
     std::string json0(reinterpret_cast<char*>(response_buf), len);
     TEST_ASSERT_TRUE(json0.find("\"total\":32") != std::string::npos);
-    TEST_ASSERT_TRUE(json0.find("\"has_more\":true") != std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("\"start\":0") != std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("\"more\":true") != std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("\"next\":12") != std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("f00.dat") != std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("f09.dat") != std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("f10.dat") == std::string::npos);
+    TEST_ASSERT_TRUE(json0.find("\"skipped_long_names\":0") !=
+                     std::string::npos);
 
-    // Page 2 (last): entries 24..31 → 8 entries
-    const char* p2 = "/20250101 2";
+    // Continuation at 24 (last page): entries 24..31 → 8 entries.
+    const char* p2 = "/20250101 24";
     len = 0;
     TEST_ASSERT_EQUAL(CommandResult::SUCCESS, f.service.handle_list_files(
         reinterpret_cast<const uint8_t*>(p2), strlen(p2), response_buf, len));
     std::string json2(reinterpret_cast<char*>(response_buf), len);
-    TEST_ASSERT_TRUE(json2.find("\"has_more\":false") != std::string::npos);
+    TEST_ASSERT_TRUE(json2.find("\"more\":false") != std::string::npos);
+    TEST_ASSERT_TRUE(json2.find("\"next\":32") != std::string::npos);
     TEST_ASSERT_TRUE(json2.find("f29.dat") != std::string::npos);
+    TEST_ASSERT_TRUE(json2.find("f21.dat") == std::string::npos);
 
-    // Page 3 (beyond the end): empty entries
-    const char* p3 = "/20250101 3";
+    // Beyond the end: empty page, no more.
+    const char* p3 = "/20250101 1000";
     len = 0;
     TEST_ASSERT_EQUAL(CommandResult::SUCCESS, f.service.handle_list_files(
         reinterpret_cast<const uint8_t*>(p3), strlen(p3), response_buf, len));
     std::string json3(reinterpret_cast<char*>(response_buf), len);
     TEST_ASSERT_TRUE(json3.find("\"entries\":[]") != std::string::npos);
+    TEST_ASSERT_TRUE(json3.find("\"more\":false") != std::string::npos);
+}
+
+/**
+ * @brief Names too long to serialize are counted and excluded from the
+ *        pagination sequence, so page math stays consistent and no
+ *        short-named file is skipped or duplicated.
+ */
+void test_list_files_skips_long_names()
+{
+    TestFixture f;
+    // Two normal files plus one whose name cannot fit the per-entry
+    // scratch buffer (bound: 34 + name length + size digits > 175).
+    f.sd_hal.seed_file("/20250101/a.dat", {0x01});
+    f.sd_hal.seed_file("/20250101/b.dat", {0x01});
+    std::string long_name(160, 'x');
+    f.sd_hal.seed_file(("/20250101/" + long_name).c_str(), {0x01});
+
+    const char* payload = "/20250101";
+    size_t len = 0;
+    TEST_ASSERT_EQUAL(CommandResult::SUCCESS, f.service.handle_list_files(
+        reinterpret_cast<const uint8_t*>(payload), strlen(payload),
+        response_buf, len));
+    std::string json(reinterpret_cast<char*>(response_buf), len);
+    TEST_ASSERT_TRUE(json.find("\"skipped_long_names\":1") !=
+                     std::string::npos);
+    // The two seeded fixture files plus a.dat and b.dat are emittable.
+    TEST_ASSERT_TRUE(json.find("\"total\":4") != std::string::npos);
+    TEST_ASSERT_TRUE(json.find("a.dat") != std::string::npos);
+    TEST_ASSERT_TRUE(json.find(long_name) == std::string::npos);
+
+    // Pagination over emittable entries only: the last emittable entry
+    // is reachable at start = total - 1 with consistent page math.
+    const char* last_payload = "/20250101 3";
+    len = 0;
+    TEST_ASSERT_EQUAL(CommandResult::SUCCESS, f.service.handle_list_files(
+        reinterpret_cast<const uint8_t*>(last_payload),
+        strlen(last_payload), response_buf, len));
+    std::string last_json(reinterpret_cast<char*>(response_buf), len);
+    TEST_ASSERT_TRUE(last_json.find("\"n\":\"b.dat\"") != std::string::npos);
+    TEST_ASSERT_TRUE(last_json.find("\"more\":false") != std::string::npos);
+    TEST_ASSERT_TRUE(last_json.find("\"next\":4") != std::string::npos);
+}
+
+/**
+ * @brief When the response buffer fills mid-page, the continuation
+ *        index resumes exactly at the first unemitted entry, so
+ *        following the "next" chain covers every entry exactly once.
+ */
+void test_list_files_buffer_full_resumes_at_next_index()
+{
+    TestFixture f;
+    // Long names (~97 chars) make each serialized entry ~132 bytes, so
+    // a full 12-entry page cannot fit the 1280-byte response cap.
+    std::vector<std::string> names;
+    for (int i = 0; i < 10; i++)
+    {
+        char name[128];
+        snprintf(name, sizeof(name), "f%02d_%s.dat", i,
+                 std::string(90, 'n').c_str());
+        names.push_back(name);
+        f.sd_hal.seed_file(("/20250102/" + names.back()).c_str(), {0x01});
+    }
+    f.sd_hal.directories.insert("/20250102");
+
+    std::vector<std::string> seen;
+    uint32_t start = 0;
+    bool more = true;
+    for (int round = 0; more && round < 10; round++)
+    {
+        char payload[32];
+        snprintf(payload, sizeof(payload), "/20250102 %u", start);
+        size_t len = 0;
+        TEST_ASSERT_EQUAL(CommandResult::SUCCESS,
+            f.service.handle_list_files(
+                reinterpret_cast<const uint8_t*>(payload), strlen(payload),
+                response_buf, len));
+        std::string json(reinterpret_cast<char*>(response_buf), len);
+
+        for (const std::string& name : names)
+        {
+            if (json.find("\"n\":\"" + name + "\"") != std::string::npos)
+            {
+                seen.push_back(name);
+            }
+        }
+
+        size_t more_pos = json.find("\"more\":true");
+        more = (more_pos != std::string::npos);
+        size_t next_pos = json.find("\"next\":");
+        TEST_ASSERT_TRUE(next_pos != std::string::npos);
+        uint32_t next = static_cast<uint32_t>(
+            std::strtoul(json.c_str() + next_pos + 7, nullptr, 10));
+        TEST_ASSERT_TRUE(next > start); // Continuation always advances.
+        start = next;
+    }
+
+    // Following the continuation chain emitted every entry exactly once.
+    TEST_ASSERT_EQUAL_UINT32(names.size(), seen.size());
+    for (size_t i = 0; i < names.size(); i++)
+    {
+        TEST_ASSERT_EQUAL_STRING(names[i].c_str(), seen[i].c_str());
+    }
 }
 
 /**
@@ -422,7 +532,7 @@ void test_files_serves_listing_json()
 }
 
 /**
- * @brief /files honors dir and page query parameters.
+ * @brief /files honors dir and start query parameters.
  */
 void test_files_honors_dir_and_page()
 {
@@ -477,6 +587,44 @@ void test_logs_route_lists_log_dir()
                          "\"n\":\"20250101.log\",\"s\":3") != std::string::npos);
 }
 
+/**
+ * @brief /logs paginates with the same start/continuation mechanism as
+ *        /files, so more than PAGE_SIZE log files stay reachable.
+ */
+void test_logs_route_paginates()
+{
+    TestFixture f;
+    f.use_password("secret");
+
+    // 15 log files plus the seeded one: 16 emittable entries.
+    for (int i = 0; i < 15; i++)
+    {
+        char path[48];
+        snprintf(path, sizeof(path), "/logs/2025%04d.log", i);
+        f.sd_hal.seed_file(path, {0x41});
+    }
+
+    // First page: 12 entries, continuation at 12.
+    f.web.mock_request.set_arg("start", "0");
+    TEST_ASSERT_TRUE(f.web.simulate_request("/logs", hal::HttpMethod::GET));
+    std::string page0 = f.web.mock_request.responses[0].body;
+    TEST_ASSERT_TRUE(page0.find("\"total\":16") != std::string::npos);
+    TEST_ASSERT_TRUE(page0.find("\"more\":true") != std::string::npos);
+    TEST_ASSERT_TRUE(page0.find("\"next\":12") != std::string::npos);
+
+    // Continuation page covers the remaining 4 entries.
+    f.web.mock_request.arg_count = 0;
+    f.web.mock_request.set_auth("user", "secret");
+    f.web.mock_request.set_arg("start", "12");
+    TEST_ASSERT_TRUE(f.web.simulate_request("/logs", hal::HttpMethod::GET));
+    std::string page1 = f.web.mock_request.responses[0].body;
+    TEST_ASSERT_TRUE(page1.find("\"start\":12") != std::string::npos);
+    TEST_ASSERT_TRUE(page1.find("\"more\":false") != std::string::npos);
+    TEST_ASSERT_TRUE(page1.find("\"next\":16") != std::string::npos);
+    TEST_ASSERT_TRUE(page1.find("20250101.log") != std::string::npos);
+    TEST_ASSERT_TRUE(page1.find("20250014.log") != std::string::npos);
+}
+
 // ============================================================
 // /download route
 // ============================================================
@@ -507,6 +655,42 @@ void test_download_serves_file_body()
         static_cast<uint8_t>(rec.body[0]));
     TEST_ASSERT_EQUAL_UINT8(0x05,
         static_cast<uint8_t>(rec.body[4]));
+}
+
+/**
+ * @brief /download stops serving when the requested path becomes the
+ *        clip currently being recorded at serve time (rotation while
+ *        the transfer is attached).
+ */
+void test_download_aborts_when_clip_activates_mid_transfer()
+{
+    TestFixture f;
+    f.use_password("secret");
+
+    bool recording_now = false;
+    f.service.set_active_clip_provider(
+        [&recording_now]() -> const char*
+        {
+            return recording_now
+                ? "/20250101/20250101_120000_640x480_10fps.avi"
+                : "";
+        });
+    f.web.mock_request.set_arg(
+        "path", "/20250101/20250101_120000_640x480_10fps.avi");
+
+    TEST_ASSERT_TRUE(f.web.simulate_request("/download", hal::HttpMethod::GET));
+    TEST_ASSERT_EQUAL_INT(1, f.web.mock_request.data_responses.size());
+    const MockRequestRef::DataResponseRecord& rec =
+        f.web.mock_request.data_responses[0];
+
+    // Before the clip activates, the filler serves body bytes.
+    uint8_t buf[64];
+    TEST_ASSERT_EQUAL_UINT32(5, rec.filler(buf, sizeof(buf), 0));
+
+    // Once the path is the active clip, the filler refuses further data.
+    recording_now = true;
+    TEST_ASSERT_EQUAL_UINT32(0, rec.filler(buf, sizeof(buf), 0));
+    TEST_ASSERT_EQUAL_UINT32(0, rec.filler(buf, sizeof(buf), 4));
 }
 
 /**
@@ -792,6 +976,8 @@ int main()
     RUN_TEST(test_list_files_rejects_disallowed_dir);
     RUN_TEST(test_list_files_sd_unavailable);
     RUN_TEST(test_list_files_pagination);
+    RUN_TEST(test_list_files_skips_long_names);
+    RUN_TEST(test_list_files_buffer_full_resumes_at_next_index);
     RUN_TEST(test_list_files_flags_active_clip);
     RUN_TEST(test_list_files_listing_failure);
 
@@ -804,6 +990,7 @@ int main()
 
     // /logs route
     RUN_TEST(test_logs_route_lists_log_dir);
+    RUN_TEST(test_logs_route_paginates);
 
     // /download route
     RUN_TEST(test_download_serves_file_body);
@@ -811,6 +998,7 @@ int main()
     RUN_TEST(test_download_no_password_configured_refused);
     RUN_TEST(test_download_rejects_disallowed_paths);
     RUN_TEST(test_download_rejects_active_clip);
+    RUN_TEST(test_download_aborts_when_clip_activates_mid_transfer);
     RUN_TEST(test_download_missing_file_404);
     RUN_TEST(test_download_missing_param_400);
     RUN_TEST(test_download_sd_unavailable_503);

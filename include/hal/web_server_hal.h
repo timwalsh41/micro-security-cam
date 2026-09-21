@@ -101,6 +101,20 @@ class RequestRef
         virtual const char* form_value(const char* name) const = 0;
 
         /**
+         * @brief Returns whether a POST form value was truncated.
+         *
+         * Reports whether the value for @p name exceeded the form-value
+         * buffer capacity, so callers can reject oversized values
+         * instead of silently applying truncated content. Must be
+         * consulted after form_value(); implementations may report the
+         * truncation state of the most recent form_value() call.
+         *
+         * @param name Parameter name.
+         * @return true when the value did not fit and was truncated.
+         */
+        virtual bool form_value_truncated(const char* name) const = 0;
+
+        /**
          * @brief Returns the value of a request header.
          * @param name Header name.
          * @return Header value, or empty string if not found.

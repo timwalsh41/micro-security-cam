@@ -2,12 +2,22 @@
 #include "stream_service.h"
 #include "web_auth_util.h"
 #include "time_formatter.h"
+#include "hal/time_hal.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <inttypes.h>
 #include <memory>
 #include <utility>
+
+namespace
+{
+
+/** Minimum interval between SD storage-stat refreshes for GET_STATUS. */
+constexpr hal::millis_t SD_STATS_TTL_MS = 60000;
+
+} // namespace
 
 SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CameraController& camera,
@@ -172,44 +182,61 @@ CommandResult SystemOrchestrator::handle_get_status(
     uint32_t file_size = m_video.file_size();
     uint8_t active_stream_slot_count = m_streams.active_slot_count();
 
-    // SD storage stats for the web UI status panel. Photo/video counts
-    // cover today's date directory only: media is never pruned, so a
-    // whole-card scan is unbounded, while the current day is what the
-    // status panel shows.
-    unsigned long free_bytes = 0;
+    // SD storage stats for the web UI status panel, cached with a
+    // bounded TTL so the 5 s status polling never issues SD
+    // transactions per poll (a free-space query is a full FAT scan).
+    // Photo/video counts cover today's date directory only: media is
+    // never pruned, so a whole-card scan is unbounded, while the
+    // current day is what the status panel shows.
+    uint64_t free_bytes = 0;
     unsigned int photos = 0;
     unsigned int videos = 0;
 
     if (m_sd_available)
     {
-        free_bytes = static_cast<unsigned long>(m_sd.free_bytes_sync());
-
-        char date_dir[16];
-        if (TimeFormatter::format_date(m_time.unix_now(), date_dir + 1,
-                                       sizeof(date_dir) - 1))
+        hal::millis_t now = hal::get_millis();
+        bool expired = !m_sd_stats.valid ||
+                       (now - m_sd_stats.refreshed_at) >= SD_STATS_TTL_MS;
+        if (expired)
         {
-            date_dir[0] = '/';
-            m_sd.list_dir_sync(date_dir,
-                [&photos, &videos](const char* name, size_t size, bool is_dir)
-                {
-                    (void)size;
-                    if (name != nullptr && !is_dir)
+            m_sd_stats.free_bytes = m_sd.free_bytes_sync();
+            m_sd_stats.photos = 0;
+            m_sd_stats.videos = 0;
+
+            char date_dir[16];
+            if (TimeFormatter::format_date(m_time.unix_now(), date_dir + 1,
+                                           sizeof(date_dir) - 1))
+            {
+                date_dir[0] = '/';
+                m_sd.list_dir_sync(date_dir,
+                    [this](const char* name, size_t size, bool is_dir)
                     {
-                        size_t name_len = strlen(name);
-                        if (name_len >= 4 &&
-                            strncmp(name + name_len - 4, ".jpg", 4) == 0)
+                        (void)size;
+                        if (name != nullptr && !is_dir)
                         {
-                            photos++;
+                            size_t name_len = strlen(name);
+                            if (name_len >= 4 &&
+                                strncmp(name + name_len - 4, ".jpg", 4) == 0)
+                            {
+                                m_sd_stats.photos++;
+                            }
+                            else if (name_len >= 4 &&
+                                     strncmp(name + name_len - 4, ".avi", 4) == 0)
+                            {
+                                m_sd_stats.videos++;
+                            }
                         }
-                        else if (name_len >= 4 &&
-                                 strncmp(name + name_len - 4, ".avi", 4) == 0)
-                        {
-                            videos++;
-                        }
-                    }
-                    return true;
-                });
+                        return true;
+                    });
+            }
+
+            m_sd_stats.refreshed_at = now;
+            m_sd_stats.valid = true;
         }
+
+        free_bytes = m_sd_stats.free_bytes;
+        photos = m_sd_stats.photos;
+        videos = m_sd_stats.videos;
     }
 
     int written = snprintf(
@@ -218,7 +245,7 @@ CommandResult SystemOrchestrator::handle_get_status(
         "{\"recording\":%s,\"streaming\":%s,\"sd\":%s,\"frames\":%lu,"
         "\"file_size\":%lu,"
         "\"connected_streams\":%u,"
-        "\"sd_free_bytes\":%lu,\"photos\":%u,\"videos\":%u}",
+        "\"sd_free_bytes\":%" PRIu64 ",\"photos\":%u,\"videos\":%u}",
         recording ? "true" : "false",
         streaming ? "true" : "false",
         m_sd_available ? "true" : "false",
@@ -715,6 +742,16 @@ void SystemOrchestrator::handle_update_request(hal::RequestRef& request)
     {
         request.send(400, "application/json",
                      "{\"error\":\"missing 'config' parameter\"}");
+        return;
+    }
+
+    // A form value larger than the transport's buffer was truncated in
+    // transit: applying the cut text would silently drop trailing
+    // config sections while reporting success.
+    if (request.form_value_truncated("config"))
+    {
+        request.send(413, "application/json",
+                     "{\"error\":\"config too large\"}");
         return;
     }
 

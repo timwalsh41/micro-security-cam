@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -228,7 +229,7 @@ CommandResult FileService::handle_list_files(
         return CommandResult::SD_UNAVAILABLE;
     }
 
-    // Parse "<dir>[ <page>]" from the payload (may be non-terminated).
+    // Parse "<dir>[ <start>]" from the payload (may be non-terminated).
     char arg_buf[80];
     size_t copy_len = (len < sizeof(arg_buf) - 1) ? len : sizeof(arg_buf) - 1;
     if (payload != nullptr && copy_len > 0)
@@ -237,11 +238,11 @@ CommandResult FileService::handle_list_files(
     }
     arg_buf[copy_len] = '\0';
 
-    uint32_t page = 0;
+    uint32_t start = 0;
     char* space = strrchr(arg_buf, ' ');
     if (space != nullptr && space[1] != '\0')
     {
-        page = strtoul(space + 1, nullptr, 10);
+        start = strtoul(space + 1, nullptr, 10);
         *space = '\0';
     }
 
@@ -258,7 +259,7 @@ CommandResult FileService::handle_list_files(
     }
 
     size_t written = build_listing_json(
-        dir, page, reinterpret_cast<char*>(response),
+        dir, start, reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE);
     if (written == 0)
     {
@@ -273,7 +274,7 @@ CommandResult FileService::handle_list_files(
 // Listing builder
 // ============================================================
 
-size_t FileService::build_listing_json(const char* dir, uint32_t page,
+size_t FileService::build_listing_json(const char* dir, uint32_t start,
                                        char* buf, size_t max_len)
 {
     struct EntryInfo
@@ -284,13 +285,31 @@ size_t FileService::build_listing_json(const char* dir, uint32_t page,
     };
 
     // Single CS-arbitrated directory scan collecting entry metadata.
+    // Entries whose serialized form would not fit the per-entry scratch
+    // buffer are excluded from the pagination sequence (with a count)
+    // instead of being dropped mid-page, which would desync the page
+    // math and make files silently invisible.
     std::vector<EntryInfo> entries;
+    size_t skipped_long_names = 0;
     bool ok = m_sd.list_dir_sync(dir,
-        [&entries](const char* name, size_t size, bool is_dir)
+        [&entries, &skipped_long_names](const char* name, size_t size,
+                                        bool is_dir)
         {
             if (name != nullptr)
             {
-                entries.push_back({name, size, is_dir});
+                char size_digits[24];
+                int digits = snprintf(size_digits, sizeof(size_digits),
+                                      "%lu", static_cast<unsigned long>(size));
+                size_t serialized_len = 34 + strlen(name) +
+                    ((digits > 0) ? static_cast<size_t>(digits) : 0);
+                if (serialized_len > ENTRY_JSON_BUF_SIZE - 1)
+                {
+                    skipped_long_names++;
+                }
+                else
+                {
+                    entries.push_back({name, size, is_dir});
+                }
             }
             return true;
         });
@@ -300,14 +319,16 @@ size_t FileService::build_listing_json(const char* dir, uint32_t page,
     }
 
     const size_t total = entries.size();
-    const size_t first = static_cast<size_t>(page) * PAGE_SIZE;
+    const size_t first = (start < total) ? static_cast<size_t>(start) : total;
 
     // Page header.
     int written = snprintf(buf, max_len,
-                           "{\"dir\":\"%s\",\"page\":%u,\"total\":%u,\"entries\":[",
+                           "{\"dir\":\"%s\",\"start\":%u,\"total\":%u,"
+                           "\"skipped_long_names\":%u,\"entries\":[",
                            dir,
-                           static_cast<unsigned>(page),
-                           static_cast<unsigned>(total));
+                           static_cast<unsigned>(start),
+                           static_cast<unsigned>(total),
+                           static_cast<unsigned>(skipped_long_names));
     if (written < 0 || static_cast<size_t>(written) >= max_len)
     {
         return 0;
@@ -318,7 +339,6 @@ size_t FileService::build_listing_json(const char* dir, uint32_t page,
     const char* active = (m_active_clip != nullptr) ? m_active_clip() : "";
 
     size_t index = first;
-    bool buffer_full = false;
     for (; index < total && index < first + PAGE_SIZE; index++)
     {
         const EntryInfo& entry = entries[index];
@@ -329,7 +349,7 @@ size_t FileService::build_listing_json(const char* dir, uint32_t page,
             : std::string(dir) + "/" + entry.name;
         bool recording = (active[0] != '\0') && (full_path == active);
 
-        char entry_json[176];
+        char entry_json[ENTRY_JSON_BUF_SIZE];
         int n = snprintf(entry_json, sizeof(entry_json),
                          "%s{\"n\":\"%s\",\"s\":%lu,\"d\":%s,\"r\":%s}",
                          (index > first) ? "," : "",
@@ -339,24 +359,26 @@ size_t FileService::build_listing_json(const char* dir, uint32_t page,
                          recording ? "true" : "false");
         if (n < 0 || static_cast<size_t>(n) >= sizeof(entry_json))
         {
-            continue; // Name too long for the JSON scratch buffer: skip.
+            // Unreachable for entries admitted by the scan (their
+            // serialized bound fits); treat defensively as end-of-page.
+            break;
         }
 
-        // Keep room for the closing "]}" and trailer.
+        // Keep room for the closing "]\"more\":...}" trailer.
         if (pos + static_cast<size_t>(n) + 48 >= max_len)
         {
-            buffer_full = true;
             break;
         }
         memcpy(buf + pos, entry_json, static_cast<size_t>(n));
         pos += static_cast<size_t>(n);
     }
 
-    bool has_more = buffer_full || (index < total);
+    bool has_more = index < total;
 
     int trailer = snprintf(buf + pos, max_len - pos,
-                           "],\"has_more\":%s}",
-                           has_more ? "true" : "false");
+                           "],\"more\":%s,\"next\":%u}",
+                           has_more ? "true" : "false",
+                           static_cast<unsigned>(index));
     if (trailer < 0 || static_cast<size_t>(trailer) >= max_len - pos)
     {
         return 0;
@@ -421,10 +443,10 @@ void FileService::handle_files_request(hal::RequestRef& request)
         return;
     }
 
-    uint32_t page = strtoul(request.arg("page"), nullptr, 10);
+    uint32_t start = strtoul(request.arg("start"), nullptr, 10);
 
     char json[CommandHandler::MAX_RESPONSE_SIZE];
-    size_t written = build_listing_json(dir, page, json, sizeof(json));
+    size_t written = build_listing_json(dir, start, json, sizeof(json));
     if (written == 0)
     {
         request.send(404, "application/json",
@@ -493,13 +515,21 @@ void FileService::handle_download_request(hal::RequestRef& request)
         return;
     }
 
-    // Serve in bounded CS-arbitrated read transactions from the
-    // transport's task context. The lambda owns its path copy, since
-    // the request's arg buffer is only valid for the handler call.
+    // Per-chunk serve-time re-verification: a clip that opens (or
+    // rotates) onto this path while the transfer is in flight makes
+    // the remaining body unfinalized data, so the transfer stops.
     std::string owned_path(path);
     hal::DataFiller filler =
         [this, owned_path](uint8_t* buf, size_t max_len, size_t offset) -> size_t
         {
+            const char* active =
+                (m_active_clip != nullptr) ? m_active_clip() : "";
+            if (active[0] != '\0' &&
+                strcmp(active, owned_path.c_str()) == 0)
+            {
+                return 0;
+            }
+
             size_t chunk = (max_len < DOWNLOAD_CHUNK_SIZE)
                 ? max_len : DOWNLOAD_CHUNK_SIZE;
             return m_sd.read_at_sync(owned_path.c_str(),
@@ -536,7 +566,8 @@ void FileService::handle_logs_request(hal::RequestRef& request)
     }
 
     char json[CommandHandler::MAX_RESPONSE_SIZE];
-    size_t written = build_listing_json("/logs", 0, json, sizeof(json));
+    uint32_t start = strtoul(request.arg("start"), nullptr, 10);
+    size_t written = build_listing_json("/logs", start, json, sizeof(json));
     if (written == 0)
     {
         request.send(404, "application/json",

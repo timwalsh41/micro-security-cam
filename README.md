@@ -259,10 +259,10 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/control?cmd=config_get_value&key=<section.key>` | Yes | Read a single config value (requires a configured web password) |
 | GET | `/control?cmd=config_set_value&key=<section.key>&value=<val>` | Yes | Set a single config value in the live config (requires a configured web password) |
 | GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card (requires a configured web password) |
-| GET | `/control?cmd=files&dir=<path>&page=<n>` | Yes | Directory listing JSON (requires a configured web password) |
-| GET | `/files?dir=<path>&page=<n>` | Yes | Directory listing JSON — same handler as `cmd=files`, direct route (file-access policy below) |
+| GET | `/control?cmd=files&dir=<path>&start=<n>` | Yes | Directory listing JSON (requires a configured web password) |
+| GET | `/files?dir=<path>&start=<n>` | Yes | Directory listing JSON — same handler as `cmd=files`, direct route (file-access policy below) |
 | GET | `/download?path=<file>` | Yes | Download a file from the SD card (file-access policy below) |
-| GET | `/logs` | Yes | Log directory listing JSON (file-access policy below) |
+| GET | `/logs?start=<n>` | Yes | Log directory listing JSON (file-access policy below) |
 | GET | `/log?file=<YYYYMMDD.log>` | Yes | View a system log file — serves the last 16 KB as text (file-access policy below) |
 | POST | `/update` | Yes | Bulk config update: urlencoded `config` field with INI text plus optional `dest=nvs\|sd` (default `nvs`) — overlays onto the live config and persists (config policy below) |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |

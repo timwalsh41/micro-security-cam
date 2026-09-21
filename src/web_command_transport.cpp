@@ -276,17 +276,18 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
     }
 
     // LIST_FILES takes an optional directory from the "dir" query
-    // parameter plus an optional "page" entry-page number.
+    // parameter plus an optional "start" entry index (the listing's
+    // absolute continuation point).
     if (code == CommandCode::LIST_FILES)
     {
         const char* dir = request.arg("dir");
-        const char* page = request.arg("page");
+        const char* start = request.arg("start");
         std::string payload =
             (dir != nullptr && dir[0] != '\0') ? dir : "/";
-        if (page != nullptr && page[0] != '\0')
+        if (start != nullptr && start[0] != '\0')
         {
             payload += " ";
-            payload += page;
+            payload += start;
         }
         dispatch_and_respond(request, code,
                              reinterpret_cast<const uint8_t*>(payload.c_str()),

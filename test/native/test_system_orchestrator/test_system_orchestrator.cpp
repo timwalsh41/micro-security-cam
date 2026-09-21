@@ -1328,6 +1328,67 @@ void test_get_status_reports_media_counts()
     TEST_ASSERT_NOT_NULL(strstr(json, "\"videos\":2"));
 }
 
+/**
+ * @brief GET_STATUS reports free space above the 32-bit range
+ *        untruncated (a mostly-empty large card is not ~0).
+ */
+void test_get_status_free_bytes_beyond_32_bits()
+{
+    TestFixture f;
+    f.sd_hal.mock_free_bytes = 5368709120ULL; // 5 GB free.
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response),
+        "\"sd_free_bytes\":5368709120"));
+}
+
+/**
+ * @brief GET_STATUS caches SD storage stats with a bounded TTL: status
+ *        polls within the TTL reuse the cached values without SD
+ *        transactions; the cache refreshes after the TTL elapses.
+ */
+void test_get_status_caches_sd_stats_within_ttl()
+{
+    TestFixture f;
+    set_mock_millis(1000);
+    f.sd_hal.mock_free_bytes = 111;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"sd_free_bytes\":111"));
+    int scans_after_first = f.sd_hal.list_dir_call_count;
+    TEST_ASSERT_TRUE(scans_after_first >= 1);
+
+    // A poll within the TTL serves cached values: no new scan, and a
+    // changed free-space value is not yet visible.
+    set_mock_millis(30000);
+    f.sd_hal.mock_free_bytes = 999;
+    memset(response, 0, sizeof(response));
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"sd_free_bytes\":111"));
+    TEST_ASSERT_EQUAL_INT(scans_after_first, f.sd_hal.list_dir_call_count);
+
+    // After the TTL elapses the next poll refreshes from the card.
+    set_mock_millis(61001);
+    memset(response, 0, sizeof(response));
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"sd_free_bytes\":999"));
+    TEST_ASSERT_EQUAL_INT(scans_after_first + 1,
+                          f.sd_hal.list_dir_call_count);
+}
+
 // ============================================================
 // POST /update (bulk config)
 // ============================================================
@@ -1390,6 +1451,27 @@ void test_update_missing_body_400()
 
     TEST_ASSERT_TRUE(f.web_hal.simulate_request("/update", hal::HttpMethod::POST));
     TEST_ASSERT_EQUAL_INT(400, f.web_hal.mock_request.responses[0].code);
+}
+
+/**
+ * @brief /update rejects a form value that was truncated in transit
+ *        (413) instead of applying the cut-down config text.
+ */
+void test_update_truncated_config_rejected_413()
+{
+    TestFixture f("secret");
+    f.web_hal.mock_request.set_auth("user", "secret");
+
+    uint8_t fps_before = f.config.config().video.fps;
+    f.web_hal.mock_request.set_form_value("config", "[video]\nfps=15\n");
+    f.web_hal.mock_request.form_truncated = true;
+
+    TEST_ASSERT_TRUE(f.web_hal.simulate_request("/update", hal::HttpMethod::POST));
+    TEST_ASSERT_EQUAL_INT(413, f.web_hal.mock_request.responses[0].code);
+    TEST_ASSERT_TRUE(
+        f.web_hal.mock_request.responses[0].body.find("too large") !=
+        std::string::npos);
+    TEST_ASSERT_EQUAL_UINT32(fps_before, f.config.config().video.fps);
 }
 
 /**
@@ -1498,12 +1580,15 @@ int main()
     RUN_TEST(test_degraded_hw_init_failure_enters_streaming_only);
     RUN_TEST(test_get_status_reports_sd_true_when_available);
     RUN_TEST(test_get_status_reports_media_counts);
+    RUN_TEST(test_get_status_free_bytes_beyond_32_bits);
+    RUN_TEST(test_get_status_caches_sd_stats_within_ttl);
 
     // POST /update
     RUN_TEST(test_update_no_password_configured_refused);
     RUN_TEST(test_update_requires_credentials);
     RUN_TEST(test_update_applies_config_overlay_and_saves_nvs);
     RUN_TEST(test_update_missing_body_400);
+    RUN_TEST(test_update_truncated_config_rejected_413);
     RUN_TEST(test_update_dest_sd_unavailable_503);
     RUN_TEST(test_degraded_streaming_end_to_end);
 

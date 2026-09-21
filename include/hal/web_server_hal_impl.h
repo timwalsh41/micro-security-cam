@@ -48,6 +48,7 @@ class AsyncRequestRef : public RequestRef
         HttpMethod method() const override;
         const char* arg(const char* name) const override;
         const char* form_value(const char* name) const override;
+        bool form_value_truncated(const char* name) const override;
         const char* header(const char* name) const override;
         const char* auth_header() const override;
 

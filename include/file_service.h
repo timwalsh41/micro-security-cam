@@ -41,9 +41,15 @@
 class FileService
 {
     public:
-        /** Entries per listing page, sized to fit the 1280-byte
-         *  dispatch response cap with worst-case entry names. */
+        /** Entries requested per listing page, sized to fit the
+         *  1280-byte dispatch response cap with typical entry names.
+         *  A page may emit fewer entries when the response buffer would
+         *  overflow; the response's "next" index then continues the
+         *  listing at the first unemitted entry. */
         static constexpr uint16_t PAGE_SIZE = 12;
+
+        /** Scratch buffer size for one serialized listing entry. */
+        static constexpr size_t ENTRY_JSON_BUF_SIZE = 176;
 
         /** Maximum bytes of a log file served by the /log route (tail). */
         static constexpr size_t LOG_TAIL_MAX_BYTES = 16384;
@@ -111,13 +117,13 @@ class FileService
         // HTTP routes
         // ============================================================
 
-        /** @brief Handler for GET /files?dir=&page= — JSON listing. */
+        /** @brief Handler for GET /files?dir=&start= — JSON listing. */
         void handle_files_request(hal::RequestRef& request);
 
         /** @brief Handler for GET /download?path= — file transfer. */
         void handle_download_request(hal::RequestRef& request);
 
-        /** @brief Handler for GET /logs — JSON listing of /logs. */
+        /** @brief Handler for GET /logs?start= — JSON listing of /logs. */
         void handle_logs_request(hal::RequestRef& request);
 
         /** @brief Handler for GET /log?file=YYYYMMDD.log — log tail. */
@@ -165,16 +171,25 @@ class FileService
          * @brief Builds the JSON listing page for one directory.
          *
          * Scans the directory once, then serializes the page's entries.
-         * The page stops early (with "has_more":true) when the buffer
-         * would overflow.
+         * Pagination runs over the directory's emittable entries: names
+         * too long for the per-entry scratch buffer are excluded from
+         * the pagination sequence (they cannot be serialized at all) and
+         * reported per response via "skipped_long_names", so "total"
+         * and the page math stay consistent. The emitted page stops
+         * early (with "more":true and "next" set) when the output
+         * buffer would overflow; "next" is the absolute index of the
+         * first unemitted emittable entry and serves as the
+         * continuation point for the following request.
          *
          * @param dir     Absolute directory path (allowlisted).
-         * @param page    Entry page number (PAGE_SIZE entries per page).
+         * @param start   Absolute index of the first entry to emit
+         *                (clamped to the entry count; values beyond the
+         *                end yield an empty page with "more":false).
          * @param buf     Output buffer.
          * @param max_len Output buffer capacity.
          * @return Bytes written, or 0 on directory-listing failure.
          */
-        size_t build_listing_json(const char* dir, uint32_t page,
+        size_t build_listing_json(const char* dir, uint32_t start,
                                   char* buf, size_t max_len);
 
     private:

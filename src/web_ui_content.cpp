@@ -8,9 +8,9 @@
  * flash automatically. It talks to the firmware's JSON/INI endpoints:
  *   GET  /status                      — status JSON
  *   GET  /control?cmd=...             — control commands
- *   GET  /files?dir=&page=            — directory listing JSON
+ *   GET  /files?dir=&start=           — directory listing JSON
  *   GET  /download?path=              — file download
- *   GET  /logs                        — log directory listing JSON
+ *   GET  /logs?start=                 — log directory listing JSON
  *   GET  /log?file=YYYYMMDD.log       — log tail (text/plain)
  *   POST /update (dest, config)       — bulk config overlay + save
  *   GET  /stream                      — MJPEG preview (after stream_start)
@@ -121,6 +121,11 @@ textarea#config{width:100%;min-height:260px;background:#0d1117;color:var(--fg);b
 <section id="logs">
   <h2>System logs</h2>
   <ul class="list" id="log-list"></ul>
+  <div class="row" style="margin-top:8px">
+    <button id="btn-log-prev">&#8592; Prev</button>
+    <span class="muted" id="log-page-info"></span>
+    <button id="btn-log-next">Next &#8594;</button>
+  </div>
   <pre class="log" id="log-view">Select a log file above.</pre>
 </section>
 
@@ -216,8 +221,8 @@ $('btn-stream-stop').onclick=()=>{$('preview-img').src='';control('stream_stop')
 
 // ---------- files ----------
 let curDir='/';
-let curPage=0;
-let curTotal=0;
+let curStart=0;
+let curNext=0;
 
 function fileRow(e,dir){
   const li=document.createElement('li');
@@ -250,45 +255,51 @@ function fileRow(e,dir){
   return li;
 }
 
-async function browse(dir,page){
-  page=page||0;
+async function browse(dir,start){
+  start=start||0;
   try{
-    const r=await api('/files?dir='+encodeURIComponent(dir)+'&page='+page);
+    const r=await api('/files?dir='+encodeURIComponent(dir)+'&start='+start);
     if(!r.ok){throw new Error('HTTP '+r.status);}
     const j=await r.json();
-    curDir=j.dir;curPage=j.page;curTotal=j.total;
+    curDir=j.dir;curStart=j.start;curNext=j.next;
     $('crumb').textContent=j.dir;
     const ul=$('file-list');
     ul.innerHTML='';
-    for(const e of (j.entries||[])){ul.appendChild(fileRow(e,j.dir));}
-    if(!(j.entries||[]).length){
+    const entries=j.entries||[];
+    for(const e of entries){ul.appendChild(fileRow(e,j.dir));}
+    if(!entries.length){
       const li=document.createElement('li');
       li.innerHTML='<span class="muted">empty</span>';
       ul.appendChild(li);
     }
-    $('page-info').textContent='page '+(j.page+1)+' of '+
-      Math.max(1,Math.ceil(j.total/12));
-    $('btn-next-page').disabled=!j.has_more;
-    $('btn-prev-page').disabled=j.page===0;
+    let info='entries '+start+'\u2013'+(start+entries.length)+' of '+j.total;
+    if(j.skipped_long_names>0){
+      info+=' ('+j.skipped_long_names+' skipped: name too long)';
+    }
+    $('page-info').textContent=info;
+    $('btn-next-page').disabled=!j.more;
+    $('btn-prev-page').disabled=start===0;
   }catch(e){
     $('file-list').innerHTML='<li><span class="err">'+e.message+'</span></li>';
   }
 }
-$('btn-next-page').onclick=()=>browse(curDir,curPage+1);
-$('btn-prev-page').onclick=()=>browse(curDir,curPage-1);
-$('btn-up').onclick=()=>{
-  if(curDir!=='/'&&curDir!==''){browse('/');}else{browse('/');}
-};
+$('btn-next-page').onclick=()=>browse(curDir,curNext);
+$('btn-prev-page').onclick=()=>browse(curDir,curStart>12?curStart-12:0);
+$('btn-up').onclick=()=>{browse('/');};
 
 // ---------- logs ----------
-async function refreshLogs(){
+let logStart=0;
+async function refreshLogs(start){
+  start=start||0;
   try{
-    const r=await api('/logs');
+    const r=await api('/logs?start='+start);
     if(!r.ok)return;
     const j=await r.json();
+    logStart=j.start;
     const ul=$('log-list');
     ul.innerHTML='';
-    for(const e of (j.entries||[])){
+    const entries=j.entries||[];
+    for(const e of entries){
       if(e.d)continue;
       const li=document.createElement('li');
       const label=document.createElement('span');
@@ -304,11 +315,17 @@ async function refreshLogs(){
       li.appendChild(size);
       ul.appendChild(li);
     }
-    if(!(j.entries||[]).length){
+    if(!entries.length){
       ul.innerHTML='<li><span class="muted">no log files</span></li>';
     }
+    $('log-page-info').textContent='logs '+logStart+'\u2013'+(logStart+entries.length)+
+      ' of '+j.total;
+    $('btn-log-next').disabled=!j.more;
+    $('btn-log-prev').disabled=logStart===0;
   }catch(e){/* leave the list as-is */}
 }
+$('btn-log-next').onclick=()=>refreshLogs(logStart+12);
+$('btn-log-prev').onclick=()=>refreshLogs(logStart>12?logStart-12:0);
 async function viewLog(name){
   $('log-view').textContent='Loading '+name+' ...';
   try{

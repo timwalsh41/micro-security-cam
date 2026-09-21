@@ -90,6 +90,15 @@ const char* AsyncRequestRef::form_value(const char* name) const
     return "";
 }
 
+bool AsyncRequestRef::form_value_truncated(const char* name) const
+{
+    if (m_request != nullptr && name != nullptr)
+    {
+        return m_request->arg(name).length() > FORM_BUF_SIZE - 1;
+    }
+    return false;
+}
+
 void AsyncRequestRef::send(int code, const char* content_type,
                            const char* content)
 {

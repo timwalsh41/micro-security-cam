@@ -433,7 +433,7 @@ void test_control_files_refused_without_password()
 }
 
 /**
- * @brief /control dispatches cmd=files with the dir+page payload when
+ * @brief /control dispatches cmd=files with the dir+start payload when
  *        a password is configured and auth passes.
  */
 void test_control_files_succeeds_with_password()
@@ -445,21 +445,21 @@ void test_control_files_succeeds_with_password()
     f.hal.mock_request.set_auth("admin", "secret");
     f.hal.mock_request.set_arg("cmd", "files");
     f.hal.mock_request.set_arg("dir", "/20250101");
-    f.hal.mock_request.set_arg("page", "2");
+    f.hal.mock_request.set_arg("start", "24");
     f.hal.simulate_request("/control", hal::HttpMethod::GET);
 
     TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
     TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
     TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
-    TEST_ASSERT_EQUAL_UINT32(11, g_last_payload_len);
+    TEST_ASSERT_EQUAL_UINT32(12, g_last_payload_len);
     TEST_ASSERT_TRUE(strncmp(reinterpret_cast<const char*>(g_last_payload),
-                             "/20250101 2", 11) == 0);
+                             "/20250101 24", 12) == 0);
 }
 
 /**
- * @brief cmd=files without dir/page defaults to the SD root, page 0.
+ * @brief cmd=files without dir/start defaults to the SD root, start 0.
  */
-void test_control_files_default_dir_and_page()
+void test_control_files_default_dir_and_start()
 {
     TestFixture f;
     f.transport.register_routes("secret");
@@ -855,7 +855,7 @@ int main()
     // LIST_FILES (files)
     RUN_TEST(test_control_files_refused_without_password);
     RUN_TEST(test_control_files_succeeds_with_password);
-    RUN_TEST(test_control_files_default_dir_and_page);
+    RUN_TEST(test_control_files_default_dir_and_start);
 
     // SET_TIME
     RUN_TEST(test_set_time_missing_ts_returns_400);

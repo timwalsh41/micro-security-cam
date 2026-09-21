@@ -170,6 +170,7 @@ package "HAL interfaces" as HAL_IF {
         +method() : HttpMethod
         +arg(name) : const char*
         +form_value(name) : const char*
+        +form_value_truncated(name) : bool
         +header(name) : const char*
         +auth_header() : const char*
         +send(code, content_type, content)
@@ -552,7 +553,7 @@ package "Services" {
         +{static} is_valid_path(path) : bool
         +{static} is_allowed_listing_dir(dir) : bool
         +{static} is_allowed_download_path(path) : bool
-        +build_listing_json(dir, page, buf, max_len) : size_t
+        +build_listing_json(dir, start, buf, max_len) : size_t
         -check_auth(request) : bool
     }
 }
@@ -1064,6 +1065,7 @@ Each request is represented by a per-request `RequestRef` object that provides a
 | `method()` | Get the request HTTP method |
 | `arg(name)` | Get a query parameter value |
 | `form_value(name)` | Get a parsed POST form parameter value (application/x-www-form-urlencoded); implementations may use a larger buffer than `arg()` (the `AsyncRequestRef` form buffer holds a full serialized configuration, 1280 bytes) |
+| `form_value_truncated(name)` | Report whether the named POST form value exceeded the form buffer and was truncated in transit; callers must reject truncated values instead of applying cut-down content |
 | `header(name)` | Get a request header value |
 | `auth_header()` | Get the `Authorization` header |
 | `send(code, type, content)` | Send a complete response (string body) |
@@ -1514,7 +1516,7 @@ Complete list of HTTP endpoints exposed by the system, showing which class regis
 | POST | `/update` | `SystemOrchestrator::init()` | `handle_update_request()` → `ConfigService::overlay()` → `save_nvs()`/`save_sd()` | Config policy² |
 | GET | `/files` | `FileService::init()` | `handle_files_request()` → `build_listing_json()` → SD listing | File policy³ |
 | GET | `/download` | `FileService::init()` | `handle_download_request()` → path validation → `send_data_response()` with per-chunk `SdController::read_at_sync()` | File policy³ |
-| GET | `/logs` | `FileService::init()` | `handle_logs_request()` → `build_listing_json("/logs")` | File policy³ |
+| GET | `/logs` | `FileService::init()` | `handle_logs_request()` → `build_listing_json("/logs", start)` | File policy³ |
 | GET | `/log` | `FileService::init()` | `handle_log_request()` → tail-limited `send_data_response()` | File policy³ |
 
 ¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers may not send Basic credentials for embedded subresources (`<img>`/`<video>`); after the initial per-origin credential prompt the cached credentials usually cover `<img src="/stream">` — if a browser is found not to, the fallback is a fetch→blob preview, and a token-based mechanism remains out of scope.
@@ -1610,11 +1612,13 @@ SD file browsing, download, and log viewing. Owns the `LIST_FILES` (0x40) dispat
 
 | Endpoint | Behavior |
 |----------|----------|
-| `LIST_FILES` (0x40) | Payload `"<dir>[ <page>]"` (empty = SD root). Builds one listing page into the dispatch response buffer. Shared by the serial `FILES` command and the web `cmd=files` mapping. |
-| `GET /files?dir=&page=` | Same listing builder over HTTP; 503 when the card is unavailable, 403 for non-allowlisted directories. |
-| `GET /download?path=` | Validates the path against the allowlist, refuses the active clip (409) and missing files (404), stats the file, and attaches a `send_data_response()` with `application/octet-stream`; the filler issues one `read_at_sync()` transaction per chunk, bounded by `DOWNLOAD_CHUNK_SIZE` (4096 bytes) so a download interlaces bounded CS-arbitrated reads with recording writes (recording FPS may dip during downloads — accepted behavior). |
-| `GET /logs` | Listing JSON of `/logs` (log files with sizes). |
+| `LIST_FILES` (0x40) | Payload `"<dir>[ <start>]"` (empty = SD root). Builds one listing page into the dispatch response buffer. Shared by the serial `FILES` command and the web `cmd=files` mapping. |
+| `GET /files?dir=&start=` | Same listing builder over HTTP; 503 when the card is unavailable, 403 for non-allowlisted directories. |
+| `GET /download?path=` | Validates the path against the allowlist, refuses the active clip (409) and missing files (404), stats the file, and attaches a `send_data_response()` with `application/octet-stream`; the filler re-verifies the active clip on every chunk and stops the transfer if the requested path became the clip being recorded mid-transfer, and issues one `read_at_sync()` transaction per chunk, bounded by `DOWNLOAD_CHUNK_SIZE` (4096 bytes) so a download interlaces bounded CS-arbitrated reads with recording writes (recording FPS may dip during downloads — accepted behavior). |
+| `GET /logs?start=` | Listing JSON of `/logs` (log files with sizes), paginated like `/files`. |
 | `GET /log?file=YYYYMMDD.log` | Tail-limited log view (`text/plain`): serves at most the last `LOG_TAIL_MAX_BYTES` (16384 bytes) so long-lived logs cannot grow the response unboundedly. 404 for missing files, 403 for names outside the `YYYYMMDD.log` pattern. |
+
+The listing builder paginates over the directory's *emittable* entries: names too long for the per-entry JSON scratch buffer are excluded from the pagination sequence and reported via `skipped_long_names` (they cannot be serialized at all), while `total` counts only emittable entries so page math stays consistent. Pages are addressed by an absolute `start` index into the emittable sequence; when the response buffer would overflow mid-page, the page stops early and `next` carries the absolute index of the first unemitted entry, so following the `next` chain (`more:false` terminates) visits every entry exactly once.
 
 #### Security Policy
 
@@ -1622,7 +1626,7 @@ SD file browsing, download, and log viewing. Owns the `LIST_FILES` (0x40) dispat
 - Paths must be absolute and traversal-free (`..`, `.`, empty segments, backslashes, and trailing slashes rejected).
 - Listing allowlist: the SD root `/`, `/logs`, and date directories (`/YYYYMMDD`).
 - Download allowlist: files directly inside date directories and daily log files under `/logs`. Root-level files — including `/config.ini`, which holds WiFi/AP/web credentials — are never downloadable; the config editor reads the live config via `GET_CONFIG` instead.
-- The clip currently being recorded is flagged (`"r":true`) in listings and refused for download with `409`, since its AVI header is unfinalized until close.
+- The clip currently being recorded is flagged (`"r":true`) in listings and refused for download with `409`, since its AVI header is unfinalized until close. Downloads re-verify at serve time (per chunk) and stop the transfer if the path became the active clip mid-transfer.
 
 #### Testability
 
@@ -1632,7 +1636,7 @@ Fully testable on native via `MockSdCardHal` (file store with directories), `Moc
 
 **Files**: `include/web_ui_content.h`, `src/web_ui_content.cpp`
 
-The web UI is a single dependency-free page (HTML + CSS + vanilla JS in one document) embedded in the firmware as the default (`GET /` served by `WebServerService`). It covers the status panel (including SD free space and today's photo/video counts), recording/photo/preview controls, the live MJPEG preview, the file browser with per-directory listing, pagination, and download links, the system log viewer, and a config editor (load via `GET_CONFIG`, save via `POST /update` to NVS or SD). The preview issues `stream_start` before pointing an `<img src="/stream">` at the stream and `stream_stop` afterwards, honoring the 409 gate on `/stream`.
+The web UI is a single dependency-free page (HTML + CSS + vanilla JS in one document) embedded in the firmware as the default (`GET /` served by `WebServerService`). It covers the status panel (including SD free space and today's photo/video counts), recording/photo/preview controls, the live MJPEG preview, the file browser with per-directory listing, pagination (absolute `start` indices with the listing's `next` continuation index), and download links, the system log viewer (paginated the same way), and a config editor (load via `GET_CONFIG`, save via `POST /update` to NVS or SD). The preview issues `stream_start` before pointing an `<img src="/stream">` at the stream and `stream_stop` afterwards, honoring the 409 gate on `/stream`.
 
 **SD `/data/` override hook (documented, not implemented)**: the planned path for serving UI assets from the card is a per-URL serving order of
 
@@ -1791,7 +1795,7 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint32,"photos":uint16,"videos":uint16}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, and SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card, and the photo/video counts cover today's date directory only). SD queries run as CS-arbitrated transactions in the dispatching task context. No other side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, and SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only). The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks), `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks, and no camera capture is performed). Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
@@ -1803,7 +1807,7 @@ Every command returns a `CommandResult` enum value:
 | `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). String settings are returned verbatim; numeric and boolean settings are returned formatted as in serialized INI text (decimal; `camera.grab_mode` as two-digit hex; `video.audio_enabled` as `true`/`false`). Returns `INVALID_ARGS` if the key is unknown. |
 | `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value in the live (in-RAM) config. The string contains both the key path and the new value separated by `=`. String settings accept any value that fits the field buffer; numeric and boolean settings must satisfy the same constraints as the INI parser (e.g. `web.port` 1–65535, `web.max_streams` 1–4, `video.fps` 1–30, `video.mic_gain` 1–8, jpeg quality ≤ 63, `camera.grab_mode` hexadecimal ≤ 0xFF). Returns `INVALID_ARGS` if the key is unknown or the value is out of range or unparseable; rejected values leave the config unchanged. The change is NOT persisted; run `SET_CONFIG` to commit it to NVS or the SD card. |
 | `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |
-| `0x40` | `LIST_FILES` | Text: `"<dir>[ <page>]"` (empty payload lists the SD root; page is a decimal entry-page number, default 0) | JSON string: `{"dir":str,"page":uint,"total":uint,"entries":[{"n":str,"s":bytes,"d":is_dir,"r":recording}...],"has_more":bool}` | Returns one page (`FileService::PAGE_SIZE` = 12 entries) of a single directory listing with entry name, byte size, directory flag, and a recording flag set on the clip currently being written. Listing is allowlisted to the SD root, `/logs`, and date directories; other paths return `INVALID_ARGS`. Returns `SD_UNAVAILABLE` when the card is absent, `INTERNAL_ERROR` when the directory scan fails. **Deviation from the plan**: file *content* transfer is not a dispatch command (see the `GET /download` route); only the bounded listing rides the command layer. |
+| `0x40` | `LIST_FILES` | Text: `"<dir>[ <start>]"` (empty payload lists the SD root; start is a decimal entry index into the directory's emittable sequence, default 0) | JSON string: `{"dir":str,"start":uint,"total":uint,"skipped_long_names":uint,"entries":[{"n":str,"s":bytes,"d":is_dir,"r":recording}...],"more":bool,"next":uint}` | Returns one page (`FileService::PAGE_SIZE` = 12 entries) of a single directory listing with entry name, byte size, directory flag, and a recording flag set on the clip currently being written. Pagination runs over emittable entries only: names too long to serialize are excluded and counted in `skipped_long_names`, `total` counts emittable entries, and `next` is the absolute continuation index (the first unemitted entry, also set when the response buffer stops a page early); `more:false` terminates the listing. Listing is allowlisted to the SD root, `/logs`, and date directories; other paths return `INVALID_ARGS`. Returns `SD_UNAVAILABLE` when the card is absent, `INTERNAL_ERROR` when the directory scan fails. **Deviation from the plan**: file *content* transfer is not a dispatch command (see the `GET /download` route); only the bounded listing rides the command layer. |
 
 #### Transport Mappings
 
@@ -1823,7 +1827,7 @@ Every command returns a `CommandResult` enum value:
 | `config_get_value` | `GET_CONFIG_VALUE` | Requires a `key` query parameter: `"section.key"` string |
 | `config_set_value` | `SET_CONFIG_VALUE` | Requires `key` and `value` query parameters (empty `value` blanks the setting) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
-| `files` | `LIST_FILES` | Optional `dir` query parameter (default `/`) plus optional `page` entry-page number; served as listing JSON. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
+| `files` | `LIST_FILES` | Optional `dir` query parameter (default `/`) plus optional `start` entry index into the emittable sequence; served as listing JSON. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
 
 The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
 
@@ -1848,7 +1852,7 @@ The `/status` endpoint always dispatches `GET_STATUS` regardless of query parame
 | `SET <section>.<key>=<val>` | `SET_CONFIG_VALUE` | `"section.key=value"` string | Empty |
 | `CONFIG_GET` | `GET_CONFIG` | None | Full config as serialized INI text |
 | `CONFIG_SAVE <nvs\|sd>` | `SET_CONFIG` | Destination string (`nvs` or `sd`, case-insensitive) | Empty |
-| `FILES [dir [page]]` | `LIST_FILES` | Directory path with optional page number; no args lists the SD root | Listing JSON |
+| `FILES [dir [start]]` | `LIST_FILES` | Directory path with optional entry index; no args lists the SD root | Listing JSON |
 
 Response format:
 - **Success**: `OK [data]\n` (data is optional)
