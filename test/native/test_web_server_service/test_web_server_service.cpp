@@ -210,8 +210,28 @@ void test_handle_index_sends_html()
     TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
     TEST_ASSERT_EQUAL_STRING("text/html",
                              f.hal.mock_request.responses[0].content_type.c_str());
-    TEST_ASSERT_TRUE(f.hal.mock_request.responses[0].body.find("ESP32") !=
-                     std::string::npos);
+    TEST_ASSERT_TRUE(f.hal.mock_request.responses[0].body.find(
+                         "Micro Security Cam") != std::string::npos);
+}
+
+/**
+ * @brief The embedded UI references the slice-5 endpoints.
+ */
+void test_handle_index_ui_references_endpoints()
+{
+    TestFixture f;
+    f.service.init(make_web_config());
+
+    f.hal.simulate_request("/", hal::HttpMethod::GET);
+
+    const std::string& body = f.hal.mock_request.responses[0].body;
+    TEST_ASSERT_TRUE(body.find("/files") != std::string::npos);
+    TEST_ASSERT_TRUE(body.find("/download") != std::string::npos);
+    TEST_ASSERT_TRUE(body.find("/logs") != std::string::npos);
+    TEST_ASSERT_TRUE(body.find("/log?file=") != std::string::npos);
+    TEST_ASSERT_TRUE(body.find("/update") != std::string::npos);
+    TEST_ASSERT_TRUE(body.find("cmd=stream_start") != std::string::npos);
+    TEST_ASSERT_TRUE(body.find("/stream") != std::string::npos);
 }
 
 /**
@@ -318,6 +338,7 @@ int main()
 
     // handle_index + auth (via simulate_request)
     RUN_TEST(test_handle_index_sends_html);
+    RUN_TEST(test_handle_index_ui_references_endpoints);
     RUN_TEST(test_handle_index_no_password);
     RUN_TEST(test_handle_index_no_auth_header_returns_401);
     RUN_TEST(test_handle_index_wrong_password_returns_401);
