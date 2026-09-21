@@ -1607,8 +1607,10 @@ Rationale: The executor model requires the capture task to be the sole SD-I/O ow
 > serialized INI text, and `SET_CONFIG` (0x20) persists the live config to a
 > destination named by its argument — `nvs` or `sd` (case-insensitive).
 > Compiled-in defaults are overlaid at boot from NVS and then from the SD card
-> config file. Until the slice 5 web UI lands, config update/transfer on
-> initial device bringup is managed via the serial interface
+> config file. The slice 5 web UI (embedded config editor over
+> `GET_CONFIG` / `POST /update`) is now in place; config update/transfer on
+> initial device bringup (before a web password is configured) is still
+> managed via the serial interface
 > (`GET`/`SET`/`CONFIG_GET`/`CONFIG_SAVE`).
 
 ### New Commands
@@ -1630,14 +1632,14 @@ LIST_FILES = 0x40,   // returns one page of a per-directory listing JSON
 ### New Routes
 
 ```
-GET  /files?dir=&page=  → listing JSON (same builder as LIST_FILES)
+GET  /files?dir=&start= → listing JSON (same builder as LIST_FILES)
 GET  /download?path=    → direct RequestRef data response; per-chunk
                           CS-arbitrated read_at_sync() transactions
                           (4 KB) from the AsyncTCP task — the
                           ConfigService::save_sd() non-capture-task
                           SD-access pattern; recording FPS may dip
                           during downloads
-GET  /logs              → listing JSON of /logs
+GET  /logs?start=       → listing JSON of /logs
 GET  /log?file=         → log tail (last 16 KB, text/plain)
 POST /update            → bulk config overlay + persistence (dest=nvs|sd)
 GET  /stream            → start_stream() → HTTP multipart response

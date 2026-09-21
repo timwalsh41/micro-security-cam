@@ -74,7 +74,7 @@ Config changes made at runtime (serial `GET`/`SET` commands, i.e. `GET_CONFIG_VA
 - `CONFIG_SAVE nvs` — writes the live config to NVS flash (survives reboots, no SD card needed).
 - `CONFIG_SAVE sd` — writes the live config to `/config.ini` on the SD card.
 
-`CONFIG_GET` (serial) or `cmd=config` (web) returns the full live config as INI text for inspection or editing. Until the slice 5 web UI lands, config editing on initial device bringup is managed via the serial interface; web config commands are refused (`{"result":"error","code":5}`) until a web password is configured. NVS saves are tagged with a schema version; a saved config written by an incompatible firmware version is discarded at boot (no migration) and defaults are used instead.
+`CONFIG_GET` (serial) or `cmd=config` (web) returns the full live config as INI text for inspection or editing. The web UI's config editor loads the config via `cmd=config` and saves via `POST /update`, but on initial device bringup there is no web password yet, so web config access stays locked and config editing is managed via the serial interface (`CONFIG_GET`/`CONFIG_SAVE`); web config commands are refused (`{"result":"error","code":5}`) until a web password is configured. NVS saves are tagged with a schema version; a saved config written by an incompatible firmware version is discarded at boot (no migration) and defaults are used instead.
 
 A failed persistence write leaves the live RAM config intact, so the running configuration is never corrupted by a storage failure.
 
@@ -264,7 +264,7 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/download?path=<file>` | Yes | Download a file from the SD card (file-access policy below) |
 | GET | `/logs?start=<n>` | Yes | Log directory listing JSON (file-access policy below) |
 | GET | `/log?file=<YYYYMMDD.log>` | Yes | View a system log file — serves the last 16 KB as text (file-access policy below) |
-| POST | `/update` | Yes | Bulk config update: urlencoded `config` field with INI text plus optional `dest=nvs\|sd` (default `nvs`) — overlays onto the live config and persists (config policy below) |
+| POST | `/update` | Yes | Bulk config update: urlencoded `config` field with INI text plus optional `dest=nvs\|sd` (default `nvs`) — overlays onto the live config and persists; INI text over 1280 bytes is rejected with `413` (config policy below) |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |
 
 ### Live Streaming
