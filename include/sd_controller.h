@@ -289,11 +289,11 @@ class SdController
          * remains properly arbitrated.
          *
          * @param dir_path Directory path to list.
-         * @param callback Function called with each entry name.
+         * @param callback Function called with each entry (name, size, is_dir).
          * @return true if the directory was opened successfully, false otherwise.
          */
         bool list_dir_sync(const char* dir_path,
-                           std::function<bool(const char* entry)> callback);
+                           hal::DirEntryCallback callback);
 
         /**
          * @brief Synchronous seek-and-write: asserts CS, opens, seeks, writes, closes.
@@ -309,6 +309,44 @@ class SdController
          * @return true if seek + write succeeded.
          */
         bool write_at_sync(const char* path, uint32_t offset, const uint8_t* data, size_t len);
+
+        /**
+         * @brief Synchronous read-at-offset: asserts CS, opens, seeks, reads, closes.
+         *
+         * Each call is a single self-contained transaction, so serving a
+         * large file issues one call per chunk (e.g. per download buffer).
+         *
+         * @param path   File path to open.
+         * @param offset Byte offset to seek to before reading.
+         * @param buffer Buffer to read into.
+         * @param len    Maximum number of bytes to read.
+         * @return Number of bytes read (0 on failure, missing file, or EOF).
+         */
+        size_t read_at_sync(const char* path, uint32_t offset,
+                            uint8_t* buffer, size_t len);
+
+        /**
+         * @brief Synchronous file size: asserts CS, stats, de-asserts CS.
+         *
+         * @param path File path to stat.
+         * @return File size in bytes, or 0 if the file does not exist
+         *         or the path names a directory.
+         */
+        size_t size_sync(const char* path);
+
+        /**
+         * @brief Synchronous free-space query: asserts CS, queries, de-asserts CS.
+         *
+         * @return Free bytes on the card, or 0 when unknown/unavailable.
+         */
+        uint64_t free_bytes_sync();
+
+        /**
+         * @brief Synchronous total-capacity query: asserts CS, queries, de-asserts CS.
+         *
+         * @return Total card capacity in bytes, or 0 when unknown/unavailable.
+         */
+        uint64_t total_bytes_sync();
 
     private:
         /**

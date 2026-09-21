@@ -18,6 +18,17 @@ namespace hal
 {
 
 /**
+ * @brief Callback invoked for each directory entry during listing.
+ *
+ * @param entry  Entry name (without path prefix).
+ * @param size   File size in bytes (0 for directories).
+ * @param is_dir True if the entry is a directory, false if it is a file.
+ * @return true to continue iteration, false to stop early.
+ */
+using DirEntryCallback =
+    std::function<bool(const char* entry, size_t size, bool is_dir)>;
+
+/**
  * @brief Result of SD card initialization.
  */
 enum class SdInitResult : uint8_t
@@ -147,16 +158,41 @@ class SdCardHal
          * @brief Lists directory entries on the SD card.
          *
          * Must only be called when the chip-select pin is asserted.
-         * Appends each entry name (without path prefix) to the provided
-         * callback. The directory is opened, iterated, and closed within
-         * this call.
+         * Appends each entry (name without path prefix, byte size, and
+         * directory flag) to the provided callback. The directory is
+         * opened, iterated, and closed within this call.
          *
          * @param dir_path The directory path to list.
-         * @param callback Function called with each entry name.
+         * @param callback Function called with each entry.
          * @return true if the directory was opened successfully, false otherwise.
          */
         virtual bool list_dir(const char* dir_path,
-                              std::function<bool(const char* entry)> callback) = 0;
+                              DirEntryCallback callback) = 0;
+
+        /**
+         * @brief Returns the size of a file on the SD card.
+         *
+         * Must only be called when the chip-select pin is asserted.
+         *
+         * @param path The file path to stat.
+         * @return File size in bytes, or 0 if the file does not exist
+         *         or the path names a directory.
+         */
+        virtual size_t file_size(const char* path) = 0;
+
+        /**
+         * @brief Returns the free space on the SD card in bytes.
+         *
+         * @return Free bytes, or 0 when unknown/unavailable.
+         */
+        virtual uint64_t free_bytes() = 0;
+
+        /**
+         * @brief Returns the total capacity of the SD card in bytes.
+         *
+         * @return Total bytes, or 0 when unknown/unavailable.
+         */
+        virtual uint64_t total_bytes() = 0;
 
         /**
          * @brief Checks whether the SD card has been successfully initialized, e.g. hardware

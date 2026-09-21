@@ -47,6 +47,7 @@ class AsyncRequestRef : public RequestRef
          */
         HttpMethod method() const override;
         const char* arg(const char* name) const override;
+        const char* form_value(const char* name) const override;
         const char* header(const char* name) const override;
         const char* auth_header() const override;
 
@@ -62,6 +63,10 @@ class AsyncRequestRef : public RequestRef
             const char* boundary,
             StreamEndCallback on_end) override;
 
+        bool send_data_response(const char* content_type,
+                                size_t total_len,
+                                DataFiller filler) override;
+
     private:
         AsyncWebServerRequest* m_request;
 
@@ -69,10 +74,14 @@ class AsyncRequestRef : public RequestRef
         static constexpr size_t ARG_BUF_SIZE = 128;
         static constexpr size_t HEADER_BUF_SIZE = 128;
 
+        /** Room for a full serialized configuration (form payload cap). */
+        static constexpr size_t FORM_BUF_SIZE = 1280;
+
         mutable char m_uri_buf[URI_BUF_SIZE]{};
         mutable char m_arg_buf[ARG_BUF_SIZE]{};
         mutable char m_header_buf[HEADER_BUF_SIZE]{};
         mutable char m_auth_buf[HEADER_BUF_SIZE]{};
+        mutable char m_form_buf[FORM_BUF_SIZE]{};
 };
 
 /**

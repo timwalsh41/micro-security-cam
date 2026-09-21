@@ -78,6 +78,18 @@ const char* AsyncRequestRef::auth_header() const
     return "";
 }
 
+const char* AsyncRequestRef::form_value(const char* name) const
+{
+    if (m_request != nullptr && name != nullptr)
+    {
+        String val = m_request->arg(name);
+        strncpy(m_form_buf, val.c_str(), FORM_BUF_SIZE - 1);
+        m_form_buf[FORM_BUF_SIZE - 1] = '\0';
+        return m_form_buf;
+    }
+    return "";
+}
+
 void AsyncRequestRef::send(int code, const char* content_type,
                            const char* content)
 {
@@ -130,6 +142,26 @@ bool AsyncRequestRef::send_stream_response(
         new AsyncJpegStreamResponse(std::move(channel), boundary,
                                     std::move(on_end));
     m_request->send(response);
+    return true;
+}
+
+bool AsyncRequestRef::send_data_response(const char* content_type,
+                                         size_t total_len,
+                                         DataFiller filler)
+{
+    if (m_request == nullptr || content_type == nullptr || !filler)
+    {
+        return false;
+    }
+
+    // The library's AwsResponseFiller matches DataFiller's signature:
+    // (buf, maxLen, index) where index is the byte offset of the chunk
+    // within the response body.
+    m_request->send(content_type, total_len,
+                    [filler](uint8_t* buf, size_t max_len, size_t index) -> size_t
+                    {
+                        return filler(buf, max_len, index);
+                    });
     return true;
 }
 

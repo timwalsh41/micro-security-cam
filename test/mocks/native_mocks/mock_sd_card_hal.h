@@ -142,6 +142,12 @@ class MockSdCardHal : public hal::SdCardHal
         /** The path argument from the most recent list_dir() call. */
         const char* last_list_dir_path{nullptr};
 
+        /** Configurable free-space value returned by free_bytes(). */
+        uint64_t mock_free_bytes{4000000000ULL};
+
+        /** Configurable capacity value returned by total_bytes(). */
+        uint64_t mock_total_bytes{8000000000ULL};
+
         // ============================================================
         // Deterministic park gate (write)
         // ============================================================
@@ -379,18 +385,57 @@ class MockSdCardHal : public hal::SdCardHal
             }
             return true;
         }
+
+        size_t file_size(const char* path) override
+        {
+            auto it = files.find(path ? path : "");
+            if (it != files.end())
+            {
+                return it->second.size();
+            }
+            return 0;
+        }
+
+        uint64_t free_bytes() override
+        {
+            return mock_free_bytes;
+        }
+
+        uint64_t total_bytes() override
+        {
+            return mock_total_bytes;
+        }
         bool list_dir(const char* dir_path,
-                      std::function<bool(const char* entry)> callback) override
+                      hal::DirEntryCallback callback) override
         {
             list_dir_call_count++;
             last_list_dir_path = dir_path;
-            // Simulate directory listing: iterate over files whose
-            // paths start with dir_path followed by '/'
+            // Simulate directory listing: iterate over files and
+            // directories whose paths start with dir_path followed by '/'
             std::string prefix = std::string(dir_path);
             if (!prefix.empty() && prefix.back() != '/')
             {
                 prefix += '/';
             }
+
+            // Subdirectories (synthetic entries: size 0, is_dir true)
+            for (const auto& dir_path_entry : directories)
+            {
+                const std::string& path = dir_path_entry;
+                if (path.compare(0, prefix.size(), prefix) == 0)
+                {
+                    std::string entry = path.substr(prefix.size());
+                    if (!entry.empty() && entry.find('/') == std::string::npos)
+                    {
+                        if (!callback(entry.c_str(), 0, true))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // Files under the prefix (real store contents)
             for (const auto& pair : files)
             {
                 const std::string& path = pair.first;
@@ -401,7 +446,7 @@ class MockSdCardHal : public hal::SdCardHal
                     // Only include entries that don't have further '/'
                     if (entry.find('/') == std::string::npos)
                     {
-                        if (!callback(entry.c_str()))
+                        if (!callback(entry.c_str(), pair.second.size(), false))
                         {
                             break;
                         }
@@ -432,7 +477,6 @@ class MockSdCardHal : public hal::SdCardHal
         {
             files[path] = content;
         }
-
     private:
         /**
          * @brief Initializes a store entry from the file_content knob.

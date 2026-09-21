@@ -114,7 +114,7 @@ bool SdCardHalImpl::remove(const char* path)
 }
 
 bool SdCardHalImpl::list_dir(const char* dir_path,
-                            std::function<bool(const char* entry)> callback)
+                             DirEntryCallback callback)
 {
     File dir = SD.open(dir_path);
     if (!dir || !dir.isDirectory())
@@ -132,7 +132,8 @@ bool SdCardHalImpl::list_dir(const char* dir_path,
         const char* name = entry.name();
         if (name != nullptr)
         {
-            if (!callback(name))
+            size_t size = entry.isDirectory() ? 0 : entry.size();
+            if (!callback(name, size, entry.isDirectory()))
             {
                 break;
             }
@@ -143,6 +144,32 @@ bool SdCardHalImpl::list_dir(const char* dir_path,
 
     dir.close();
     return true;
+}
+
+size_t SdCardHalImpl::file_size(const char* path)
+{
+    File file = SD.open(path, FILE_READ);
+    if (!file || file.isDirectory())
+    {
+        if (file)
+        {
+            file.close();
+        }
+        return 0;
+    }
+    size_t size = file.size();
+    file.close();
+    return size;
+}
+
+uint64_t SdCardHalImpl::free_bytes()
+{
+    return SD.totalBytes() - SD.usedBytes();
+}
+
+uint64_t SdCardHalImpl::total_bytes()
+{
+    return SD.totalBytes();
 }
 
 bool SdCardHalImpl::is_initialized() const

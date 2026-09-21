@@ -283,10 +283,49 @@ bool SdController::remove_sync(const char* path)
 }
 
 bool SdController::list_dir_sync(const char* dir_path,
-                                 std::function<bool(const char* entry)> callback)
+                                 hal::DirEntryCallback callback)
 {
     cs_assert();
     bool ok = m_sd_hal.list_dir(dir_path, callback);
     cs_deassert();
     return ok;
+}
+
+size_t SdController::read_at_sync(const char* path, uint32_t offset,
+                                  uint8_t* buffer, size_t len)
+{
+    cs_assert();
+    size_t bytes_read = 0;
+    if (m_sd_hal.open(path, hal::FileOpenMode::READ)
+        && m_sd_hal.seek(offset))
+    {
+        bytes_read = m_sd_hal.read(buffer, len);
+    }
+    m_sd_hal.close();
+    cs_deassert();
+    return bytes_read;
+}
+
+size_t SdController::size_sync(const char* path)
+{
+    cs_assert();
+    size_t size = m_sd_hal.file_size(path);
+    cs_deassert();
+    return size;
+}
+
+uint64_t SdController::free_bytes_sync()
+{
+    cs_assert();
+    uint64_t free_bytes = m_sd_hal.free_bytes();
+    cs_deassert();
+    return free_bytes;
+}
+
+uint64_t SdController::total_bytes_sync()
+{
+    cs_assert();
+    uint64_t total_bytes = m_sd_hal.total_bytes();
+    cs_deassert();
+    return total_bytes;
 }

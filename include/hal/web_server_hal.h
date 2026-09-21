@@ -27,6 +27,23 @@ namespace hal
 /** HTTP Basic auth realm used in authentication challenges. */
 /** WWW-Authenticate challenge value for HTTP Basic authentication. */
 constexpr char AUTH_CHALLENGE[] = "Basic realm=\"micro-security-cam\"";
+/**
+ * @brief Callback invoked to fill a data response buffer.
+ *
+ * Called by the transport whenever it can accept up to @p max_len bytes
+ * at @p offset within the response body. Implementations should perform
+ * short, self-contained I/O transactions per call (e.g. one bounded SD
+ * read) and return the number of bytes written to @p buf (0 on error or
+ * when the response is complete).
+ *
+ * Runs in the transport's task context.
+ *
+ * @param buf     Buffer to fill.
+ * @param max_len Maximum bytes the transport can accept.
+ * @param offset  Byte offset of this chunk within the response body.
+ * @return Number of bytes written to @p buf (0 completes the response).
+ */
+using DataFiller = std::function<size_t(uint8_t* buf, size_t max_len, size_t offset)>;
 
 /** HTTP method identifiers */
 enum class HttpMethod : uint8_t
@@ -69,6 +86,19 @@ class RequestRef
          * @return Parameter value, or empty string if not found.
          */
         virtual const char* arg(const char* name) const = 0;
+
+        /**
+         * @brief Returns the value of a parsed POST form parameter.
+         *
+         * POST parameters (application/x-www-form-urlencoded) are parsed
+         * by the transport into named values. Distinct from arg() so that
+         * implementations may allocate a larger buffer for form values
+         * such as a full serialized configuration.
+         *
+         * @param name Parameter name.
+         * @return Parameter value, or empty string if not found.
+         */
+        virtual const char* form_value(const char* name) const = 0;
 
         /**
          * @brief Returns the value of a request header.
@@ -141,6 +171,28 @@ class RequestRef
             std::shared_ptr<StreamFrameChannel> channel,
             const char* boundary,
             StreamEndCallback on_end) = 0;
+
+        /**
+         * @brief Attaches a pull-driven data response with known length.
+         *
+         * The transport sends the HTTP headers with the given content
+         * type and total length, then pulls body chunks from @p filler
+         * under framework flow control as the client acknowledges data.
+         * The response completes when @p filler has produced
+         * @p total_len bytes or returned 0.
+         *
+         * The filler runs in the transport's task context, so each
+         * invocation must be a short self-contained operation (e.g. one
+         * bounded, CS-arbitrated SD read).
+         *
+         * @param content_type MIME type string.
+         * @param total_len    Total response body length in bytes.
+         * @param filler       Body chunk producer.
+         * @return true if the response was attached.
+         */
+        virtual bool send_data_response(const char* content_type,
+                                        size_t total_len,
+                                        DataFiller filler) = 0;
 };
 
 /**

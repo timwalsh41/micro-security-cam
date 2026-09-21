@@ -171,8 +171,10 @@ void SdLogWriter::delete_old_logs()
     // modified while it is being iterated.
     std::vector<std::string> expired;
     m_sd_controller.list_dir_sync(LOG_DIR,
-        [this, &cutoff_date, &expired](const char* entry)
+        [this, &cutoff_date, &expired](const char* entry, size_t size, bool is_dir)
         {
+            (void)size;
+            (void)is_dir;
             // Daily log files are named YYYYMMDD.log
             if (strlen(entry) == 12 &&
                 strncmp(entry + 8, ".log", 4) == 0 &&
