@@ -2,6 +2,8 @@
 #define HAL_MIC_TASK_RUNNER_ESP32_H
 
 #include "mic_task_runner.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /**
  * @class MicTaskRunnerEsp32
