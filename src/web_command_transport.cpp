@@ -89,6 +89,10 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     {
         return CommandCode::SET_TIME;
     }
+    if (std::strcmp(cmd, "files") == 0)
+    {
+        return CommandCode::LIST_FILES;
+    }
 
     return CommandCode::GET_STATUS;
 }
@@ -157,6 +161,11 @@ bool WebCommandTransport::is_config_command(CommandCode code)
            code == CommandCode::SET_CONFIG_VALUE;
 }
 
+bool WebCommandTransport::is_file_command(CommandCode code)
+{
+    return code == CommandCode::LIST_FILES;
+}
+
 bool WebCommandTransport::check_auth(hal::RequestRef& request)
 {
     const char* auth = request.auth_header();
@@ -200,8 +209,10 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
 
     // Config commands carry credentials and the full config body, so
     // they are only served over the web when a password is configured;
-    // the serial interface is unrestricted.
-    if (m_password[0] == '\0' && is_config_command(code))
+    // the serial interface is unrestricted. File listings follow the
+    // same policy: file access is not offered unauthenticated.
+    if (m_password[0] == '\0' &&
+        (is_config_command(code) || is_file_command(code)))
     {
         send_result(request, CommandResult::UNAUTHORIZED);
         return;
@@ -261,6 +272,25 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
         dispatch_and_respond(request, code,
                              reinterpret_cast<const uint8_t*>(dest),
                              strlen(dest));
+        return;
+    }
+
+    // LIST_FILES takes an optional directory from the "dir" query
+    // parameter plus an optional "page" entry-page number.
+    if (code == CommandCode::LIST_FILES)
+    {
+        const char* dir = request.arg("dir");
+        const char* page = request.arg("page");
+        std::string payload =
+            (dir != nullptr && dir[0] != '\0') ? dir : "/";
+        if (page != nullptr && page[0] != '\0')
+        {
+            payload += " ";
+            payload += page;
+        }
+        dispatch_and_respond(request, code,
+                             reinterpret_cast<const uint8_t*>(payload.c_str()),
+                             payload.size());
         return;
     }
 

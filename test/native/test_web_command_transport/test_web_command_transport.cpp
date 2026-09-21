@@ -116,6 +116,7 @@ struct TestFixture
         cmd_handler.register_handler(CommandCode::GET_CONFIG_VALUE, capture_handler);
         cmd_handler.register_handler(CommandCode::SET_CONFIG_VALUE, capture_handler);
         cmd_handler.register_handler(CommandCode::SET_TIME, capture_handler);
+        cmd_handler.register_handler(CommandCode::LIST_FILES, capture_handler);
     }
 };
 
@@ -411,6 +412,66 @@ void test_control_config_succeeds_with_password()
                              f.hal.mock_request.responses[0].content_type.c_str());
     TEST_ASSERT(f.hal.mock_request.responses[0].body.find("captured") !=
                 std::string::npos);
+}
+
+/**
+ * @brief /control refuses cmd=files while no web password is configured.
+ */
+void test_control_files_refused_without_password()
+{
+    TestFixture f;
+    f.transport.register_routes("");
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "files");
+    f.hal.mock_request.set_auth("admin", "anything");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control dispatches cmd=files with the dir+page payload when
+ *        a password is configured and auth passes.
+ */
+void test_control_files_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "files");
+    f.hal.mock_request.set_arg("dir", "/20250101");
+    f.hal.mock_request.set_arg("page", "2");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_UINT32(11, g_last_payload_len);
+    TEST_ASSERT_TRUE(strncmp(reinterpret_cast<const char*>(g_last_payload),
+                             "/20250101 2", 11) == 0);
+}
+
+/**
+ * @brief cmd=files without dir/page defaults to the SD root, page 0.
+ */
+void test_control_files_default_dir_and_page()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "files");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_UINT32(1, g_last_payload_len);
+    TEST_ASSERT_EQUAL_UINT8('/', g_last_payload[0]);
 }
 
 /**
@@ -790,6 +851,11 @@ int main()
     RUN_TEST(test_control_config_get_value_missing_key_returns_400);
     RUN_TEST(test_control_config_set_value_missing_args_returns_400);
     RUN_TEST(test_control_unknown_cmd_falls_back_to_get_status);
+
+    // LIST_FILES (files)
+    RUN_TEST(test_control_files_refused_without_password);
+    RUN_TEST(test_control_files_succeeds_with_password);
+    RUN_TEST(test_control_files_default_dir_and_page);
 
     // SET_TIME
     RUN_TEST(test_set_time_missing_ts_returns_400);

@@ -98,12 +98,20 @@ class SystemOrchestrator
         /** Register-time snapshot of the web password for /stream auth. */
         char m_stream_password[CONFIG_FIELD_MAX_LENGTH]{};
 
+        /** Register-time snapshot of the web password for /update auth. */
+        char m_update_password[CONFIG_FIELD_MAX_LENGTH]{};
+
         void register_commands();
 
         /**
          * @brief Registers the /stream MJPEG route.
          */
         void register_stream_route();
+
+        /**
+         * @brief Registers the POST /update bulk-config route.
+         */
+        void register_update_route();
 
         // Command handler implementations
         CommandResult handle_get_status(const uint8_t* payload, size_t len,
@@ -133,6 +141,9 @@ class SystemOrchestrator
 
         /** @brief Handler for GET /stream — registers a viewer slot. */
         void handle_stream_request(hal::RequestRef& request);
+
+        /** @brief Handler for POST /update — bulk config overlay + save. */
+        void handle_update_request(hal::RequestRef& request);
 };
 
 #endif // SYSTEM_ORCHESTRATOR_H

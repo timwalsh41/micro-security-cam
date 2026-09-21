@@ -36,6 +36,7 @@
  *   TIME <unix_ts>  -> SET_TIME (4-byte payload)
  *   GET <key>       -> GET_CONFIG_VALUE (payload = "section.key")
  *   SET <key>=<val> -> SET_CONFIG_VALUE (payload = "section.key=value")
+ *   FILES [dir [page]] -> LIST_FILES (payload = "<dir>[ <page>]")
  */
 
 class SerialCommandTransport : public CommandTransport

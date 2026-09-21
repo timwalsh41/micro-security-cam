@@ -43,6 +43,9 @@ class MockSdCardHal : public hal::SdCardHal
         /** Value returned by seek(). */
         bool seek_result{true};
 
+        /** Value returned by list_dir(). */
+        bool list_dir_result{true};
+
         /** Value returned by is_initialized(). */
         bool initialized_state{true};
 
@@ -410,6 +413,10 @@ class MockSdCardHal : public hal::SdCardHal
         {
             list_dir_call_count++;
             last_list_dir_path = dir_path;
+            if (!list_dir_result)
+            {
+                return false;
+            }
             // Simulate directory listing: iterate over files and
             // directories whose paths start with dir_path followed by '/'
             std::string prefix = std::string(dir_path);

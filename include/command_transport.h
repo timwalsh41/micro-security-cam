@@ -28,6 +28,7 @@ enum class CommandCode : uint8_t
     GET_CONFIG_VALUE = 0x22,
     SET_CONFIG_VALUE = 0x23,
     SET_TIME = 0x30,
+    LIST_FILES = 0x40,      ///< JSON listing of one SD directory (paginated)
 };
 
 /** Result codes returned by command handlers. */
