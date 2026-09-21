@@ -210,8 +210,8 @@ class MicService
          */
         void apply_gain(int16_t* buffer, size_t count, uint8_t gain);
 
-        /** Ring buffer size (in samples) for ~60s at 16kHz. */
-        static constexpr size_t RING_BUFFER_SAMPLES = 960000;  // 16000 * 60
+        /** Ring buffer size (in samples) for ~60s at the selected sample rate. */
+        static constexpr size_t RING_BUFFER_SAMPLES = SAMPLE_RATE*60; 
 
         /** Number of samples per I2S read. */
         static constexpr size_t I2S_READ_SAMPLES = 1024;
@@ -238,7 +238,7 @@ class MicService
         int16_t* m_read_buffer{nullptr};
 
         // Cached audio parameters (from config)
-        uint32_t m_sample_rate{16000};
+        uint32_t m_sample_rate{SAMPLE_RATE};
         uint16_t m_bits_per_sample{16};
         uint16_t m_channels{1};
 
