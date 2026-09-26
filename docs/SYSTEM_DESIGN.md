@@ -2649,8 +2649,7 @@ deactivate CMDH
 FS -> WSH : on("/files", GET, ...) + on("/download", GET, ...)
 FS -> WSH : on("/logs", GET, ...) + on("/log", GET, ...)
 activate WSH
-note right: All four routes attach
-before the server starts
+note right: All four routes attach\nbefore the server starts
 WSH --> FS : ok
 deactivate WSH
 
@@ -2714,40 +2713,33 @@ deactivate WSH
 ' ==================================================================
 ' Runtime dispatch phase — file listing
 ' ==================================================================
-=== Runtime Dispatch (file listing) ===
+== Runtime Dispatch (file listing) ==
 
 HTTP_CLIENT -> WSH : HTTP GET /control?cmd=files&dir=/logs&start=0
-note right: Same route callback as
-the first dispatch example
+note right: Same route callback as\nthe first dispatch example
 
 WSH -> WCT : handle_control(request_ref)
 activate WCT
 
 ' Auth check + restricted-on-web policy
 WCT -> WCT : check_auth(request)
-note right: LIST_FILES is restricted on web:
-refused 401 when no password set
+note right: LIST_FILES is restricted on web:\nrefused 401 when no password set
 
 ' Dispatch command
 WCT -> CMDH : dispatch(LIST_FILES, payload, len, response, &responseLen)
 activate CMDH
 
 ' CommandHandler finds the matching registered handler
-CMDH -> CMDH : Look up LIST_FILES
-in handler table
+CMDH -> CMDH : Look up LIST_FILES\nin handler table
 
 ' Execute the handler (registered by FileService)
 CMDH -> FS : handle_list_files(payload)
 activate FS
 
-FS -> FS : Validate path & allowlist
-(dir, start) → build one
-listing page, flag active clip
-note right: SD access is single-transaction,
-CS-arbitrated via SdController
+FS -> FS : Validate path & allowlist\n(dir, start) → build one\nlisting page, flag active clip
+note right: SD access is single-transaction,\nCS-arbitrated via SdController
 
-FS --> CMDH : return listing JSON
-(response buffer)
+FS --> CMDH : return listing JSON\n(response buffer)
 deactivate FS
 
 CMDH --> WCT : return SUCCESS
