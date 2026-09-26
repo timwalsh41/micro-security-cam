@@ -422,6 +422,11 @@ uint32_t VideoController::file_size() const
     return m_clip_session.file_size();
 }
 
+const char* VideoController::current_clip_path() const
+{
+    return m_clip_session.clip_path();
+}
+
 // ============================================================
 // Capture loop lifecycle
 // ============================================================

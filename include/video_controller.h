@@ -240,6 +240,18 @@ class VideoController
         uint32_t file_size() const;
 
         /**
+         * @brief Returns the absolute SD path of the current clip.
+         *
+         * The path reflects the clip session's most recent file; it is
+         * meaningful only while is_recording() is true (callers gate on
+         * that before using it, e.g. to flag or refuse downloads of the
+         * unfinalized active clip).
+         *
+         * @return Absolute clip path (may be stale when not recording).
+         */
+        const char* current_clip_path() const;
+
+        /**
          * @brief Begins live preview (streaming without SD recording).
          *
          * Queues a start request that the capture task consumes at the

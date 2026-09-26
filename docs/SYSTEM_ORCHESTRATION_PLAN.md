@@ -1607,39 +1607,79 @@ Rationale: The executor model requires the capture task to be the sole SD-I/O ow
 > serialized INI text, and `SET_CONFIG` (0x20) persists the live config to a
 > destination named by its argument — `nvs` or `sd` (case-insensitive).
 > Compiled-in defaults are overlaid at boot from NVS and then from the SD card
-> config file. Until the slice 5 web UI lands, config update/transfer on
-> initial device bringup is managed via the serial interface
+> config file. The slice 5 web UI (embedded config editor over
+> `GET_CONFIG` / `POST /update`) is now in place; config update/transfer on
+> initial device bringup (before a web password is configured) is still
+> managed via the serial interface
 > (`GET`/`SET`/`CONFIG_GET`/`CONFIG_SAVE`).
 
 ### New Commands
 
 ```cpp
 // New command codes
-LIST_FILES = 0x40,   // returns JSON array of AVI files
-DOWNLOAD_FILE = 0x41, // streams file content
+LIST_FILES = 0x40,   // returns one page of a per-directory listing JSON
+                     // (entries carry name/size/is_dir plus a recording
+                     // flag for the clip being written; paginated to fit
+                     // the 1280-byte dispatch response cap)
+// DOWNLOAD_FILE is intentionally NOT a dispatch command: command
+// dispatch responses are bounded to CommandHandler::MAX_RESPONSE_SIZE
+// (1280 bytes), so file content cannot ride the dispatch path.
+// File content is served by the direct GET /download RequestRef route
+// below, in the /stream style. The 0x41 code is left unassigned.
 // Enhanced SET_CONFIG / GET_CONFIG for all sections
 ```
 
 ### New Routes
 
 ```
-GET  /files           → dispatch(LIST_FILES)
-GET  /download?path=  → dispatch(DOWNLOAD_FILE)
-GET  /stream          → start_stream() → HTTP multipart response
+GET  /files?dir=&start= → listing JSON (same builder as LIST_FILES)
+GET  /download?path=    → direct RequestRef data response; per-chunk
+                          CS-arbitrated read_at_sync() transactions
+                          (4 KB) from the AsyncTCP task — the
+                          ConfigService::save_sd() non-capture-task
+                          SD-access pattern; recording FPS may dip
+                          during downloads
+GET  /logs?start=       → listing JSON of /logs
+GET  /log?file=         → log tail (last 16 KB, text/plain)
+POST /update            → bulk config overlay + persistence (dest=nvs|sd)
+GET  /stream            → start_stream() → HTTP multipart response
 ```
 
 ### Modified Components
 
-- `WebCommandTransport` — register additional routes for file operations
-- `CommandHandler` — register new command handlers
-- Web UI files: `/data/index.html`, `/data/common.js`, `/data/style.css`
+- `FileService` (new) — owns LIST_FILES and the file/download/log routes,
+  path validation and allowlists, and the active-clip flag
+- `WebServerService` — serves the embedded single-page web UI at `/`
+- `SystemOrchestrator` — registers the `POST /update` route; status JSON
+  gains SD free space and today's photo/video counts
+- SD layer foundation: `SdController::read_at_sync()` / `size_sync()` /
+  `free_bytes_sync()` / `total_bytes_sync()`, listing entries carry
+  `(name, size, is_dir)` end to end
+- Web UI: embedded in firmware (`web_ui_content.cpp`) as the default;
+  the SD `/data/` override is a documented hook only (see
+  `SYSTEM_DESIGN.md` §Web UI Hosting), not an implemented serving path
+
+### Security Policy
+
+- File routes and the `/update` route require a configured web password;
+  with none set they are refused (file access is never offered
+  unauthenticated — parity with the config-command policy)
+- Paths must be absolute and traversal-free; listing is allowlisted to
+  the SD root, `/logs`, and date directories; downloads are allowlisted
+  to files inside date directories and daily log files under `/logs`
+- `/config.ini` is never downloadable (the config editor reads the live
+  config via GET_CONFIG instead)
+- The clip currently being recorded is flagged in listings and refused
+  for download (its AVI header is unfinalized until close)
 
 ### Verification
 
 - Full web UI loads and functions
 - Files listed and downloadable
 - Config changes persist across reboot
-- Stream preview works (`<img src="/stream">`)
+- Stream preview works (`<img src="/stream">` after an explicit
+  stream_start — the bare `<img>` demo as originally drawn is gated by
+  the landed 409-until-started design)
 
 ---
 
@@ -2045,13 +2085,15 @@ Composition root (main.cpp):
 
 PSRAM usage scales with resolution and stream count. The relationship is continuous, not a hard limit.
 
-| Config | Camera Buffers | Stream Buffers | AVI Index | Motion Decode | Total PSRAM | Headroom (8MB) |
-|--------|---------------|----------------|-----------|---------------|-------------|----------------|
-| VGA, 4 streams | ~3.6 MB | ~2.0 MB | ~10 KB | ~307 KB | ~5.9 MB | ~2.1 MB |
-| VGA, 2 streams | ~3.6 MB | ~1.0 MB | ~10 KB | ~307 KB | ~4.9 MB | ~3.1 MB |
-| VGA, 0 streams | ~3.6 MB | — | ~10 KB | ~307 KB | ~3.9 MB | ~4.1 MB |
-| HD, 0 streams | ~7.2 MB | — | ~10 KB | ~921 KB | ~8.1 MB | **exceeds** |
-| SVGA, 0 streams | ~5.6 MB | — | ~10 KB | ~480 KB | ~6.1 MB | ~1.9 MB |
+| Config | Camera Buffers | Stream Buffers | AVI Index | Audio Ring | Motion Decode | Total PSRAM | Headroom (8MB) |
+|--------|---------------|----------------|-----------|------------|---------------|-------------|----------------|
+| VGA, 4 streams | ~3.6 MB | ~2.0 MB | ~10 KB | ~1.9 MB | ~307 KB | ~7.8 MB | ~0.2 MB |
+| VGA, 2 streams | ~3.6 MB | ~1.0 MB | ~10 KB | ~1.9 MB | ~307 KB | ~6.8 MB | ~1.2 MB |
+| VGA, 0 streams | ~3.6 MB | — | ~10 KB | ~1.9 MB | ~307 KB | ~5.8 MB | ~2.2 MB |
+| HD, 0 streams | ~7.2 MB | — | ~10 KB | ~1.9 MB | ~921 KB | ~10.0 MB | **exceeds** |
+| SVGA, 0 streams | ~5.6 MB | — | ~10 KB | ~1.9 MB | ~480 KB | ~8.0 MB | ~0.0 MB |
+
+**Note on audio ring:** The `MicService` ring buffer (`RING_BUFFER_SAMPLES` = 960,000 samples, 60 seconds of 16 kHz mono 16-bit) occupies ~1.9 MB and is allocated in PSRAM at mic init — only when audio recording is enabled. The budget column above applies to the audio-enabled case; video-only recording without audio does not allocate the ring. Because audio-on consumes ~1.9 MB, the practical ceiling with audio on is VGA with a reduced stream count; VGA + 4 streams + audio exceeds comfortable headroom and should be tuned down (e.g. 2 streams) in practice.
 
 **Note on AVI index:** Incremental writes eliminate the 4 MB `CLIP_BUFFER_RAM_SIZE`. Only the AVI index is retained in RAM (~16 bytes per frame, ~10 KB for a 60-second clip at 10 fps). This frees ~4 MB of PSRAM for stream buffers, motion detection, and higher resolutions.
 

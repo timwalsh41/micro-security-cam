@@ -74,7 +74,7 @@ Config changes made at runtime (serial `GET`/`SET` commands, i.e. `GET_CONFIG_VA
 - `CONFIG_SAVE nvs` — writes the live config to NVS flash (survives reboots, no SD card needed).
 - `CONFIG_SAVE sd` — writes the live config to `/config.ini` on the SD card.
 
-`CONFIG_GET` (serial) or `cmd=config` (web) returns the full live config as INI text for inspection or editing. Until the slice 5 web UI lands, config editing on initial device bringup is managed via the serial interface; web config commands are refused (`{"result":"error","code":5}`) until a web password is configured. NVS saves are tagged with a schema version; a saved config written by an incompatible firmware version is discarded at boot (no migration) and defaults are used instead.
+`CONFIG_GET` (serial) or `cmd=config` (web) returns the full live config as INI text for inspection or editing. The web UI's config editor loads the config via `cmd=config` and saves via `POST /update`, but on initial device bringup there is no web password yet, so web config access stays locked and config editing is managed via the serial interface (`CONFIG_GET`/`CONFIG_SAVE`); web config commands are refused (`{"result":"error","code":5}`) until a web password is configured. NVS saves are tagged with a schema version; a saved config written by an incompatible firmware version is discarded at boot (no migration) and defaults are used instead.
 
 A failed persistence write leaves the live RAM config intact, so the running configuration is never corrupted by a storage failure.
 
@@ -173,6 +173,7 @@ In degraded mode:
 - `RECORD_STOP` remains a successful no-op.
 - `GET /status` (and serial `STATUS`) reports the latched card state in the additive `"sd": false` field.
 - `CONFIG_SAVE sd` fails with `SD_UNAVAILABLE`; use `CONFIG_SAVE nvs` instead.
+- The file routes (`/files`, `/download`, `/logs`, `/log`) return HTTP `503` while the card is unavailable; the rest of the web UI (status, controls, preview, config editor) stays functional.
 
 ### SD Logging Mode
 
@@ -246,8 +247,8 @@ When WiFi is configured, the camera provides a web interface for status and cont
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/` | No | Built-in HTML status page |
-| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size) |
+| GET | `/` | No | Embedded single-page web UI (status, controls, file browser, log viewer, config editor) |
+| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |
@@ -258,6 +259,12 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/control?cmd=config_get_value&key=<section.key>` | Yes | Read a single config value (requires a configured web password) |
 | GET | `/control?cmd=config_set_value&key=<section.key>&value=<val>` | Yes | Set a single config value in the live config (requires a configured web password) |
 | GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card (requires a configured web password) |
+| GET | `/control?cmd=files&dir=<path>&start=<n>` | Yes | Directory listing JSON (requires a configured web password) |
+| GET | `/files?dir=<path>&start=<n>` | Yes | Directory listing JSON — same handler as `cmd=files`, direct route (file-access policy below) |
+| GET | `/download?path=<file>` | Yes | Download a file from the SD card (file-access policy below) |
+| GET | `/logs?start=<n>` | Yes | Log directory listing JSON (file-access policy below) |
+| GET | `/log?file=<YYYYMMDD.log>` | Yes | View a system log file — serves the last 16 KB as text (file-access policy below) |
+| POST | `/update` | Yes | Bulk config update: urlencoded `config` field with INI text plus optional `dest=nvs\|sd` (default `nvs`) — overlays onto the live config and persists; INI text over 1280 bytes is rejected with `413` (config policy below) |
 | GET | `/stream` | Yes | Live MJPEG stream (requires `stream_start`) |
 
 ### Live Streaming
@@ -265,7 +272,7 @@ When WiFi is configured, the camera provides a web interface for status and cont
 The camera can serve a live MJPEG stream to web browsers. Streaming reuses the same capture loop as recording, so it works at the `[video]` resolution/framerate. To view the stream:
 
 1. Start preview: `GET /control?cmd=stream_start`. Recording and preview are independent: either can run alone or both together, and stopping one does not disturb the other.
-2. Open `http://<camera-ip>/stream` directly in a browser (Basic auth works on direct navigation, but not for embedded `<img>`/`<video>` subresources).
+2. Open `http://<camera-ip>/stream` directly in a browser (Basic auth works on direct navigation; for the embedded `<img>` preview in the web UI, the browser's cached per-origin credentials are reused after the initial sign-in).
 
 The number of concurrent viewers is limited by `max_streams` (1–4).
 
@@ -279,9 +286,11 @@ The number of concurrent viewers is limited by `max_streams` (1–4).
 
 ### Authentication
 
-If a web password is configured (in `config.ini` on the SD card or in a config saved to NVS), all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled (except config commands — see below).
+If a web password is configured (in `config.ini` on the SD card or in a config saved to NVS), all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled (except config and file routes — see below).
 
 Config commands (`cmd=config`, `cmd=config_save`) require a configured web password regardless: with no password set, the web interface refuses them with `UNAUTHORIZED` (web `{"result":"error","code":5}`), and config access stays on the serial interface (`CONFIG_GET`/`CONFIG_SAVE`), which is always available.
+
+File routes (`/files`, `/download`, `/logs`, `/log`) also require a configured web password: with none set they are refused outright with `401`, since file access is never offered unauthenticated. With a password configured they use HTTP Basic authentication. Downloads are restricted to files inside the date directories and log files under `/logs` — `/config.ini` (which holds credentials) is never downloadable. The clip currently being recorded cannot be downloaded until it closes, and recordings may briefly dip below the configured FPS while a download is running (both share the SD card's chip-select).
 
 ## Video Recording
 

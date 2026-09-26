@@ -327,6 +327,24 @@ bool SerialCommandTransport::parse_command(
         payload_len = 0;
         return true;
     }
+    else if (strcmp(cmd, "FILES") == 0)
+    {
+        // Payload is the directory path with an optional start index
+        // ("/20250101 12"). No args lists the SD root.
+        code = CommandCode::LIST_FILES;
+        if (args == nullptr)
+        {
+            payload = nullptr;
+            payload_len = 0;
+            return true;
+        }
+        size_t arg_len = strnlen(args, LINE_BUFFER_SIZE - 1);
+        memcpy(payload_buffer, args, arg_len);
+        payload_buffer[arg_len] = '\0';
+        payload = payload_buffer;
+        payload_len = arg_len;
+        return true;
+    }
 
     return false;
 }

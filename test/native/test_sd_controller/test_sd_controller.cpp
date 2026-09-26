@@ -869,6 +869,285 @@ void test_exists_sync_false_when_file_absent()
 }
 
 // ============================================================
+// read_at_sync — seek-and-read
+// ============================================================
+
+/**
+ * @brief read_at_sync() reads the requested range from the given offset.
+ *
+ * A 16-byte file read from offset 8 with a 4-byte buffer must return the
+ * 4 bytes at that offset, reading exactly one transaction's worth.
+ */
+void test_read_at_sync_returns_offset_range()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    std::vector<uint8_t> content;
+    for (int i = 0; i < 16; i++)
+    {
+        content.push_back(static_cast<uint8_t>(i));
+    }
+    sd_hal.seed_file("/clip.avi", content);
+
+    uint8_t buf[4] = {};
+    size_t n = ctrl.read_at_sync("/clip.avi", 8, buf, sizeof(buf));
+
+    TEST_ASSERT_EQUAL_UINT32(4, n);
+    TEST_ASSERT_EQUAL_UINT8(8, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(9, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(10, buf[2]);
+    TEST_ASSERT_EQUAL_UINT8(11, buf[3]);
+}
+
+/**
+ * @brief read_at_sync() opens in READ mode, seeks, and closes in one transaction.
+ */
+void test_read_at_sync_uses_read_mode_and_seek()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/clip.avi", {0x01, 0x02, 0x03});
+
+    uint8_t buf[2] = {};
+    ctrl.read_at_sync("/clip.avi", 1, buf, sizeof(buf));
+
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
+    TEST_ASSERT_EQUAL_STRING("/clip.avi", sd_hal.last_open_path);
+    TEST_ASSERT_EQUAL(hal::FileOpenMode::READ, sd_hal.last_open_mode);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.seek_call_count);
+    TEST_ASSERT_EQUAL_UINT32(1, sd_hal.last_seek_pos);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.read_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
+}
+
+/**
+ * @brief read_at_sync() clamps to the end of the file.
+ */
+void test_read_at_sync_returns_partial_at_eof()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/clip.avi", {0x0A, 0x0B, 0x0C});
+
+    uint8_t buf[8] = {};
+    size_t n = ctrl.read_at_sync("/clip.avi", 1, buf, sizeof(buf));
+
+    TEST_ASSERT_EQUAL_UINT32(2, n);
+    TEST_ASSERT_EQUAL_UINT8(0x0B, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x0C, buf[1]);
+}
+
+/**
+ * @brief read_at_sync() returns 0 bytes when the file does not exist.
+ *
+ * The open is attempted and fails logically (empty store entry), so the
+ * read still runs but yields 0 bytes; close is still called for cleanup.
+ */
+void test_read_at_sync_missing_file_returns_zero()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    uint8_t buf[4] = {};
+    TEST_ASSERT_EQUAL_UINT32(0, ctrl.read_at_sync("/missing.avi", 0, buf, sizeof(buf)));
+
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.read_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
+}
+
+/**
+ * @brief read_at_sync() skips seek+read when open() fails.
+ */
+void test_read_at_sync_open_failed_skips_io()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.open_result = false;
+
+    uint8_t buf[4] = {};
+    TEST_ASSERT_EQUAL_UINT32(0, ctrl.read_at_sync("/clip.avi", 0, buf, sizeof(buf)));
+
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.open_call_count);
+    TEST_ASSERT_EQUAL_INT(0, sd_hal.seek_call_count);
+    TEST_ASSERT_EQUAL_INT(0, sd_hal.read_call_count);
+    TEST_ASSERT_EQUAL_INT(1, sd_hal.close_call_count);
+}
+
+/**
+ * @brief read_at_sync() past EOF returns 0 bytes.
+ */
+void test_read_at_sync_offset_past_eof_returns_zero()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/clip.avi", {0x01, 0x02});
+
+    uint8_t buf[4] = {};
+    TEST_ASSERT_EQUAL_UINT32(0, ctrl.read_at_sync("/clip.avi", 10, buf, sizeof(buf)));
+}
+
+// ============================================================
+// size_sync — file stat
+// ============================================================
+
+/**
+ * @brief size_sync() reports the file size in bytes.
+ */
+void test_size_sync_reports_file_size()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/clip.avi", {0x01, 0x02, 0x03, 0x04, 0x05});
+
+    TEST_ASSERT_EQUAL_UINT32(5, ctrl.size_sync("/clip.avi"));
+}
+
+/**
+ * @brief size_sync() reports 0 for a missing file.
+ */
+void test_size_sync_missing_file_returns_zero()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    TEST_ASSERT_EQUAL_UINT32(0, ctrl.size_sync("/missing.avi"));
+}
+
+// ============================================================
+// free/total bytes — capacity queries
+// ============================================================
+
+/**
+ * @brief free_bytes_sync()/total_bytes_sync() delegate to the HAL.
+ */
+void test_capacity_queries_delegate_to_hal()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.mock_free_bytes = 1234;
+    sd_hal.mock_total_bytes = 9999;
+
+    TEST_ASSERT_EQUAL_UINT64(1234, ctrl.free_bytes_sync());
+    TEST_ASSERT_EQUAL_UINT64(9999, ctrl.total_bytes_sync());
+}
+
+// ============================================================
+// list_dir_sync — entry metadata
+// ============================================================
+
+/**
+ * @brief list_dir_sync() reports file sizes and directory flags.
+ */
+void test_list_dir_sync_reports_metadata()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.seed_file("/20250101/a.avi", {0x01, 0x02, 0x03});
+    sd_hal.seed_file("/20250101/b.jpg", {0x01});
+    sd_hal.directories.insert("/20250101");
+
+    struct Entry
+    {
+        std::string name;
+        size_t size;
+        bool is_dir;
+    };
+    std::vector<Entry> entries;
+    TEST_ASSERT_TRUE(ctrl.list_dir_sync("/20250101",
+        [&entries](const char* entry, size_t size, bool is_dir)
+        {
+            entries.push_back({entry, size, is_dir});
+            return true;
+        }));
+
+    TEST_ASSERT_EQUAL_UINT32(2, entries.size());
+    bool found_avi = false;
+    bool found_jpg = false;
+    for (const Entry& e : entries)
+    {
+        TEST_ASSERT_FALSE(e.is_dir);
+        if (e.name == "a.avi")
+        {
+            found_avi = true;
+            TEST_ASSERT_EQUAL_UINT32(3, e.size);
+        }
+        else if (e.name == "b.jpg")
+        {
+            found_jpg = true;
+            TEST_ASSERT_EQUAL_UINT32(1, e.size);
+        }
+    }
+    TEST_ASSERT_TRUE(found_avi);
+    TEST_ASSERT_TRUE(found_jpg);
+}
+
+/**
+ * @brief list_dir_sync() reports subdirectories with is_dir true and size 0.
+ */
+void test_list_dir_sync_reports_directories()
+{
+    RealTimeService time;
+    set_mock_millis(0);
+    MockSdCardHal sd_hal;
+    SdController ctrl(time, sd_hal);
+
+    sd_hal.directories.insert("/logs");
+    sd_hal.seed_file("/logs/20250101.log", {0x01, 0x02});
+    sd_hal.seed_file("/config.ini", {0x01, 0x02, 0x03});
+
+    std::vector<std::string> dirs;
+    std::vector<std::pair<std::string, size_t>> files;
+    TEST_ASSERT_TRUE(ctrl.list_dir_sync("/",
+        [&](const char* entry, size_t size, bool is_dir)
+        {
+            if (is_dir)
+            {
+                dirs.push_back(entry);
+            }
+            else
+            {
+                files.push_back({entry, size});
+            }
+            return true;
+        }));
+
+    TEST_ASSERT_EQUAL_UINT32(1, dirs.size());
+    TEST_ASSERT_EQUAL_STRING("logs", dirs[0].c_str());
+    TEST_ASSERT_EQUAL_UINT32(1, files.size());
+    TEST_ASSERT_EQUAL_STRING("config.ini", files[0].first.c_str());
+    TEST_ASSERT_EQUAL_UINT32(3, files[0].second);
+}
+
+// ============================================================
 // Unity boilerplate
 // ============================================================
 
@@ -914,6 +1193,25 @@ int main(int argc, char **argv)
     RUN_TEST(test_write_at_sync_preserves_existing_content);
     RUN_TEST(test_write_at_sync_uses_read_write_mode_and_seek);
     RUN_TEST(test_write_at_sync_open_failed);
+
+    // read_at_sync
+    RUN_TEST(test_read_at_sync_returns_offset_range);
+    RUN_TEST(test_read_at_sync_uses_read_mode_and_seek);
+    RUN_TEST(test_read_at_sync_returns_partial_at_eof);
+    RUN_TEST(test_read_at_sync_missing_file_returns_zero);
+    RUN_TEST(test_read_at_sync_open_failed_skips_io);
+    RUN_TEST(test_read_at_sync_offset_past_eof_returns_zero);
+
+    // size_sync
+    RUN_TEST(test_size_sync_reports_file_size);
+    RUN_TEST(test_size_sync_missing_file_returns_zero);
+
+    // capacity queries
+    RUN_TEST(test_capacity_queries_delegate_to_hal);
+
+    // list_dir metadata
+    RUN_TEST(test_list_dir_sync_reports_metadata);
+    RUN_TEST(test_list_dir_sync_reports_directories);
 
     // exists_sync
     RUN_TEST(test_exists_sync_true_when_file_present);

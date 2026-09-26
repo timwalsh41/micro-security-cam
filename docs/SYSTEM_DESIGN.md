@@ -31,10 +31,10 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                Service / Controller Layer                   │
 │  CameraController    VideoController   LedStateMachine      │
-│  SdController   AviClipSession     StreamService        │
+│  SdController   AviClipSession     StreamService            │
 │  MicService          TimeService         LoggingService     │
 │  ConfigService       IniParser                              │
-│  WifiService         WebServerService                       │
+│  WifiService         WebServerService    FileService        │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -43,7 +43,7 @@ The design follows a layered architecture that separates hardware access from ap
 │  CameraHal       SdCardHal      LogBackend                  │
 │  GpioHal         TimeHal        WifiHal    SerialHal        │
 │  MicHal          WebServerHal   StreamFrameChannel          │
-│  HardwarePeripheralManager   (shared pin arbitration)        │
+│  HardwarePeripheralManager   (shared pin arbitration)       │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -110,7 +110,10 @@ package "HAL interfaces" as HAL_IF {
         +create_dir(path : const char*) : bool
         +exists(path : const char*) : bool
         +remove(path : const char*) : bool
-        +list_dir(dir_path : const char*, callback : function) : bool
+        +list_dir(dir_path : const char*, callback : DirEntryCallback) : bool
+        +file_size(path : const char*) : size_t
+        +free_bytes() : uint64_t
+        +total_bytes() : uint64_t
         +close()
         +is_initialized() : bool
     }
@@ -166,10 +169,13 @@ package "HAL interfaces" as HAL_IF {
         +uri() : const char*
         +method() : HttpMethod
         +arg(name) : const char*
+        +form_value(name) : const char*
+        +form_value_truncated(name) : bool
         +header(name) : const char*
         +auth_header() : const char*
         +send(code, content_type, content)
         +send_stream_response(channel, boundary, on_end) : bool
+        +send_data_response(content_type, total_len, filler) : bool
     }
 
     class StreamFrameChannel {
@@ -466,6 +472,10 @@ package "Services" {
         +write_sync(path, data, len, mode) : bool
         +read_sync(path, buffer, size) : size_t
         +write_at_sync(path, offset, data, len) : bool
+        +read_at_sync(path, offset, buffer, len) : size_t
+        +size_sync(path) : size_t
+        +free_bytes_sync() : uint64_t
+        +total_bytes_sync() : uint64_t
         +create_dir_sync(path) : bool
         +exists_sync(path) : bool
         +remove_sync(path) : bool
@@ -523,6 +533,29 @@ package "Services" {
         -handle_index(request : RequestRef&)
         -check_auth(request : RequestRef&) : bool
     }
+
+    class FileService {
+        -m_sd : SdController&
+        -m_cmd_handler : CommandHandler&
+        -m_log : LoggingService&
+        -m_active_clip : function
+        -m_password : char[]
+        +PAGE_SIZE = 12
+        +LOG_TAIL_MAX_BYTES = 16384
+        +DOWNLOAD_CHUNK_SIZE = 4096
+        +init(web : WebServerHal&, password)
+        +set_active_clip_provider(provider)
+        +handle_list_files(payload, len, response, responseLen)
+        -handle_files_request(request)
+        -handle_download_request(request)
+        -handle_logs_request(request)
+        -handle_log_request(request)
+        +{static} is_valid_path(path) : bool
+        +{static} is_allowed_listing_dir(dir) : bool
+        +{static} is_allowed_download_path(path) : bool
+        +build_listing_json(dir, start, buf, max_len) : size_t
+        -check_auth(request) : bool
+    }
 }
 
 package "External (see Diagram 1 - HAL)" <<Frame>> {
@@ -533,6 +566,10 @@ package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface WebServerHal_ext as "WebServerHal"
     interface RequestRef_ext as "RequestRef"
     class StreamFrameChannel_ext as "StreamFrameChannel"
+}
+
+package "External (see Diagram 3 - Orchestration)" <<Frame>> {
+    class CommandHandler_ext as "CommandHandler"
 }
 
 package "External (see Diagram 4 - Utilities)" <<Frame>> {
@@ -564,6 +601,10 @@ WifiService --> LoggingService : diagnostics
 WebServerService --> WebServerHal_ext : registers GET /
 WebServerService --> LoggingService : diagnostics
 WebServerService ..> RequestRef_ext : handle_index()
+FileService --> SdController_ext : listing / download / log-tail reads
+FileService --> CommandHandler_ext : registers LIST_FILES (0x40)
+FileService ..> RequestRef_ext : /files, /download, /logs, /log handlers
+FileService --> LoggingService : diagnostics
 
 @enduml
 ```
@@ -592,6 +633,7 @@ package "Command dispatch framework" {
         GET_CONFIG_VALUE = 0x22
         SET_CONFIG_VALUE = 0x23
         SET_TIME = 0x30
+        LIST_FILES = 0x40
     }
 
     enum CommandResult {
@@ -1022,11 +1064,14 @@ Each request is represented by a per-request `RequestRef` object that provides a
 | `uri()` | Get the request URI |
 | `method()` | Get the request HTTP method |
 | `arg(name)` | Get a query parameter value |
+| `form_value(name)` | Get a parsed POST form parameter value (application/x-www-form-urlencoded); implementations may use a larger buffer than `arg()` (the `AsyncRequestRef` form buffer holds a full serialized configuration, 1280 bytes) |
+| `form_value_truncated(name)` | Report whether the named POST form value exceeded the form buffer and was truncated in transit; callers must reject truncated values instead of applying cut-down content |
 | `header(name)` | Get a request header value |
 | `auth_header()` | Get the `Authorization` header |
 | `send(code, type, content)` | Send a complete response (string body) |
 | `send(code, type, data, len)` | Send a complete response (binary body) |
 | `send_stream_response(channel, boundary, on_end)` | Attach a live multipart streaming response to the request: the transport writes the HTTP headers, pulls pre-formatted multipart parts from `channel` under framework flow control, and fires `on_end` when the response is destroyed (used by the `/stream` MJPEG endpoint) |
+| `send_data_response(content_type, total_len, filler)` | Attach a pull-driven response with known length: the transport sends headers with the content type and total length, then pulls body chunks from `filler(buf, max_len, offset)` under framework flow control until `total_len` bytes have been produced (the filler returns 0 on error or completion). Each filler invocation must be a short self-contained operation — used by the `/download` and `/log` endpoints to issue one bounded, CS-arbitrated SD read per chunk |
 
 **ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Registrations made before the server exists are buffered and attached to the route table before `begin()`, so the server never serves a request with a partial route table. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
 
@@ -1124,8 +1169,11 @@ The synchronous methods are intended for use from FreeRTOS task context where bl
 - `create_dir_sync(path)` — asserts CS, creates directory, deasserts CS.
 - `exists_sync(path)` — asserts CS, checks whether the file exists, deasserts CS. All SD I/O goes through this controller so the shared CS/LED pin remains properly arbitrated.
 - `write_at_sync(path, offset, data, len)` — asserts CS, opens file in `READ_WRITE` mode (preserves existing content), seeks to offset, writes, closes, deasserts CS. Used for overwriting the AVI header at position 0 after recording.
+- `read_at_sync(path, offset, buffer, len)` — asserts CS, opens file in `READ` mode, seeks to offset, reads, closes, deasserts CS. Returns the number of bytes read (0 on failure, missing file, or EOF). Each call is one self-contained transaction, so serving a large file issues one call per chunk (e.g. per download buffer).
+- `size_sync(path)` — asserts CS, stats the file, deasserts CS. Returns the file size in bytes, or 0 when the file does not exist or the path names a directory.
+- `free_bytes_sync()` / `total_bytes_sync()` — assert CS, query card free space / total capacity, deasserts CS. Return 0 when unknown or unavailable.
 - `remove_sync(path)` — asserts CS, removes the file, deasserts CS. Returns `true` when the file is removed or did not exist.
-- `list_dir_sync(dir_path, callback)` — asserts CS, enumerates directory entries through the callback, deasserts CS. Used by log retention to find expired daily log files in a single directory scan.
+- `list_dir_sync(dir_path, callback)` — asserts CS, enumerates directory entries through the callback, deasserts CS. The callback receives each entry as `(name, size, is_dir)`; `size` is valid for files and 0 for directories. Used by log retention to find expired daily log files in a single directory scan, and by `FileService` for listings and status counts.
 
 ### TimeFormatter
 
@@ -1431,7 +1479,7 @@ In `CameraRunner::init()`, during boot:
 6. `VideoController::init(config, width, height)` stores the validated dimensions.
 7. `WifiService::init()` connects to STA, or falls back to AP directly when the STA SSID is blank (the default), or after a connection timeout.
 8. `SystemOrchestrator::init()` latches SD availability and registers command handlers and the `/stream` route.
-9. `WebCommandTransport::register_routes()` wires `/status` and `/control`; `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening (see [Initialization Sequence](#initialization-sequence)).
+9. `WebCommandTransport::register_routes()` wires `/status` and `/control`; `FileService::init()` registers the `LIST_FILES` command and the file routes; `SystemOrchestrator::init()` registers the `/stream` and `POST /update` routes; `WebServerService::init()` registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening (see [Initialization Sequence](#initialization-sequence)).
 
 ### Write Pattern
 
@@ -1461,12 +1509,21 @@ Complete list of HTTP endpoints exposed by the system, showing which class regis
 
 | Method | Path | Registered By | Routing | Auth |
 |--------|------|---------------|---------|------|
-| GET | `/` | `WebServerService::init()` | `handle_index()` — serves the built-in HTML status page | Conditional¹ |
+| GET | `/` | `WebServerService::init()` | `handle_index()` — serves the embedded single-page web UI (see [Web UI Hosting](#web-ui-hosting)) | Conditional¹ |
 | GET | `/status` | `WebCommandTransport::register_routes()` | `handle_status()` → `dispatch_and_respond(GET_STATUS)` → `CommandHandler::dispatch()` | Conditional¹ |
 | GET | `/control` | `WebCommandTransport::register_routes()` | `handle_control()` → `map_cmd_string(cmd)` → `dispatch_and_respond(code[, payload])` → `CommandHandler::dispatch()` | Conditional¹ |
 | GET | `/stream` | `SystemOrchestrator::init()` | `handle_stream_request()` → `check_basic_auth()` → `StreamService::start_stream()` → `send_stream_response()` | Conditional¹ |
+| POST | `/update` | `SystemOrchestrator::init()` | `handle_update_request()` → `ConfigService::overlay()` → `save_nvs()`/`save_sd()` | Config policy² |
+| GET | `/files` | `FileService::init()` | `handle_files_request()` → `build_listing_json()` → SD listing | File policy³ |
+| GET | `/download` | `FileService::init()` | `handle_download_request()` → path validation → `send_data_response()` with per-chunk `SdController::read_at_sync()` | File policy³ |
+| GET | `/logs` | `FileService::init()` | `handle_logs_request()` → `build_listing_json("/logs", start)` | File policy³ |
+| GET | `/log` | `FileService::init()` | `handle_log_request()` → tail-limited `send_data_response()` | File policy³ |
 
-¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers do not send Basic credentials for embedded subresources (`<img>`/`<video>`), so an embedded viewer requires a different (token-based) mechanism — which is not yet implemented.
+¹ Authentication is enforced only when a web password is configured; with no password configured, `check_basic_auth()` allows all requests. Unauthenticated requests receive a `401` response. **Streaming auth limitation**: HTTP Basic auth works for direct navigation to `/stream`, but browsers may not send Basic credentials for embedded subresources (`<img>`/`<video>`); after the initial per-origin credential prompt the cached credentials usually cover `<img src="/stream">` — if a browser is found not to, the fallback is a fetch→blob preview, and a token-based mechanism remains out of scope.
+
+² Config-update policy: `POST /update` carries credentials, so it is served only when a web password is configured (401 without one, mirroring the config commands); unauthenticated requests receive a `401` response. The body is an `application/x-www-form-urlencoded` form with a `config` field holding INI text and an optional `dest` field (`nvs`, the default, or `sd`). A `config` value larger than the transport's form buffer (1280 bytes) is rejected with `413` and not applied — truncated INI text would silently drop trailing sections while reporting success.
+
+³ File-access policy: the file routes are refused outright with `401` while no web password is configured (file access is never offered unauthenticated), and they validate HTTP Basic credentials with a challenge when one is set. Paths must be absolute and traversal-free (`..`, `.`, empty segments, and backslashes rejected); listing is allowlisted to the SD root, `/logs`, and date directories (`/YYYYMMDD`); downloads are allowlisted to files directly inside date directories and daily log files under `/logs`. `/config.ini` is never downloadable (the config editor reads the live config via `GET_CONFIG` instead). The clip currently being recorded is flagged in listings and refused for download with `409` (its AVI header is unfinalized until close).
 
 The `cmd` query parameter on `/control` selects the command to dispatch — see the **Web transport** table in the [Command Reference](#command-reference) for the mapping. `set_time` additionally requires a `ts` timestamp parameter, which the transport packs as a little-endian `uint32_t` payload.
 
@@ -1516,11 +1573,11 @@ Fully testable on native via `MockWifiHal`. Tests cover STA success, timeout fal
 
 ### WebServerService
 
-**Files**: `include/web_server_service.h`, `src/web_server_service.cpp`
+**Files**: `include/web_server_service.h`, `src/web_server_service.cpp`, `include/web_ui_content.h`, `src/web_ui_content.cpp`
 
 #### Responsibility
 
-Manages HTTP route registration and HTTP Basic authentication. Routes are registered during `init()`.
+Manages HTTP route registration and HTTP Basic authentication for the landing page, and serves the embedded single-page web UI. Routes are registered during `init()`.
 
 #### Dependencies
 
@@ -1534,6 +1591,59 @@ Manages HTTP route registration and HTTP Basic authentication. Routes are regist
 #### Authentication
 
 If a web password is configured, `handle_index()` checks the `Authorization` header via `request.auth_header()` against the expected `Basic base64(user:pass)` value. If no password is configured, authentication is skipped. The `/status` and `/control` routes are registered by `WebCommandTransport::register_routes()`, which has its own auth checks.
+
+### FileService
+
+**Files**: `include/file_service.h`, `src/file_service.cpp`
+
+#### Responsibility
+
+SD file browsing, download, and log viewing. Owns the `LIST_FILES` (0x40) dispatch command and the direct HTTP routes `/files`, `/download`, `/logs`, and `/log`. All SD access is single-transaction and CS-arbitrated via `SdController` sync calls, following the same non-capture-task pattern as `ConfigService::save_sd()`.
+
+#### Dependencies
+
+- `SdController &` — for listings, size/stat, capacity, existence checks, and chunked reads.
+- `CommandHandler &` — receives the `LIST_FILES` handler registration.
+- `LoggingService &` — for diagnostic output.
+- Active-clip provider (`std::function<const char*()>`, injected by the composition root) — returns the clip currently being recorded (or empty); used to flag entries in listings and refuse downloads of the unfinalized clip.
+- `hal::WebServerHal &` — for route registration at `init()` time (before the server starts serving).
+
+#### Routes and Command
+
+| Endpoint | Behavior |
+|----------|----------|
+| `LIST_FILES` (0x40) | Payload `"<dir>[ <start>]"` (empty = SD root). Builds one listing page into the dispatch response buffer. Shared by the serial `FILES` command and the web `cmd=files` mapping. |
+| `GET /files?dir=&start=` | Same listing builder over HTTP; 503 when the card is unavailable, 403 for non-allowlisted directories. |
+| `GET /download?path=` | Validates the path against the allowlist, refuses the active clip (409) and missing files (404), stats the file, and attaches a `send_data_response()` with `application/octet-stream`; the filler re-verifies the active clip on every chunk and stops the transfer if the requested path became the clip being recorded mid-transfer, and issues one `read_at_sync()` transaction per chunk, bounded by `DOWNLOAD_CHUNK_SIZE` (4096 bytes) so a download interlaces bounded CS-arbitrated reads with recording writes (recording FPS may dip during downloads — accepted behavior). |
+| `GET /logs?start=` | Listing JSON of `/logs` (log files with sizes), paginated like `/files`. |
+| `GET /log?file=YYYYMMDD.log` | Tail-limited log view (`text/plain`): serves at most the last `LOG_TAIL_MAX_BYTES` (16384 bytes) so long-lived logs cannot grow the response unboundedly. 404 for missing files, 403 for names outside the `YYYYMMDD.log` pattern. |
+
+The listing builder paginates over the directory's *emittable* entries: names too long for the per-entry JSON scratch buffer are excluded from the pagination sequence and reported via `skipped_long_names` (they cannot be serialized at all), while `total` counts only emittable entries so page math stays consistent. Pages are addressed by an absolute `start` index into the emittable sequence; when the response buffer would overflow mid-page, the page stops early and `next` carries the absolute index of the first unemitted entry, so following the `next` chain (`more:false` terminates) visits every entry exactly once.
+
+#### Security Policy
+
+- File routes require a configured web password: with none set they are refused with `401` outright (file access is never offered unauthenticated — parity with the config-command policy). With a password configured, HTTP Basic credentials are validated with the standard challenge.
+- Paths must be absolute and traversal-free (`..`, `.`, empty segments, backslashes, and trailing slashes rejected).
+- Listing allowlist: the SD root `/`, `/logs`, and date directories (`/YYYYMMDD`).
+- Download allowlist: files directly inside date directories and daily log files under `/logs`. Root-level files — including `/config.ini`, which holds WiFi/AP/web credentials — are never downloadable; the config editor reads the live config via `GET_CONFIG` instead.
+- The clip currently being recorded is flagged (`"r":true`) in listings and refused for download with `409`, since its AVI header is unfinalized until close. Downloads re-verify at serve time (per chunk) and stop the transfer if the path became the active clip mid-transfer.
+
+#### Testability
+
+Fully testable on native via `MockSdCardHal` (file store with directories), `MockWebServerHal`, and `MockLogBackend`. Tests cover path validation and allowlists, listing JSON shape and pagination, the active-clip flag, route auth policy (no password → 401, bad credentials → 401), traversal rejection, download chunk bounding, and log tail limiting.
+
+### Web UI Hosting
+
+**Files**: `include/web_ui_content.h`, `src/web_ui_content.cpp`
+
+The web UI is a single dependency-free page (HTML + CSS + vanilla JS in one document) embedded in the firmware as the default (`GET /` served by `WebServerService`). It covers the status panel (including SD free space and today's photo/video counts), recording/photo/preview controls, the live MJPEG preview, the file browser with per-directory listing, pagination (absolute `start` indices with the listing's `next` continuation index), and download links, the system log viewer (paginated the same way), and a config editor (load via `GET_CONFIG`, save via `POST /update` to NVS or SD). The preview issues `stream_start` before pointing an `<img src="/stream">` at the stream and `stream_stop` afterwards, honoring the 409 gate on `/stream`.
+
+**SD `/data/` override hook (documented, not implemented)**: the planned path for serving UI assets from the card is a per-URL serving order of
+
+1. `/data/<uri>` on the SD card, when the card is available and the file exists — serves the SD asset (update-without-reflash convenience), then
+2. the embedded document — always available, including in degraded (no-card) mode, which is why embedding is the default.
+
+The hook is intentionally not implemented yet; the embedded page is always served. No configuration key is consumed for it today; the reserved-but-unused convention is a `[web] ui_source` setting (`embedded`, the default) to be honored only when the SD override lands, alongside the `/data/` lookup above.
 
 ### CommandHandler
 
@@ -1685,7 +1795,7 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, and connected stream count. No side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, and SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only). The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks), `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks, and no camera capture is performed). Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
@@ -1697,6 +1807,7 @@ Every command returns a `CommandResult` enum value:
 | `0x22` | `GET_CONFIG_VALUE` | Null-terminated string: `"section.key"` | Value string | Returns a single configuration value identified by section and key (e.g. `"wifi.ssid"`). String settings are returned verbatim; numeric and boolean settings are returned formatted as in serialized INI text (decimal; `camera.grab_mode` as two-digit hex; `video.audio_enabled` as `true`/`false`). Returns `INVALID_ARGS` if the key is unknown. |
 | `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value in the live (in-RAM) config. The string contains both the key path and the new value separated by `=`. String settings accept any value that fits the field buffer; numeric and boolean settings must satisfy the same constraints as the INI parser (e.g. `web.port` 1–65535, `web.max_streams` 1–4, `video.fps` 1–30, `video.mic_gain` 1–8, jpeg quality ≤ 63, `camera.grab_mode` hexadecimal ≤ 0xFF). Returns `INVALID_ARGS` if the key is unknown or the value is out of range or unparseable; rejected values leave the config unchanged. The change is NOT persisted; run `SET_CONFIG` to commit it to NVS or the SD card. |
 | `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |
+| `0x40` | `LIST_FILES` | Text: `"<dir>[ <start>]"` (empty payload lists the SD root; start is a decimal entry index into the directory's emittable sequence, default 0) | JSON string: `{"dir":str,"start":uint,"total":uint,"skipped_long_names":uint,"entries":[{"n":str,"s":bytes,"d":is_dir,"r":recording}...],"more":bool,"next":uint}` | Returns one page (`FileService::PAGE_SIZE` = 12 entries) of a single directory listing with entry name, byte size, directory flag, and a recording flag set on the clip currently being written. Pagination runs over emittable entries only: names too long to serialize are excluded and counted in `skipped_long_names`, `total` counts emittable entries, and `next` is the absolute continuation index (the first unemitted entry, also set when the response buffer stops a page early); `more:false` terminates the listing. Listing is allowlisted to the SD root, `/logs`, and date directories; other paths return `INVALID_ARGS`. Returns `SD_UNAVAILABLE` when the card is absent, `INTERNAL_ERROR` when the directory scan fails. **Deviation from the plan**: file *content* transfer is not a dispatch command (see the `GET /download` route); only the bounded listing rides the command layer. |
 
 #### Transport Mappings
 
@@ -1716,6 +1827,7 @@ Every command returns a `CommandResult` enum value:
 | `config_get_value` | `GET_CONFIG_VALUE` | Requires a `key` query parameter: `"section.key"` string |
 | `config_set_value` | `SET_CONFIG_VALUE` | Requires `key` and `value` query parameters (empty `value` blanks the setting) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
+| `files` | `LIST_FILES` | Optional `dir` query parameter (default `/`) plus optional `start` entry index into the emittable sequence; served as listing JSON. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
 
 The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
 
@@ -1740,6 +1852,7 @@ The `/status` endpoint always dispatches `GET_STATUS` regardless of query parame
 | `SET <section>.<key>=<val>` | `SET_CONFIG_VALUE` | `"section.key=value"` string | Empty |
 | `CONFIG_GET` | `GET_CONFIG` | None | Full config as serialized INI text |
 | `CONFIG_SAVE <nvs\|sd>` | `SET_CONFIG` | Destination string (`nvs` or `sd`, case-insensitive) | Empty |
+| `FILES [dir [start]]` | `LIST_FILES` | Directory path with optional entry index; no args lists the SD root | Listing JSON |
 
 Response format:
 - **Success**: `OK [data]\n` (data is optional)

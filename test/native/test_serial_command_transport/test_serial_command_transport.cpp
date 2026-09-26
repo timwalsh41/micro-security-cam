@@ -427,6 +427,61 @@ void test_response_sd_unavailable()
 }
 
 /**
+ * @brief Serial FILES dispatches LIST_FILES and emits the directory JSON.
+ */
+void test_files_maps_to_list_files()
+{
+    TestFixture f;
+    f.handler.register_handler(
+        CommandCode::LIST_FILES,
+        [](const uint8_t* payload, size_t len, uint8_t* response,
+           size_t& responseLen) -> CommandResult
+        {
+            // Echo the payload for verification.
+            responseLen = len;
+            if (payload != nullptr && len > 0)
+            {
+                std::memcpy(response, payload, len);
+            }
+            response[responseLen] = '\0';
+            return CommandResult::SUCCESS;
+        });
+
+    f.serial.clear_buffers();
+    f.inject_line("FILES /20250101 2\n");
+    f.handler.tick();
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_TRUE(std::strstr(output, "OK /20250101 2\n") != nullptr);
+}
+
+/**
+ * @brief Serial FILES without arguments passes an empty payload.
+ */
+void test_files_without_args_lists_root()
+{
+    TestFixture f;
+    f.handler.register_handler(
+        CommandCode::LIST_FILES,
+        [](const uint8_t* payload, size_t len, uint8_t* response,
+           size_t& responseLen) -> CommandResult
+        {
+            TEST_ASSERT_EQUAL_UINT32(0, len);
+            TEST_ASSERT_NULL(payload);
+            responseLen = 0;
+            return CommandResult::SUCCESS;
+        });
+
+    f.serial.clear_buffers();
+    f.inject_line("FILES\n");
+    f.handler.tick();
+
+    const char* output = f.serial.output_as_string();
+    TEST_ASSERT_TRUE(std::strstr(output, "[INFO ] FILES\r\n") != nullptr);
+    TEST_ASSERT_TRUE(std::strstr(output, "OK\n") != nullptr);
+}
+
+/**
  * @brief Serial CONFIG_GET dispatches GET_CONFIG and emits the full config.
  *
  * The serial interface is unaffected by the web transport's
@@ -698,6 +753,8 @@ int main(int argc, char** argv)
     RUN_TEST(test_response_error);
     RUN_TEST(test_response_sd_unavailable);
     RUN_TEST(test_config_get_serial_unaffected);
+    RUN_TEST(test_files_maps_to_list_files);
+    RUN_TEST(test_files_without_args_lists_root);
     RUN_TEST(test_config_save_serial_unaffected);
     RUN_TEST(test_tick_full_cycle);
     RUN_TEST(test_multiple_commands_sequence);

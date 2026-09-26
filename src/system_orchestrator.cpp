@@ -2,12 +2,22 @@
 #include "stream_service.h"
 #include "web_auth_util.h"
 #include "time_formatter.h"
+#include "hal/time_hal.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <inttypes.h>
 #include <memory>
 #include <utility>
+
+namespace
+{
+
+/** Minimum interval between SD storage-stat refreshes for GET_STATUS. */
+constexpr hal::millis_t SD_STATS_TTL_MS = 60000;
+
+} // namespace
 
 SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        CameraController& camera,
@@ -47,6 +57,7 @@ void SystemOrchestrator::init()
 
     register_commands();
     register_stream_route();
+    register_update_route();
     m_log.info(SUBSYSTEM, "SystemOrchestrator initialized");
 }
 
@@ -171,18 +182,79 @@ CommandResult SystemOrchestrator::handle_get_status(
     uint32_t file_size = m_video.file_size();
     uint8_t active_stream_slot_count = m_streams.active_slot_count();
 
+    // SD storage stats for the web UI status panel, cached with a
+    // bounded TTL so the 5 s status polling never issues SD
+    // transactions per poll (a free-space query is a full FAT scan).
+    // Photo/video counts cover today's date directory only: media is
+    // never pruned, so a whole-card scan is unbounded, while the
+    // current day is what the status panel shows.
+    uint64_t free_bytes = 0;
+    unsigned int photos = 0;
+    unsigned int videos = 0;
+
+    if (m_sd_available)
+    {
+        hal::millis_t now = hal::get_millis();
+        bool expired = !m_sd_stats.valid ||
+                       (now - m_sd_stats.refreshed_at) >= SD_STATS_TTL_MS;
+        if (expired)
+        {
+            m_sd_stats.free_bytes = m_sd.free_bytes_sync();
+            m_sd_stats.photos = 0;
+            m_sd_stats.videos = 0;
+
+            char date_dir[16];
+            if (TimeFormatter::format_date(m_time.unix_now(), date_dir + 1,
+                                           sizeof(date_dir) - 1))
+            {
+                date_dir[0] = '/';
+                m_sd.list_dir_sync(date_dir,
+                    [this](const char* name, size_t size, bool is_dir)
+                    {
+                        (void)size;
+                        if (name != nullptr && !is_dir)
+                        {
+                            size_t name_len = strlen(name);
+                            if (name_len >= 4 &&
+                                strncmp(name + name_len - 4, ".jpg", 4) == 0)
+                            {
+                                m_sd_stats.photos++;
+                            }
+                            else if (name_len >= 4 &&
+                                     strncmp(name + name_len - 4, ".avi", 4) == 0)
+                            {
+                                m_sd_stats.videos++;
+                            }
+                        }
+                        return true;
+                    });
+            }
+
+            m_sd_stats.refreshed_at = now;
+            m_sd_stats.valid = true;
+        }
+
+        free_bytes = m_sd_stats.free_bytes;
+        photos = m_sd_stats.photos;
+        videos = m_sd_stats.videos;
+    }
+
     int written = snprintf(
         reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE,
         "{\"recording\":%s,\"streaming\":%s,\"sd\":%s,\"frames\":%lu,"
         "\"file_size\":%lu,"
-        "\"connected_streams\":%u}",
+        "\"connected_streams\":%u,"
+        "\"sd_free_bytes\":%" PRIu64 ",\"photos\":%u,\"videos\":%u}",
         recording ? "true" : "false",
         streaming ? "true" : "false",
         m_sd_available ? "true" : "false",
         static_cast<unsigned long>(frames),
         static_cast<unsigned long>(file_size),
-        static_cast<unsigned int>(active_stream_slot_count)
+        static_cast<unsigned int>(active_stream_slot_count),
+        free_bytes,
+        photos,
+        videos
     );
 
     if (written < 0 || static_cast<size_t>(written) >= CommandHandler::MAX_RESPONSE_SIZE)
@@ -617,4 +689,92 @@ void SystemOrchestrator::handle_stream_request(hal::RequestRef& request)
     }
 
     m_log.info(SUBSYSTEM, "Stream viewer connected (slot %d)", slot);
+}
+
+// ============================================================
+// /update route (bulk config from the web UI)
+// ============================================================
+
+void SystemOrchestrator::register_update_route()
+{
+    // Snapshot the web password at registration time, mirroring the
+    // /stream route: auth compares against a stable copy rather than
+    // the live config struct.
+    strncpy(m_update_password, m_config.config().web.password,
+            sizeof(m_update_password) - 1);
+    m_update_password[sizeof(m_update_password) - 1] = '\0';
+
+    m_web.on("/update", hal::HttpMethod::POST,
+             [this](hal::RequestRef& request)
+             {
+                 this->handle_update_request(request);
+             });
+}
+
+void SystemOrchestrator::handle_update_request(hal::RequestRef& request)
+{
+    // Config updates carry credentials, so like the config commands
+    // they are only served when a web password is configured.
+    if (m_update_password[0] == '\0')
+    {
+        request.send(401, "application/json",
+                     "{\"error\":\"authentication required\"}");
+        return;
+    }
+    if (!check_basic_auth(request.auth_header(), m_update_password))
+    {
+        request.send_unauthorized();
+        return;
+    }
+
+    const char* dest = request.arg("dest");
+    const bool save_to_sd = (dest != nullptr && strcmp(dest, "sd") == 0);
+
+    if (save_to_sd && !m_sd_available)
+    {
+        request.send(503, "application/json",
+                     "{\"error\":\"sd unavailable\"}");
+        return;
+    }
+
+    const char* ini = request.form_value("config");
+    if (ini == nullptr || ini[0] == '\0')
+    {
+        request.send(400, "application/json",
+                     "{\"error\":\"missing 'config' parameter\"}");
+        return;
+    }
+
+    // A form value larger than the transport's buffer was truncated in
+    // transit: applying the cut text would silently drop trailing
+    // config sections while reporting success.
+    if (request.form_value_truncated("config"))
+    {
+        request.send(413, "application/json",
+                     "{\"error\":\"config too large\"}");
+        return;
+    }
+
+    // Apply the INI text as an overlay onto the live config.
+    if (!m_config.overlay(reinterpret_cast<const uint8_t*>(ini),
+                          strlen(ini)))
+    {
+        request.send(400, "application/json",
+                     "{\"error\":\"invalid config\"}");
+        return;
+    }
+
+    bool saved = save_to_sd
+        ? m_config.save_sd(m_sd)
+        : m_config.save_nvs(m_nvs);
+    if (!saved)
+    {
+        request.send(500, "application/json",
+                     "{\"error\":\"config save failed\"}");
+        return;
+    }
+
+    m_log.info(SUBSYSTEM, "Config updated via /update (dest=%s)",
+               save_to_sd ? "sd" : "nvs");
+    request.send(200, "application/json", "{\"result\":\"ok\"}");
 }

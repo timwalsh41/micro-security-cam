@@ -3,6 +3,7 @@
 
 #include "hal/sd_card_hal.h"
 #include "SD.h"
+#include <cstdint>
 
 /**
  * @file sd_card_hal_impl.h
@@ -41,7 +42,10 @@ class SdCardHalImpl : public SdCardHal
         bool exists(const char* path) override;
         bool remove(const char* path) override;
         bool list_dir(const char* dir_path,
-                      std::function<bool(const char* entry)> callback) override;
+                      DirEntryCallback callback) override;
+        size_t file_size(const char* path) override;
+        uint64_t free_bytes() override;
+        uint64_t total_bytes() override;
         bool is_initialized() const override;
 
     private:

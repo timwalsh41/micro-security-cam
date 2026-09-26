@@ -1,5 +1,6 @@
 #include "web_server_service.h"
 #include "web_auth_util.h"
+#include "web_ui_content.h"
 #include <cstring>
 
 WebServerService::WebServerService(hal::WebServerHal& hal, LoggingService& log)
@@ -46,13 +47,12 @@ void WebServerService::handle_index(hal::RequestRef& request)
         return;
     }
 
-    static const char* INDEX_HTML =
-        "<!DOCTYPE html>"
-        "<html><head><title>ESP32 Camera</title></head>"
-        "<body><h1>ESP32 Security Camera</h1>"
-        "<p>System online.</p></body></html>";
-
-    request.send(200, "text/html", INDEX_HTML);
+    // Embedded single-page UI (see web_ui_content.cpp). A future
+    // SD-card /data/ override may shadow this document per-URL; the
+    // serving order and reserved config hook are documented in
+    // docs/SYSTEM_DESIGN.md (Web UI Hosting). The override is not
+    // implemented yet, so the embedded page is always served.
+    request.send(200, "text/html", web_ui_html());
 }
 
 bool WebServerService::check_auth(hal::RequestRef& request)

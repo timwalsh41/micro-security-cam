@@ -106,6 +106,15 @@ class WebCommandTransport : public CommandTransport
          * password is configured; the serial interface is unrestricted.
          */
         static bool is_config_command(CommandCode code);
+
+        /**
+         * @brief Returns true if the command accesses SD file data.
+         *
+         * File commands follow the same restricted-on-web policy as the
+         * config commands: they are refused while no web password is
+         * configured.
+         */
+        static bool is_file_command(CommandCode code);
 };
 
 #endif // WEB_COMMAND_TRANSPORT_H

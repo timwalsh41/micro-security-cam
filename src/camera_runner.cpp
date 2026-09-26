@@ -25,6 +25,7 @@
 #include "mic_service.h"
 #include "wifi_service.h"
 #include "web_server_service.h"
+#include "file_service.h"
 #include "command_handler.h"
 #include "web_command_transport.h"
 #include "serial_command_transport.h"
@@ -182,6 +183,19 @@ public:
         // --- Register web command routes ---
         m_web_transport.register_routes(m_config_service.config().web.password);
 
+        // --- Register file browser/download/log routes and LIST_FILES ---
+        // Route registration must precede the web server start (below)
+        // so the full route table attaches before requests are served.
+        m_file_service.set_active_clip_provider(
+            [this]() -> const char*
+            {
+                return m_video_controller.is_recording()
+                    ? m_video_controller.current_clip_path()
+                    : "";
+            });
+        m_file_service.init(m_web_server_hal_impl,
+                            m_config_service.config().web.password);
+
         // --- Initialize web server ---
         m_web_server_service.init(m_config_service.config().web);
 
@@ -255,6 +269,7 @@ private:
     SerialCommandTransport m_serial_transport{m_serial_hal, m_real_time};
     WebServerService m_web_server_service{m_web_server_hal_impl, m_logger};
     StreamService m_stream_service{m_logger};
+    FileService m_file_service{m_sd_controller, m_command_handler, m_logger};
     SystemOrchestrator m_system_orchestrator{
         m_video_controller, m_camera_ctrl, m_command_handler,
         m_real_time, m_config_service, m_logger,
