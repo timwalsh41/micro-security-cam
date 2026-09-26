@@ -2577,6 +2577,8 @@ This workflow covers two phases: **registration** (one-time wiring at startup) a
 
 **Runtime dispatch** — A client sends `GET /control?cmd=start` to the ESP32. The `AsyncWebServer` (inside `WebServerHalImpl`) receives the request and invokes the registered lambda, which forwards to `WebCommandTransport` for auth checking and command mapping, then calls `CommandHandler::dispatch()`. The dispatcher finds the `START_RECORDING` handler (registered by `SystemOrchestrator`), executes it, and the response flows back through the same chain as a JSON HTTP response.
 
+**File-listing dispatch** — A second dispatch example shows the `cmd=files` request mapping to `LIST_FILES` (0x40), the handler registered by `FileService` rather than `SystemOrchestrator`. `LIST_FILES` is also subject to the config-command restricted-on-web policy: with no web password configured it is refused with `401` before dispatch.
+
 ```plantuml
 @startuml
 title Command Registration & Web Dispatch Flow
@@ -2588,6 +2590,7 @@ participant "CameraRunner\ninit" as MAIN
 participant "SystemOrchestrator" as ORCH
 participant "CommandHandler" as CMDH
 participant "WebCommandTransport" as WCT
+participant "FileService" as FS
 participant "WebServerHalImpl" as WSH
 participant "HTTP Client\n(Browser)" as HTTP_CLIENT
 
@@ -2634,6 +2637,24 @@ activate WSH
 note right: Same pattern for\n/control route
 WSH --> WCT : ok
 deactivate WSH
+
+MAIN -> FS : init(web_server_hal, password)
+activate FS
+
+FS -> CMDH : register_handler(LIST_FILES, fn)
+activate CMDH
+CMDH --> FS : ok
+deactivate CMDH
+
+FS -> WSH : on("/files", GET, ...) + on("/download", GET, ...)
+FS -> WSH : on("/logs", GET, ...) + on("/log", GET, ...)
+activate WSH
+note right: All four routes attach\nbefore the server starts
+WSH --> FS : ok
+deactivate WSH
+
+FS --> MAIN : return
+deactivate FS
 
 WCT --> MAIN : return
 deactivate WCT
@@ -2689,16 +2710,63 @@ deactivate WCT
 WSH --> MAIN : return
 deactivate WSH
 
+' ==================================================================
+' Runtime dispatch phase — file listing
+' ==================================================================
+== Runtime Dispatch (file listing) ==
+
+HTTP_CLIENT -> WSH : HTTP GET /control?cmd=files&dir=/logs&start=0
+note right: Same route callback as\nthe first dispatch example
+
+WSH -> WCT : handle_control(request_ref)
+activate WCT
+
+' Auth check + restricted-on-web policy
+WCT -> WCT : check_auth(request)
+note right: LIST_FILES is restricted on web:\nrefused 401 when no password set
+
+' Dispatch command
+WCT -> CMDH : dispatch(LIST_FILES, payload, len, response, &responseLen)
+activate CMDH
+
+' CommandHandler finds the matching registered handler
+CMDH -> CMDH : Look up LIST_FILES\nin handler table
+
+' Execute the handler (registered by FileService)
+CMDH -> FS : handle_list_files(payload)
+activate FS
+
+FS -> FS : Validate path & allowlist\n(dir, start) → build one\nlisting page, flag active clip
+note right: SD access is single-transaction,\nCS-arbitrated via SdController
+
+FS --> CMDH : return listing JSON\n(response buffer)
+deactivate FS
+
+CMDH --> WCT : return SUCCESS
+deactivate CMDH
+
+' Build and send JSON response
+WCT -> WSH : send(200, "application/json", json)
+activate WSH
+WSH --> HTTP_CLIENT : HTTP 200 {listing JSON}
+deactivate WSH
+
+WCT --> WSH : return
+deactivate WCT
+
+WSH --> MAIN : return
+deactivate WSH
+
 @enduml
 ```
 
 The diagram illustrates the complete round-trip:
 
-1. **Registration** — `SystemOrchestrator` registers handler lambdas with `CommandHandler` for each `CommandCode`. Only then does `WebCommandTransport::register_routes()` wire the HTTP endpoints. This ordering ensures that by the time a request arrives, every handler is in the dispatch table.
+1. **Registration** — `SystemOrchestrator` registers handler lambdas with `CommandHandler` for each `CommandCode`. Only then does `WebCommandTransport::register_routes()` wire the HTTP endpoints, and `FileService::init()` register the `LIST_FILES` (0x40) handler plus the file routes (`/files`, `/download`, `/logs`, `/log`) before the server starts serving. This ordering ensures that by the time a request arrives, every handler is in the dispatch table.
 2. **Request arrival** — The `AsyncWebServer` (inside `WebServerHalImpl`) receives the HTTP request and invokes the registered lambda for `/control`, which forwards to `WebCommandTransport::handle_control(request)`.
 3. **Lambda dispatch** — The lambda creates an `AsyncRequestRef` wrapping the `AsyncWebServerRequest` and passes it to `WebCommandTransport::handle_control()`.
 4. **Authentication** — If a web password is configured, `check_auth()` validates the `Authorization` header against it. Unauthenticated requests receive a `401` response immediately.
-5. **Command mapping & dispatch** — `map_cmd_string()` translates the `cmd` query parameter (e.g., `"start"`) into the corresponding `CommandCode` (`START_RECORDING`). `dispatch_and_respond()` calls `CommandHandler::dispatch()`, which scans its handler table and invokes the matching `CommandHandlerFn` lambda.
+5. **Command mapping & dispatch** — `map_cmd_string()` translates the `cmd` query parameter (e.g., `"start"` → `START_RECORDING`, `"files"` → `LIST_FILES`) into the corresponding `CommandCode`. `LIST_FILES` is additionally restricted on web: with no web password configured it is refused with `401` before dispatch (parity with the config-command policy). `dispatch_and_respond()` calls `CommandHandler::dispatch()`, which scans its handler table and invokes the matching `CommandHandlerFn` lambda.
 6. **Handler execution** — The lambda (capturing the `SystemOrchestrator`) calls the appropriate domain method (e.g., `handle_start_recording()` → `m_video.start_recording()`).
 7. **Response** — The `CommandResult` is serialised into a JSON response and sent back through the HTTP chain.
 
