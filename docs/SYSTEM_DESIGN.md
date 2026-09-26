@@ -31,7 +31,7 @@ The design follows a layered architecture that separates hardware access from ap
 ┌─────────────────────────────────────────────────────────────┐
 │                Service / Controller Layer                   │
 │  CameraController    VideoController   LedStateMachine      │
-│  SdController   AviClipSession     StreamService        │
+│  SdController   AviClipSession     StreamService            │
 │  MicService          TimeService         LoggingService     │
 │  ConfigService       IniParser                              │
 │  WifiService         WebServerService    FileService        │
@@ -43,7 +43,7 @@ The design follows a layered architecture that separates hardware access from ap
 │  CameraHal       SdCardHal      LogBackend                  │
 │  GpioHal         TimeHal        WifiHal    SerialHal        │
 │  MicHal          WebServerHal   StreamFrameChannel          │
-│  HardwarePeripheralManager   (shared pin arbitration)        │
+│  HardwarePeripheralManager   (shared pin arbitration)       │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
