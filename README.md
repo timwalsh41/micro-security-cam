@@ -90,6 +90,16 @@ Configuration via environment:
 | `CAM_PASSWORD` | web password (required; empty value if none is configured) | unset |
 | `CAM_EXPECT_GIT` | optional git identity the flashed build must report | unset |
 
+The web UI module (`test/e2e/test_10_webui.py`) drives the device UI
+with headless Chromium via Playwright. One-time setup:
+
+```bash
+uv run playwright install chromium
+```
+
+Without the browser binary that module skips with a clear reason and
+the rest of the suite still runs.
+
 Behavior notes:
 
 - Tests run strictly sequentially; each request has a bounded timeout

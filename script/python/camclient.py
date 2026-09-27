@@ -116,10 +116,6 @@ class CamClient:
         self.password = password
         self.port = port
         self.timeout = timeout
-        self.host = host
-        self.password = password
-        self.port = port
-        self.timeout = timeout
 
     # ---------------------------------------------------------
     # Credentials helpers

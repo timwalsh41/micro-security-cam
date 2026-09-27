@@ -46,20 +46,48 @@ def _wait_for(predicate, timeout, what):
     pytest.fail(f"timed out after {timeout}s waiting for {what}")
 
 
+def _record_wedge(client=None):
+    """Record wall clock and device uptime at the first wedge detection."""
+    if _FIRST_WEDGE["wall_clock"] is not None:
+        return
+    _FIRST_WEDGE["wall_clock"] = time.time()
+    uptime = None
+    if client is not None:
+        try:
+            uptime = client.status().get("uptime_ms")
+        except camclient.CamClientError:
+            pass
+    _FIRST_WEDGE["uptime_ms"] = uptime
+
+
+def _wedge_timing_text():
+    """Elapsed time to the first wedge, session-relative and boot-relative."""
+    parts = []
+    if None not in (_SESSION_START["wall_clock"], _FIRST_WEDGE["wall_clock"]):
+        elapsed = _FIRST_WEDGE["wall_clock"] - _SESSION_START["wall_clock"]
+        parts.append(f"elapsed-since-session-start {elapsed:.1f}s")
+    if None not in (_SESSION_START["uptime_ms"], _FIRST_WEDGE["uptime_ms"]):
+        elapsed = (_FIRST_WEDGE["uptime_ms"]
+                   - _SESSION_START["uptime_ms"]) / 1000.0
+        parts.append(f"elapsed-since-boot {elapsed:.1f}s")
+    return "; ".join(parts) if parts else "timing unavailable"
+
+
 def is_capture_wedge(exc):
     """True when a failure is the known capture-pipeline wedge (code 255)."""
     return (isinstance(exc, camclient.CamCommandError)
             and exc.code == CAPTURE_INTERNAL_ERROR_CODE)
 
 
-def capture_skip_or_raise(exc):
+def capture_skip_or_raise(exc, client=None):
     """pytest.skip with a clear reason on the capture-pipeline wedge,
     otherwise re-raise the failure."""
     if is_capture_wedge(exc):
+        _record_wedge(client)
         pytest.skip(
             "capture pipeline wedged mid-suite (capture commands return "
-            f"code {CAPTURE_INTERNAL_ERROR_CODE}); power-cycle the device "
-            "and re-run to exercise this coverage"
+            f"code {CAPTURE_INTERNAL_ERROR_CODE}; {_wedge_timing_text()}); "
+            "power-cycle the device and re-run to exercise this coverage"
         )
     raise exc
 
@@ -76,6 +104,14 @@ LOG_FILE_RE = re.compile(r"^\d{8}\.log$")
 # rather than failing a dozen tests in a row with confusing errors.
 CAPTURE_INTERNAL_ERROR_CODE = 255
 _CAPTURE_BLOCKED_REASON = None
+
+# Wall clock and device uptime (``uptime_ms`` from /status) at session
+# start and at the first capture-pipeline wedge detection, so the time
+# to the wedge can be reported relative to both the session and the
+# device boot (a product finding, surfaced in skip reasons and the
+# session summary).
+_SESSION_START = {"wall_clock": None, "uptime_ms": None}
+_FIRST_WEDGE = {"wall_clock": None, "uptime_ms": None}
 
 
 def parse_photo_path(path):
@@ -129,7 +165,7 @@ def client(request):
     cli = camclient.CamClient(host=host, password=password)
 
     try:
-        cli.status()
+        status = cli.status()
     except camclient.CamClientError as e:
         message = (
             f"e2e: device {host} is unreachable ({e}); start it or check "
@@ -138,6 +174,9 @@ def client(request):
         if request.config.getoption("--e2e-required"):
             pytest.exit(message, returncode=1)
         pytest.skip(message)
+
+    _SESSION_START["wall_clock"] = time.time()
+    _SESSION_START["uptime_ms"] = status.get("uptime_ms")
 
     _capture_pipeline_preflight(cli)
     _version_preflight(cli)
@@ -166,9 +205,11 @@ def _capture_pipeline_preflight(cli):
             data.get("code") == CAPTURE_INTERNAL_ERROR_CODE:
         _CAPTURE_BLOCKED_REASON = (
             "device capture pipeline is wedged (capture commands return "
-            f"code {CAPTURE_INTERNAL_ERROR_CODE}); photo/record/stream "
+            f"code {CAPTURE_INTERNAL_ERROR_CODE}; photo/record/stream "
             "coverage skipped - power-cycle the device and re-run"
         )
+        _record_wedge(cli)
+        _CAPTURE_BLOCKED_REASON += f" ({_wedge_timing_text()})"
         print(
             f"\nWARNING: {_CAPTURE_BLOCKED_REASON}. This is a device "
             "state problem, not a suite failure; non-camera coverage "
@@ -336,7 +377,7 @@ class StateGuard:
             data = self.m_client.control("start")
             camclient.CamClient.assert_result_ok(data, "cmd=start")
         except camclient.CamClientError as e:
-            capture_skip_or_raise(e)
+            capture_skip_or_raise(e, self.m_client)
         self.m_started_recording = True
 
     def stop_recording(self):
@@ -351,7 +392,7 @@ class StateGuard:
             data = self.m_client.control("stream_start")
             camclient.CamClient.assert_result_ok(data, "cmd=stream_start")
         except camclient.CamClientError as e:
-            capture_skip_or_raise(e)
+            capture_skip_or_raise(e, self.m_client)
         self.m_started_streaming = True
 
     def stop_streaming(self):
@@ -365,7 +406,7 @@ class StateGuard:
         try:
             path = self.m_client.photo()
         except camclient.CamClientError as e:
-            capture_skip_or_raise(e)
+            capture_skip_or_raise(e, self.m_client)
         self.track_created(path)
         return path
 
@@ -413,3 +454,19 @@ class StateGuard:
             )
             for path in self.m_created_files:
                 print(f"  {path}")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Summarize the capture-pipeline wedge timing (product finding)."""
+    if _FIRST_WEDGE["wall_clock"] is None:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    text = ("Product finding: capture-pipeline wedge first detected "
+            f"({_wedge_timing_text()}); recovers only on a power cycle.")
+    if reporter is None:
+        print(f"\n{text}\n")
+        return
+    reporter.ensure_newline()
+    reporter.write_line("")
+    reporter.write_sep("=", "capture-pipeline wedge")
+    reporter.write_line(text)

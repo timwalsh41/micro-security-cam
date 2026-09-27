@@ -102,6 +102,28 @@ def test_log_rotation_advances_to_a_new_date_file(client, guard, capture_ready):
     today = guard.device_date()
     advanced_date = _date_str(_date_unix(today) + 2 * DAY_S)
 
+    names = _log_names(client)
+    if names is None:
+        pytest.skip(
+            "no /logs listing: this firmware build does not write logs "
+            "to the SD card"
+        )
+    # The advance triggers the firmware's retention pass with cutoff
+    # advanced_date - retention_days; refuse when that pass would delete
+    # device log data the suite cannot restore.
+    retention_days = int(client.config_get_value("logging.retention_days"))
+    cutoff_date = _date_str(
+        _date_unix(today) + (2 - retention_days) * DAY_S
+    )
+    existing_dates = {name[:8] for name in names if LOG_FILE_RE.match(name)}
+    if any(date < cutoff_date for date in existing_dates):
+        pytest.skip(
+            f"the advance would expire logs dated before {cutoff_date} "
+            "(logging.retention_days=" + str(retention_days) + "); the "
+            "retention pass would delete device data the suite cannot "
+            "restore"
+        )
+
     # set_time itself produces a log line, which lands in the new
     # date's file after the rotation check runs.
     guard.advance_time(_date_unix(today) + 2 * DAY_S)

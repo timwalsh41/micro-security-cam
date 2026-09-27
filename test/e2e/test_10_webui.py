@@ -25,7 +25,14 @@ def page(client):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception as e:
+            pytest.skip(
+                "the chromium browser is not installed; run "
+                "`uv run playwright install chromium` once to enable "
+                f"the UI coverage (launch failed: {e})"
+            )
         context = browser.new_context(
             http_credentials={"username": "admin", "password": client.password}
         )
@@ -94,29 +101,37 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
     MJPEG frames; stopping clears both the flag and the preview."""
     if capture_ready:
         pytest.skip(capture_ready)
+    # A preview running before this test (e.g. restored by the session
+    # preflight) must survive it: snapshot and restore it here, without
+    # registering with the guard (which would stop it at teardown).
+    was_streaming = bool(client.status().get("streaming"))
 
     _goto_ui(page, client)
-    page.click("#btn-stream-start")
-    page.wait_for_function(
-        "document.getElementById('st-stream').textContent === 'live'",
-        timeout=UI_TIMEOUT_MS,
-    )
-    guard.m_started_streaming = True  # registered for teardown stop
     try:
-        # The MJPEG multipart stream must actually render: the browser
-        # only sets naturalWidth once a frame has decoded.
+        page.click("#btn-stream-start")
         page.wait_for_function(
-            "document.getElementById('preview-img').naturalWidth > 0",
-            timeout=20000,
+            "document.getElementById('st-stream').textContent === 'live'",
+            timeout=UI_TIMEOUT_MS,
         )
+        guard.m_started_streaming = True  # registered for teardown stop
+        try:
+            # The MJPEG multipart stream must actually render: the browser
+            # only sets naturalWidth once a frame has decoded.
+            page.wait_for_function(
+                "document.getElementById('preview-img').naturalWidth > 0",
+                timeout=20000,
+            )
+        finally:
+            page.click("#btn-stream-stop")
+        page.wait_for_function(
+            "document.getElementById('st-stream').textContent === 'off'",
+            timeout=UI_TIMEOUT_MS,
+        )
+        guard.m_started_streaming = False
+        assert page.locator("#preview-img").get_attribute("src") == ""
     finally:
-        page.click("#btn-stream-stop")
-    page.wait_for_function(
-        "document.getElementById('st-stream').textContent === 'off'",
-        timeout=UI_TIMEOUT_MS,
-    )
-    guard.m_started_streaming = False
-    assert page.locator("#preview-img").get_attribute("src") == ""
+        if was_streaming:
+            client.control("stream_start")
 
 
 def test_ui_photo_control_reports_saved_path(client, guard, capture_ready, page):

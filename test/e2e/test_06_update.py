@@ -4,6 +4,21 @@ import pytest
 import camclient
 
 
+def _ini_value(ini_text, key):
+    """Value of ``section.name`` key in an INI string, or None."""
+    section, _, name = key.partition(".")
+    current = None
+    for line in ini_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1].strip()
+        elif current == section and "=" in stripped:
+            k, _, v = stripped.partition("=")
+            if k.strip() == name:
+                return v.strip()
+    return None
+
+
 def test_update_overlays_live_config_and_persists(client, guard):
     """A partial INI overlay changes the live config; re-overlaying the
     session-start snapshot restores both the live config and the
@@ -20,6 +35,12 @@ def test_update_overlays_live_config_and_persists(client, guard):
             f"overlay rejected: HTTP {resp.status} {data!r}"
         assert client.config_get_value(key) == changed
     finally:
+        # Register the pre-test live value as the teardown restore target
+        # (set_config would snapshot the current live value, which is the
+        # overlay's `changed` here, so register directly): other tests may
+        # have changed this key without the session having torn down yet,
+        # and their registration must win.
+        guard.m_config_originals.setdefault(key, original)
         # Re-overlay the session-start INI: restores the live config and
         # re-persists the pre-test values to NVS (the overlay's default
         # destination). Side effect: NVS now holds the pre-test live
@@ -27,7 +48,9 @@ def test_update_overlays_live_config_and_persists(client, guard):
         # identical to what the device was running.
         restore = client.update(guard.m_config_ini)
         assert restore.status == 200
-    assert client.config_get_value(key) == original
+    pristine = _ini_value(guard.m_config_ini, key)
+    assert pristine is not None, "session-start config snapshot lacks the key"
+    assert client.config_get_value(key) == pristine
 
 
 def test_update_rejects_oversized_ini_with_413(client):
