@@ -393,9 +393,7 @@ Nominal recording capabilities for the OV2640 camera on the ESP32S3 board, per d
 
 ## CLI Tool
 
-The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints.
-
-Edit the `HOST`, `PORT`, and `PASSWORD` variables at the top of the script to match your device configuration.
+The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints. It shares its HTTP transport with the e2e suite ([`script/python/camclient.py`](script/python/camclient.py)), which also owns the connection defaults (`DEFAULT_HOST`, `DEFAULT_PORT`, `DEFAULT_PASSWORD`) — edit them there to match your device, or pass `--ip` per invocation.
 
 ```bash
 # Get camera status (JSON)
@@ -417,6 +415,11 @@ uv run script/python/camera_cli.py config-save sd
 
 # Set camera clock to current system time
 uv run script/python/camera_cli.py set-time
+
+# Firmware build identity / reboot (requires the version/reboot
+# endpoints from the companion firmware change; fails soft until then)
+uv run script/python/camera_cli.py version
+uv run script/python/camera_cli.py reboot
 ```
 
 Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.

@@ -17,10 +17,10 @@ import camclient
 from camclient import CamClient, CamClientError, CamEndpointUnavailable
 
 # =============================================================
-# Connection settings — customise for your device
+# Connection settings — defaults live in camclient.py (shared with
+# the e2e suite); edit them there, or pass --ip per invocation.
 # =============================================================
 DEFAULT_HOST = camclient.DEFAULT_HOST    # ESP32 IP address (STA or AP mode)
-PORT = camclient.DEFAULT_PORT            # Web server port (config.ini [web]).
 PASSWORD = camclient.DEFAULT_PASSWORD    # Web password (config.ini [web]).
                                          # Set to "" if no password is set.
 
