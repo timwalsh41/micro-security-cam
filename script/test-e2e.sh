@@ -11,4 +11,4 @@
 #   script/test-e2e.sh --collect-only      # dry run
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec uv run pytest test/e2e "$@"
+exec uv run pytest test/e2e --e2e-required "$@"

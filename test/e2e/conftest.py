@@ -75,8 +75,20 @@ def parse_photo_path(path):
     return match.group("date"), match.group("hhmmss")
 
 
+def pytest_addoption(parser):
+    """Register the e2e-required session mode."""
+    parser.addoption(
+        "--e2e-required",
+        action="store_true",
+        default=False,
+        help="Fail the session (instead of skipping all tests) when the "
+             "device is unreachable; script/test-e2e.sh passes this, so "
+             "bare pytest runs (e.g. CI without hardware) skip cleanly.",
+    )
+
+
 @pytest.fixture(scope="session")
-def client():
+def client(request):
     """HTTP client for the device, verified reachable before anything runs."""
     host = os.environ.get("CAM_HOST", camclient.DEFAULT_HOST)
     password = os.environ.get("CAM_PASSWORD", camclient.DEFAULT_PASSWORD)
@@ -85,11 +97,13 @@ def client():
     try:
         cli.status()
     except camclient.CamClientError as e:
-        pytest.exit(
+        message = (
             f"e2e: device {host} is unreachable ({e}); start it or check "
-            "CAM_HOST/CAM_PASSWORD before running this suite",
-            returncode=1,
+            "CAM_HOST/CAM_PASSWORD before running this suite"
         )
+        if request.config.getoption("--e2e-required"):
+            pytest.exit(message, returncode=1)
+        pytest.skip(message)
 
     _capture_pipeline_preflight(cli)
     _version_preflight(cli)
