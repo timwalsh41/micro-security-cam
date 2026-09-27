@@ -3,92 +3,94 @@
 
 Command-line tool for interacting with the ESP32 camera web server
 via its HTTP command transport (``/status`` and ``/control`` endpoints).
+
+The HTTP transport itself lives in ``camclient.py`` and is shared
+with the end-to-end test suite (`test/e2e/`).
 """
 import argparse
-import base64
 import json
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+
+import camclient
+from camclient import CamClient, CamClientError, CamEndpointUnavailable
 
 # =============================================================
 # Connection settings — customise for your device
 # =============================================================
-DEFAULT_HOST = "192.168.39.101"   # ESP32 IP address (STA or AP mode)
-PORT = 80                 # Web server port (from config.ini [web] section)
-PASSWORD = "webpass"      # Web password (from config.ini [web] section).
-                          # Set to "" if no password is configured.
+DEFAULT_HOST = camclient.DEFAULT_HOST    # ESP32 IP address (STA or AP mode)
+PORT = camclient.DEFAULT_PORT            # Web server port (config.ini [web]).
+PASSWORD = camclient.DEFAULT_PASSWORD    # Web password (config.ini [web]).
+                                         # Set to "" if no password is set.
 
 # =============================================================
 HOST = DEFAULT_HOST
-BASE_URL = f"http://{HOST}:{PORT}"
+CLIENT = CamClient(host=HOST, password=PASSWORD)
 
 
-def _build_request(url_path: str) -> urllib.request.Request:
-    """Build an HTTP request, adding Basic Auth if a password is set."""
-    url = f"{BASE_URL}{url_path}"
-    req = urllib.request.Request(url)
-    if PASSWORD:
-        credentials = base64.b64encode(
-            f"admin:{PASSWORD}".encode()
-        ).decode()
-        req.add_header("Authorization", f"Basic {credentials}")
-    return req
-
-
-def _send(url_path: str) -> int:
-    """Send an HTTP GET and print the JSON response.
+def _format_response(resp) -> int:
+    """Print an HTTP response the way the CLI has always done.
 
     Returns 0 on success, 1 on failure.
     """
-    req = _build_request(url_path)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
+    body = resp.text()
 
-            # Some handlers return their payload verbatim with a JSON
-            # content type (e.g. photo returns the saved file path as
-            # plain text). The firmware only emits these bare bodies for
-            # successful dispatch; errors come back as the JSON envelope
-            # below, so a non-empty non-JSON body is a success payload.
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError:
-                if body.strip():
-                    print(body.strip())
-                    return 0
-                print("Error: empty response body", file=sys.stderr)
-                return 1
-
-            # If the response has extra fields beyond result/code
-            # (e.g. status telemetry), pretty-print everything.
-            extra_keys = set(data.keys()) - {"result", "code"}
-            if extra_keys:
-                print(json.dumps(data, indent=2))
-            elif data.get("result") == "ok":
-                print("OK")
-            else:
-                print(f"Error (code {data.get('code', '?')})")
-
-            # A 200 response with a valid JSON body is a success. The
-            # "result" field is only emitted by the firmware's fallback
-            # path (e.g. start/stop); /status returns telemetry
-            # without a "result" key, so it must not be treated as a
-            # failure just because that key is absent.
-            return 1 if data.get("result") == "error" else 0
-
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode()
-        print(f"HTTP {e.code}: {err_body}", file=sys.stderr)
+    if resp.status != 200:
+        print(f"HTTP {resp.status}: {body}", file=sys.stderr)
         return 1
-    except urllib.error.URLError as e:
-        print(f"Connection failed: {e.reason}", file=sys.stderr)
+
+    # Some handlers return their payload verbatim with a JSON
+    # content type (e.g. photo returns the saved file path as
+    # plain text). The firmware only emits these bare bodies for
+    # successful dispatch; errors come back as the JSON envelope
+    # below, so a non-empty non-JSON body is a success payload.
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        if body.strip():
+            print(body.strip())
+            return 0
+        print("Error: empty response body", file=sys.stderr)
+        return 1
+
+    # If the response has extra fields beyond result/code
+    # (e.g. status telemetry), pretty-print everything.
+    extra_keys = set(data.keys()) - {"result", "code"}
+    if extra_keys:
+        print(json.dumps(data, indent=2))
+    elif data.get("result") == "ok":
+        print("OK")
+    else:
+        print(f"Error (code {data.get('code', '?')})")
+
+    # A 200 response with a valid JSON body is a success. The
+    # "result" field is only emitted by the firmware's fallback
+    # path (e.g. start/stop); /status returns telemetry
+    # without a "result" key, so it must not be treated as a
+    # failure just because that key is absent.
+    return 1 if data.get("result") == "error" else 0
+
+
+def _send(url_path: str) -> int:
+    """Send an HTTP GET and print the response."""
+    try:
+        return _format_response(CLIENT.get(url_path))
+    except CamClientError as e:
+        _print_transport_error(e)
         return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+def _print_transport_error(e: CamClientError) -> None:
+    """Print a transport failure with the CLI's established wording."""
+    reason = getattr(e, "reason", None)
+    if reason is not None:
+        print(f"Connection failed: {reason}", file=sys.stderr)
+    else:
+        print(f"Error: {e}", file=sys.stderr)
 
 
 def _cmd_status() -> int:
@@ -143,6 +145,44 @@ def _cmd_config_save(args) -> int:
     """
     dest = args.dest.lower()
     return _send(f"/control?cmd=config_save&dest={dest}")
+
+
+def _cmd_version() -> int:
+    """GET /control?cmd=version — firmware build identity.
+
+    Fails soft with a clear message while the flashed firmware lacks
+    the version endpoint (see the companion firmware change that adds
+    it).
+    """
+    try:
+        data = CLIENT.version()
+    except CamEndpointUnavailable as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except CamClientError as e:
+        _print_transport_error(e)
+        return 1
+    print(json.dumps(data, indent=2))
+    return 0
+
+
+def _cmd_reboot() -> int:
+    """GET /control?cmd=reboot — restart the device.
+
+    Fails soft with a clear message while the flashed firmware lacks
+    the reboot endpoint (see the companion firmware change that adds
+    it).
+    """
+    try:
+        CLIENT.reboot()
+    except CamEndpointUnavailable as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except CamClientError as e:
+        _print_transport_error(e)
+        return 1
+    print("OK")
+    return 0
 
 
 def main() -> int:
@@ -208,11 +248,21 @@ def main() -> int:
         help="Destination: nvs (flash) or sd (/config.ini on the card)",
     )
 
+    subparsers.add_parser(
+        "version",
+        help="Get firmware build identity (requires version endpoint)",
+    )
+
+    subparsers.add_parser(
+        "reboot",
+        help="Reboot the device (requires reboot endpoint)",
+    )
+
     args = parser.parse_args()
 
-    global HOST, BASE_URL
+    global HOST
     HOST = args.ip
-    BASE_URL = f"http://{HOST}:{PORT}"
+    CLIENT.host = HOST
 
     if args.command == "status":
         return _cmd_status()
@@ -228,6 +278,10 @@ def main() -> int:
         return _cmd_config_set(args)
     elif args.command == "config-save":
         return _cmd_config_save(args)
+    elif args.command == "version":
+        return _cmd_version()
+    elif args.command == "reboot":
+        return _cmd_reboot()
     return 1
 
 

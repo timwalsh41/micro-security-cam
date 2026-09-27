@@ -59,6 +59,63 @@ pio test -e native -f native/test_camera_controller
 pio test -e seeed_xiao_esp32s3_test
 ```
 
+### End-to-end regression suite
+
+`test/e2e/` is a pytest suite that exercises the running device over
+its real HTTP interface — coverage that complements the unit tests:
+integration behavior of the web transport, SD-backed flows, photo /
+recording / streaming on the actual camera, and download payload
+validation, which host tests cannot observe.
+
+The suite talks to the device with the same transport module as the
+CLI (`script/python/camclient.py`). Flash before running: build from
+the tip of your feature branch and flash manually, then run the suite
+against it.
+
+```bash
+# Whole suite against the default device (192.168.39.101)
+script/test-e2e.sh
+
+# Subset / dry run / verbose
+script/test-e2e.sh -k photo
+script/test-e2e.sh --collect-only
+script/test-e2e.sh -v
+```
+
+Configuration via environment:
+
+| Variable | Meaning | Default |
+|----------|---------|---------|
+| `CAM_HOST` | device IP | `192.168.39.101` |
+| `CAM_PASSWORD` | web password | repo CLI default |
+| `CAM_EXPECT_GIT` | optional git identity the flashed build must report | unset |
+
+Behavior notes:
+
+- Tests run strictly sequentially; each request has a bounded timeout
+  and the suite fails fast with a clear message when the device is
+  unreachable.
+- The suite snapshots device state at session start (wall clock,
+  recording/streaming state, config keys it changes, file/log
+  inventory) and restores it at teardown. The firmware exposes no
+  delete endpoint, so media/log files the suite creates are
+  inventoried and reported at the end rather than deleted.
+- Build identity: when the firmware exposes `cmd=version` (companion
+  change adding version/reboot endpoints), the suite compares it
+  against `CAM_EXPECT_GIT` and fails loudly on a mismatch. Until
+  then, absence prints one warning and continues.
+- Reboot-dependent coverage (NVS persistence across reboot, the
+  `after_set_time` cold-boot gating) is implemented and skips itself
+  until the reboot endpoint is available, then activates without
+  further changes.
+- Known holes are skipped with explicit reasons rather than built
+  around: SD-absent degraded mode needs the card physically removed,
+  the no-password auth matrix would require disturbing the device's
+  configured password, and exercising `/update` with `dest=sd` would
+  rewrite `/config.ini` on the card.
+- Keep this suite updated as features are added, with coverage that
+  complements the unit tests rather than duplicating them.
+
 ## Configuration
 
 The firmware ships with sensible defaults compiled in. At startup, the defaults are overlaid setting-by-setting from NVS (non-volatile flash storage, if a config was saved there), and then from the INI-style config file (`/config.ini`) on the SD card if present — **precedence: defaults < NVS < SD file**; a setting mentioned in a later source overrides earlier ones, settings not mentioned keep their earlier value.

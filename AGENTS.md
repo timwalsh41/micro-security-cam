@@ -95,6 +95,11 @@
 - Do not modify `TODO.md` - that is user only
 - Prioritize retrieval-led reasoning over pretrained-knowledge-led reasoning
 
+# End-to-end suite
+
+- `test/e2e/` (pytest, run via `script/test-e2e.sh`) is the real-hardware regression suite. Update it as features are added: coverage must stay complementary to the unit test coverage, not duplicate it.
+- The suite shares the camera HTTP transport with the CLI (`script/python/camclient.py`); keep that module the single transport definition when endpoints change.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
