@@ -66,10 +66,18 @@ def _wedge_timing_text():
     if None not in (_SESSION_START["wall_clock"], _FIRST_WEDGE["wall_clock"]):
         elapsed = _FIRST_WEDGE["wall_clock"] - _SESSION_START["wall_clock"]
         parts.append(f"elapsed-since-session-start {elapsed:.1f}s")
-    if None not in (_SESSION_START["uptime_ms"], _FIRST_WEDGE["uptime_ms"]):
-        elapsed = (_FIRST_WEDGE["uptime_ms"]
-                   - _SESSION_START["uptime_ms"]) / 1000.0
-        parts.append(f"elapsed-since-boot {elapsed:.1f}s")
+    start_uptime = _SESSION_START["uptime_ms"]
+    wedge_uptime = _FIRST_WEDGE["uptime_ms"]
+    if None not in (start_uptime, wedge_uptime):
+        if wedge_uptime >= start_uptime:
+            parts.append(
+                f"elapsed-since-boot {(wedge_uptime - start_uptime) / 1000.0:.1f}s"
+            )
+        else:
+            parts.append(
+                "elapsed-since-boot unavailable (device rebooted since "
+                "session start)"
+            )
     return "; ".join(parts) if parts else "timing unavailable"
 
 
@@ -122,6 +130,23 @@ def parse_photo_path(path):
             f"photo path {path!r} does not match /YYYYMMDD/YYYYMMDD_HHMMSS.jpg"
         )
     return match.group("date"), match.group("hhmmss")
+
+
+def parse_ini_values(ini_text):
+    """Parse an INI string into ``{"section.key": value}``.
+
+    Values are stripped; keys without a section are ignored.
+    """
+    values = {}
+    section = None
+    for line in ini_text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+        elif "=" in line and section:
+            key, _, value = line.partition("=")
+            values[f"{section}.{key.strip()}"] = value.strip()
+    return values
 
 
 def pytest_addoption(parser):

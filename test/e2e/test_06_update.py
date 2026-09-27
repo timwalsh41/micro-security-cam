@@ -2,21 +2,7 @@
 import pytest
 
 import camclient
-
-
-def _ini_value(ini_text, key):
-    """Value of ``section.name`` key in an INI string, or None."""
-    section, _, name = key.partition(".")
-    current = None
-    for line in ini_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current = stripped[1:-1].strip()
-        elif current == section and "=" in stripped:
-            k, _, v = stripped.partition("=")
-            if k.strip() == name:
-                return v.strip()
-    return None
+from conftest import parse_ini_values
 
 
 def test_update_overlays_live_config_and_persists(client, guard):
@@ -48,7 +34,7 @@ def test_update_overlays_live_config_and_persists(client, guard):
         # identical to what the device was running.
         restore = client.update(guard.m_config_ini)
         assert restore.status == 200
-    pristine = _ini_value(guard.m_config_ini, key)
+    pristine = parse_ini_values(guard.m_config_ini).get(key)
     assert pristine is not None, "session-start config snapshot lacks the key"
     assert client.config_get_value(key) == pristine
 

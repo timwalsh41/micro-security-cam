@@ -1,6 +1,8 @@
 """E2E: config get/set over the web transport on real hardware."""
 import camclient
 
+from conftest import parse_ini_values
+
 
 def test_config_get_value_round_trip(client, guard):
     """A set value reads back, and the guard restores the original."""
@@ -46,16 +48,7 @@ def test_config_set_value_unknown_key_rejected(client):
 
 def test_config_full_ini_round_trip(client, guard):
     """The full INI dump parses into the same key the value API sees."""
-    ini = client.config()
-    section = None
-    values = {}
-    for line in ini.splitlines():
-        line = line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1]
-        elif "=" in line and section:
-            values[f"{section}.{line.split('=', 1)[0]}"] = \
-                line.split("=", 1)[1]
+    values = parse_ini_values(client.config())
     assert "camera.jpeg_quality" in values
     assert values["camera.jpeg_quality"] == \
         client.config_get_value("camera.jpeg_quality")

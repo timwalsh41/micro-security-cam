@@ -10,11 +10,17 @@ import time
 
 import pytest
 
+import camclient
+
 pw = pytest.importorskip(
     "playwright", reason="Playwright is not installed; UI coverage skipped"
 )
 
-from conftest import COUNTER_POLL_S, COUNTER_TIMEOUT_S  # noqa: E402
+from conftest import (  # noqa: E402
+    COUNTER_POLL_S,
+    COUNTER_TIMEOUT_S,
+    capture_skip_or_raise,
+)
 
 UI_TIMEOUT_MS = 10000
 
@@ -130,8 +136,12 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
         guard.m_started_streaming = False
         assert page.locator("#preview-img").get_attribute("src") == ""
     finally:
+        guard.m_started_streaming = False
         if was_streaming:
-            client.control("stream_start")
+            try:
+                client.control("stream_start")
+            except camclient.CamClientError as e:
+                capture_skip_or_raise(e, client)
 
 
 def test_ui_photo_control_reports_saved_path(client, guard, capture_ready, page):
