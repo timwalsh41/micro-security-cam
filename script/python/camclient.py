@@ -44,6 +44,7 @@ STATUS_KEYS = frozenset(
         "sd_free_bytes",
         "photos",
         "videos",
+        "uptime_ms",
     ]
 )
 

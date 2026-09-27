@@ -17,7 +17,8 @@ def test_update_overlays_live_config_and_persists(client, guard):
     try:
         resp = client.update(f"[camera]\njpeg_quality={changed}\n")
         data = resp.json()
-        assert resp.status == 200 and data.get("result") == "ok", \
+        assert resp.status == 200 and isinstance(data, dict) \
+            and data.get("result") == "ok", \
             f"overlay rejected: HTTP {resp.status} {data!r}"
         assert client.config_get_value(key) == changed
     finally:
@@ -27,13 +28,13 @@ def test_update_overlays_live_config_and_persists(client, guard):
         # have changed this key without the session having torn down yet,
         # and their registration must win.
         guard.m_config_originals.setdefault(key, original)
-        # Re-overlay the session-start INI: restores the live config and
-        # re-persists the pre-test values to NVS (the overlay's default
-        # destination). Side effect: NVS now holds the pre-test live
-        # config even if nothing was saved there before; the content is
-        # identical to what the device was running.
-        restore = client.update(guard.m_config_ini)
-        assert restore.status == 200
+    # Re-overlay the session-start INI: restores the live config and
+    # re-persists the pre-test values to NVS (the overlay's default
+    # destination). Side effect: NVS now holds the pre-test live
+    # config even if nothing was saved there before; the content is
+    # identical to what the device was running.
+    restore = client.update(guard.m_config_ini)
+    assert restore.status == 200
     pristine = parse_ini_values(guard.m_config_ini).get(key)
     assert pristine is not None, "session-start config snapshot lacks the key"
     assert client.config_get_value(key) == pristine

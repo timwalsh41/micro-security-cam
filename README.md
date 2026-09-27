@@ -88,7 +88,7 @@ Configuration via environment:
 |----------|---------|---------|
 | `CAM_HOST` | device IP (required) | unset |
 | `CAM_PASSWORD` | web password (required; empty value if none is configured) | unset |
-| `CAM_EXPECT_GIT` | optional git identity the flashed build must report | unset |
+| `CAM_EXPECT_GIT` | optional git identity the flashed build must report (overrides the repo `main` tip) | unset |
 
 The web UI module (`test/e2e/test_10_webui.py`) drives the device UI
 with headless Chromium via Playwright. One-time setup:
@@ -112,8 +112,9 @@ Behavior notes:
   inventoried and reported at the end rather than deleted.
 - Build identity: when the firmware exposes `cmd=version` (companion
   change adding version/reboot endpoints), the suite compares it
-  against `CAM_EXPECT_GIT` and fails loudly on a mismatch. Until
-  then, absence prints one warning and continues.
+  against the repo's `main` tip (or `CAM_EXPECT_GIT` when set) and
+  fails loudly on a mismatch, naming both identities. Until the
+  endpoint is present, absence prints one warning and continues.
 - Reboot-dependent coverage (NVS persistence across reboot, the
   `after_set_time` cold-boot gating) is implemented and skips itself
   until the reboot endpoint is available, then activates without

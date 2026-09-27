@@ -14,10 +14,12 @@ SPINUP_TIMEOUT_S = 10.0
 # device time; the firmware exposes no "current clip path" query and
 # the dir-parameterized listing is unavailable, so the suite records a
 # photo immediately before starting to learn the device clock and then
-# probes a small window of candidate start seconds built from the live
+# probes a window of candidate start seconds built from the live
 # video config (resolution dimensions per the camera controller's
-# table, plus the serial suffix the path uniquifier appends).
-CANDIDATE_SECONDS = 8
+# table, plus the serial suffix the path uniquifier appends). The
+# window spans the whole spin-up bound the same test tolerates plus a
+# second of slack, so a slow-but-healthy spin-up is still located.
+CANDIDATE_SECONDS = int(SPINUP_TIMEOUT_S) + 2
 RESOLUTION_DIMENSIONS = {
     "QQVGA": (160, 120),
     "QVGA": (320, 240),

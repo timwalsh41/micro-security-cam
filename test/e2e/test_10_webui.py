@@ -83,6 +83,7 @@ def test_ui_record_control_drives_device(client, guard, capture_ready, page):
 
     _goto_ui(page, client)
     page.click("#btn-rec-start")
+    guard.m_started_recording = True  # registered for teardown stop
     try:
         page.wait_for_function(
             "document.getElementById('st-rec').textContent === 'REC'",
@@ -95,7 +96,6 @@ def test_ui_record_control_drives_device(client, guard, capture_ready, page):
         if probe_capture_wedge(client):
             pytest.skip(_wedge_skip_reason())
         raise
-    guard.m_started_recording = True  # registered for teardown stop
     try:
         page.wait_for_function(
             "document.getElementById('st-frames').textContent !== '0' "
@@ -126,11 +126,11 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
     _goto_ui(page, client)
     try:
         page.click("#btn-stream-start")
+        guard.m_started_streaming = True  # registered for teardown stop
         page.wait_for_function(
             "document.getElementById('st-stream').textContent === 'live'",
             timeout=UI_TIMEOUT_MS,
         )
-        guard.m_started_streaming = True  # registered for teardown stop
         try:
             # The MJPEG multipart stream must actually render: the browser
             # only sets naturalWidth once a frame has decoded.
@@ -147,7 +147,15 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
         guard.m_started_streaming = False
         assert page.locator("#preview-img").get_attribute("src") == ""
     finally:
-        guard.m_started_streaming = False
+        # Stop a stream this test itself started (e.g. the 'live' or
+        # frame wait timed out on a UI regression) before restoring the
+        # pre-existing preview.
+        if guard.m_started_streaming:
+            try:
+                client.control("stream_stop")
+            except camclient.CamClientError as e:
+                capture_skip_or_raise(e, client)
+            guard.m_started_streaming = False
         if was_streaming:
             try:
                 client.control("stream_start")
@@ -170,6 +178,8 @@ def test_ui_photo_control_reports_saved_path(client, guard, capture_ready, page)
         "('photo: /')",
         timeout=UI_TIMEOUT_MS,
     )
+    msg = page.locator("#ctrl-msg").text_content()
+    guard.track_created(msg.split("photo: ", 1)[1])
 
 
 def test_ui_file_browser_lists_and_navigates(client, guard, page):

@@ -11,6 +11,7 @@ Provides:
 """
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -272,35 +273,65 @@ def capture_ready(client):
     return _CAPTURE_BLOCKED_REASON
 
 
-def _version_preflight(cli):
-    """Strictly compare the flashed build identity against CAM_EXPECT_GIT.
+def _expected_build_identity():
+    """The flashed build the preflight expects.
 
-    While the firmware lacks the version endpoint (companion task
-    msc-e2e-api), absence is not a failure: print one clear warning
-    and continue. With the endpoint present the device-reported build
-    is always printed; a set CAM_EXPECT_GIT that does not match is a
-    loud failure, never a silent pass.
+    ``CAM_EXPECT_GIT`` overrides; otherwise the expected identity is
+    derived from the repository's ``main`` tip so the strict preflight
+    is the default behavior.
+    """
+    override = os.environ.get("CAM_EXPECT_GIT")
+    if override:
+        return override
+    for ref in ("main", "origin/main"):
+        try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "--short", ref],
+                capture_output=True,
+                check=True,
+                cwd=_REPO_ROOT,
+            ).stdout.decode().strip()
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        if sha:
+            return sha
+    return None
+
+
+def _version_preflight(cli):
+    """Strictly compare the flashed build identity against the repo.
+
+    The expected identity is ``CAM_EXPECT_GIT`` when set, else the
+    repository's ``main`` tip (short sha). While the firmware lacks
+    the version endpoint, absence is not a failure: print one clear
+    warning and continue. With the endpoint present the
+    device-reported build is always printed; a mismatch with the
+    expected identity is a loud failure, never a silent pass.
     """
     try:
         data = cli.version()
     except camclient.CamEndpointUnavailable:
-        if os.environ.get("CAM_EXPECT_GIT"):
-            print(
-                "\nWARNING: CAM_EXPECT_GIT is set but the firmware has no "
-                "version endpoint; cannot verify the flashed build. The "
-                "device may be running a stale build.\n"
-            )
+        print(
+            "\nWARNING: the firmware has no version endpoint; cannot "
+            "verify the flashed build. The device may be running a "
+            "stale build.\n"
+        )
         return
 
     reported = _reported_build_identity(data)
     print(f"\nDevice build identity: {data}\n")
 
-    expected = os.environ.get("CAM_EXPECT_GIT")
+    expected = _expected_build_identity()
     if not expected:
+        print(
+            "\nWARNING: no expected build identity available (no "
+            "CAM_EXPECT_GIT and the repo's main tip could not be "
+            "resolved); skipping the build-identity comparison.\n"
+        )
         return
     if not reported:
         pytest.exit(
-            f"e2e: CAM_EXPECT_GIT={expected} but the version endpoint "
+            f"e2e: expected build {expected!r} but the version endpoint "
             f"payload {data!r} carries no comparable build identity; "
             "refusing to validate an unverified build",
             returncode=1,
@@ -308,7 +339,8 @@ def _version_preflight(cli):
     if not _build_identity_matches(reported, expected):
         pytest.exit(
             f"e2e: build identity mismatch — device reports {reported!r}, "
-            f"CAM_EXPECT_GIT={expected}. Flash the expected build first.",
+            f"expected {expected!r} (main tip, or CAM_EXPECT_GIT when "
+            "set). Flash the expected build first.",
             returncode=1,
         )
 
@@ -426,8 +458,11 @@ class StateGuard:
 
     def stop_recording(self):
         """Stop recording started via start_recording()."""
-        data = self.m_client.control("stop")
-        camclient.CamClient.assert_result_ok(data, "cmd=stop")
+        try:
+            data = self.m_client.control("stop")
+            camclient.CamClient.assert_result_ok(data, "cmd=stop")
+        except camclient.CamClientError as e:
+            capture_skip_or_raise(e, self.m_client)
         self.m_started_recording = False
 
     def start_streaming(self):
@@ -441,8 +476,11 @@ class StateGuard:
 
     def stop_streaming(self):
         """Stop streaming started via start_streaming()."""
-        data = self.m_client.control("stream_stop")
-        camclient.CamClient.assert_result_ok(data, "cmd=stream_stop")
+        try:
+            data = self.m_client.control("stream_stop")
+            camclient.CamClient.assert_result_ok(data, "cmd=stream_stop")
+        except camclient.CamClientError as e:
+            capture_skip_or_raise(e, self.m_client)
         self.m_started_streaming = False
 
     def take_photo(self):
