@@ -2,9 +2,8 @@
 
 Provides:
   ``client`` — the device HTTP client, built from the environment
-               (``CAM_HOST``, ``CAM_PASSWORD``) with repo defaults,
-               including a fail-fast reachability check and the
-               build-identity preflight.
+               (``CAM_HOST``, ``CAM_PASSWORD``), including a fail-fast
+               reachability check and the build-identity preflight.
   ``guard``  — session state snapshot/restore: wall clock, recording
                and streaming state, changed config keys, and the
                baseline file/log inventory.
