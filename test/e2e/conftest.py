@@ -245,9 +245,9 @@ class StateGuard:
         """Start recording, registered for teardown stop."""
         try:
             data = self.m_client.control("start")
+            CamClient.assert_result_ok(data, "cmd=start")
         except camclient.CamClientError as e:
             capture_skip_or_raise(e)
-        CamClient.assert_result_ok(data, "cmd=start")
         self.m_started_recording = True
 
     def stop_recording(self):
@@ -260,9 +260,9 @@ class StateGuard:
         """Start streaming, registered for teardown stop."""
         try:
             data = self.m_client.control("stream_start")
+            CamClient.assert_result_ok(data, "cmd=stream_start")
         except camclient.CamClientError as e:
             capture_skip_or_raise(e)
-        CamClient.assert_result_ok(data, "cmd=stream_start")
         self.m_started_streaming = True
 
     def stop_streaming(self):

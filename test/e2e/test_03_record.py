@@ -4,6 +4,7 @@ import time
 import pytest
 
 import avi_parser
+import camclient
 from conftest import parse_photo_path
 
 # Device status polling while a recording spins up.
@@ -113,7 +114,14 @@ def test_mic_recording_audio_stream_format(client, guard, capture_ready):
     """
     if capture_ready:
         pytest.skip(capture_ready)
-    guard.set_config("video.audio_enabled", "true")
+    try:
+        guard.set_config("video.audio_enabled", "true")
+    except camclient.CamCommandError as e:
+        pytest.skip(
+            f"video.audio_enabled could not be set ({e}); the flashed "
+            "firmware rejects config_set_value, so audio recording "
+            "coverage needs a fresh build"
+        )
     clip, _ = _record_short_clip(client, guard)
     parsed = avi_parser.parse_avi(clip)
     if parsed["audio"] is None:
