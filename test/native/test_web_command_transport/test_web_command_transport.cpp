@@ -117,6 +117,8 @@ struct TestFixture
         cmd_handler.register_handler(CommandCode::SET_CONFIG_VALUE, capture_handler);
         cmd_handler.register_handler(CommandCode::SET_TIME, capture_handler);
         cmd_handler.register_handler(CommandCode::LIST_FILES, capture_handler);
+        cmd_handler.register_handler(CommandCode::GET_VERSION, capture_handler);
+        cmd_handler.register_handler(CommandCode::REBOOT, capture_handler);
     }
 };
 
@@ -412,6 +414,133 @@ void test_control_config_succeeds_with_password()
                              f.hal.mock_request.responses[0].content_type.c_str());
     TEST_ASSERT(f.hal.mock_request.responses[0].body.find("captured") !=
                 std::string::npos);
+}
+
+// ============================================================
+// Version and reboot command tests
+// ============================================================
+
+/**
+ * @brief /control maps cmd=version to GET_VERSION and forwards the
+ *        handler's JSON response.
+ */
+void test_control_version_dispatches_and_returns_json()
+{
+    TestFixture f;
+    f.transport.register_routes(""); // version is served unauthenticated
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "version");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("application/json",
+                             f.hal.mock_request.responses[0].content_type.c_str());
+    TEST_ASSERT(f.hal.mock_request.responses[0].body.find("captured") !=
+                std::string::npos);
+}
+
+/**
+ * @brief /control refuses cmd=reboot while no web password is
+ *        configured, so an open access point can never be restarted
+ *        by an unauthenticated remote client.
+ */
+void test_control_reboot_refused_without_password()
+{
+    TestFixture f;
+    f.transport.register_routes("");
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "reboot");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT_EQUAL_STRING("application/json",
+                             f.hal.mock_request.responses[0].content_type.c_str());
+    // UNAUTHORIZED = 0x05
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control dispatches cmd=reboot when a password is configured
+ *        and auth passes.
+ */
+void test_control_reboot_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "reboot");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
+    TEST_ASSERT(f.hal.mock_request.responses[0].body.find("ok") !=
+                std::string::npos);
+}
+
+/**
+ * @brief /control refuses cmd=reboot with wrong credentials when a
+ *        password is configured (401 before any policy check).
+ */
+void test_control_reboot_wrong_auth_returns_401()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "wrongpass");
+    f.hal.mock_request.set_arg("cmd", "reboot");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(1, f.hal.mock_request.responses.size());
+    TEST_ASSERT_EQUAL_INT(401, f.hal.mock_request.responses[0].code);
+}
+
+/**
+ * @brief /control refuses cmd=reboot even with credentials supplied
+ *        while no web password is configured.
+ */
+void test_control_reboot_refused_with_credentials_but_no_password()
+{
+    TestFixture f;
+    f.transport.register_routes("");
+
+    reset_capture();
+    f.hal.mock_request.set_arg("cmd", "reboot");
+    f.hal.mock_request.set_auth("admin", "anything");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(0, g_dispatch_count);
+    TEST_ASSERT_EQUAL_STRING("{\"result\":\"error\",\"code\":5}",
+                             f.hal.mock_request.responses[0].body.c_str());
+}
+
+/**
+ * @brief /control dispatches cmd=version with auth behind a
+ *        configured password as well.
+ */
+void test_control_version_succeeds_with_password()
+{
+    TestFixture f;
+    f.transport.register_routes("secret");
+
+    reset_capture();
+    f.hal.mock_request.set_auth("admin", "secret");
+    f.hal.mock_request.set_arg("cmd", "version");
+    f.hal.simulate_request("/control", hal::HttpMethod::GET);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dispatch_count);
+    TEST_ASSERT_EQUAL_INT(200, f.hal.mock_request.responses[0].code);
 }
 
 /**
@@ -862,6 +991,14 @@ int main()
     RUN_TEST(test_set_time_empty_ts_returns_400);
     RUN_TEST(test_set_time_with_timestamp);
     RUN_TEST(test_set_time_zero_timestamp);
+
+    // Version and reboot
+    RUN_TEST(test_control_version_dispatches_and_returns_json);
+    RUN_TEST(test_control_version_succeeds_with_password);
+    RUN_TEST(test_control_reboot_refused_without_password);
+    RUN_TEST(test_control_reboot_refused_with_credentials_but_no_password);
+    RUN_TEST(test_control_reboot_wrong_auth_returns_401);
+    RUN_TEST(test_control_reboot_succeeds_with_password);
 
     // Fallback JSON response path
     RUN_TEST(test_fallback_success_no_payload);

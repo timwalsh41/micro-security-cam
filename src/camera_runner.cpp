@@ -9,6 +9,7 @@
 #include "hal/web_server_hal_impl.h"
 #include "hal/nvs_hal_impl.h"
 #include "hal/timer_hal_impl.h"
+#include "hal/restart_hal_impl.h"
 #include "hal/gpio_hal.h"
 #include "hal/hardware_peripheral_manager_impl.h"
 #include "hal/mic_hal_impl.h"
@@ -270,11 +271,12 @@ private:
     WebServerService m_web_server_service{m_web_server_hal_impl, m_logger};
     StreamService m_stream_service{m_logger};
     FileService m_file_service{m_sd_controller, m_command_handler, m_logger};
+    hal::RestartHalImpl m_restart_hal;
     SystemOrchestrator m_system_orchestrator{
         m_video_controller, m_camera_ctrl, m_command_handler,
         m_real_time, m_config_service, m_logger,
         m_stream_service, m_web_server_hal_impl,
-        m_sd_controller, m_nvs_hal_impl};
+        m_sd_controller, m_nvs_hal_impl, m_restart_hal};
 
     // --- Global state variables ---
     millis_t m_last_log_heartbeat_time_ms = 0;

@@ -93,6 +93,14 @@ CommandCode WebCommandTransport::map_cmd_string(const char* cmd) const
     {
         return CommandCode::LIST_FILES;
     }
+    if (std::strcmp(cmd, "version") == 0)
+    {
+        return CommandCode::GET_VERSION;
+    }
+    if (std::strcmp(cmd, "reboot") == 0)
+    {
+        return CommandCode::REBOOT;
+    }
 
     return CommandCode::GET_STATUS;
 }
@@ -166,6 +174,11 @@ bool WebCommandTransport::is_file_command(CommandCode code)
     return code == CommandCode::LIST_FILES;
 }
 
+bool WebCommandTransport::is_reboot_command(CommandCode code)
+{
+    return code == CommandCode::REBOOT;
+}
+
 bool WebCommandTransport::check_auth(hal::RequestRef& request)
 {
     const char* auth = request.auth_header();
@@ -210,9 +223,12 @@ void WebCommandTransport::handle_control(hal::RequestRef& request)
     // Config commands carry credentials and the full config body, so
     // they are only served over the web when a password is configured;
     // the serial interface is unrestricted. File listings follow the
-    // same policy: file access is not offered unauthenticated.
+    // same policy: file access is not offered unauthenticated. Reboot
+    // is likewise restricted: an open access point must never be
+    // restartable by an unauthenticated remote client.
     if (m_password[0] == '\0' &&
-        (is_config_command(code) || is_file_command(code)))
+        (is_config_command(code) || is_file_command(code) ||
+         is_reboot_command(code)))
     {
         send_result(request, CommandResult::UNAUTHORIZED);
         return;
