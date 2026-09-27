@@ -19,10 +19,14 @@ class MockRestartHal : public hal::RestartHal
         /** Delay passed to the most recent schedule_restart() call. */
         hal::millis_t last_delay_ms{0};
 
-        void schedule_restart(hal::millis_t delay_ms) override
+        /** Value returned by schedule_restart(). */
+        bool last_result{true};
+
+        bool schedule_restart(hal::millis_t delay_ms) override
         {
             schedule_count++;
             last_delay_ms = delay_ms;
+            return last_result;
         }
 };
 

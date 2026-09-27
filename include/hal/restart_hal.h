@@ -35,8 +35,10 @@ class RestartHal
          * restarts; the first one to fire wins.
          *
          * @param delay_ms Milliseconds to wait before restarting.
+         *
+         * @return True if the restart was successfully scheduled.
          */
-        virtual void schedule_restart(millis_t delay_ms) = 0;
+        virtual bool schedule_restart(millis_t delay_ms) = 0;
 };
 
 } // namespace hal

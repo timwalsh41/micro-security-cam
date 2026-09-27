@@ -651,7 +651,11 @@ CommandResult SystemOrchestrator::handle_reboot(
     // (HTTP reply or serial reply) before the device goes down.
     m_log.warn(SUBSYSTEM, "Reboot requested - restarting in %lu ms",
                static_cast<unsigned long>(REBOOT_DELAY_MS));
-    m_restart.schedule_restart(REBOOT_DELAY_MS);
+    if (!m_restart.schedule_restart(REBOOT_DELAY_MS))
+    {
+        m_log.error(SUBSYSTEM, "Failed to schedule restart");
+        return CommandResult::INTERNAL_ERROR;
+    }
     return CommandResult::SUCCESS;
 }
 

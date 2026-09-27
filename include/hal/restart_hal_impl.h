@@ -22,7 +22,7 @@ namespace hal
 class RestartHalImpl : public RestartHal
 {
     public:
-        void schedule_restart(millis_t delay_ms) override;
+        bool schedule_restart(millis_t delay_ms) override;
 };
 
 } // namespace hal

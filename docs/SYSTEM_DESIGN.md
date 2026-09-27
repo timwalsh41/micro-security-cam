@@ -1840,7 +1840,7 @@ Every command returns a `CommandResult` enum value:
 | `config_set_value` | `SET_CONFIG_VALUE` | Requires `key` and `value` query parameters (empty `value` blanks the setting) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 | `files` | `LIST_FILES` | Optional `dir` query parameter (default `/`) plus optional `start` entry index into the emittable sequence; served as listing JSON. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
-| `version` | `GET_VERSION` | Served as version JSON; available unauthenticated |
+| `version` | `GET_VERSION` | Served as version JSON. Not subject to the restricted-on-web policy, but still requires Basic auth when a web password is configured |
 | `reboot` | `REBOOT` | Deferred restart ~0.5 s after the response is delivered. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
 
 The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
@@ -2593,7 +2593,7 @@ This workflow covers two phases: **registration** (one-time wiring at startup) a
 
 **File-listing dispatch** — A second dispatch example shows the `cmd=files` request mapping to `LIST_FILES` (0x40), the handler registered by `FileService` rather than `SystemOrchestrator`. `LIST_FILES` is also subject to the config-command restricted-on-web policy: with no web password configured it is refused with `401` before dispatch.
 
-**Reboot dispatch** — A third dispatch example covers the maintenance commands: `cmd=version` maps to `GET_VERSION` (0x50) and returns the build identity as JSON, while `cmd=reboot` maps to `REBOOT` (0x51). Like `LIST_FILES`, `REBOOT` is subject to the restricted-on-web policy: with no web password configured it is refused with `UNAUTHORIZED` before dispatch. When authorized, the handler schedules the restart on the injected `hal::RestartHal` (a one-shot timer with a 500 ms margin) and returns `SUCCESS`, so the HTTP response is delivered before the device restarts — the restart itself never runs inside the request handler.
+**Reboot dispatch** — A third dispatch example covers the maintenance commands: `cmd=version` maps to `GET_VERSION` (0x50) and returns the build identity as JSON, while `cmd=reboot` maps to `REBOOT` (0x51). Like `LIST_FILES`, `REBOOT` is subject to the restricted-on-web policy: with no web password configured it is refused with `UNAUTHORIZED` before dispatch. When authorized, the handler schedules the restart on the injected `hal::RestartHal` (a one-shot timer with a 500 ms margin) and returns `SUCCESS`, or `INTERNAL_ERROR` if the restart could not be scheduled, so the HTTP response is delivered before the device restarts — the restart itself never runs inside the request handler.
 
 ```plantuml
 @startuml

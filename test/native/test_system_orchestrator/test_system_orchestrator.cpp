@@ -1466,6 +1466,28 @@ void test_reboot_repeat_dispatch_schedules_again()
 }
 
 /**
+ * @brief REBOOT reports INTERNAL_ERROR when the restart HAL fails to
+ *        schedule the restart, so a caller never sees a success
+ *        response for a reboot that will not happen.
+ */
+void test_reboot_schedule_failure_returns_internal_error()
+{
+    TestFixture f;
+    f.restart_hal.last_result = false;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::REBOOT, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INTERNAL_ERROR),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_INT(1, f.restart_hal.schedule_count);
+}
+
+/**
  * @brief GET_STATUS reports the device uptime in milliseconds from
  *        the millis clock, so a test can prove a reboot happened.
  */
@@ -1681,6 +1703,7 @@ int main()
     RUN_TEST(test_get_version_returns_version_json);
     RUN_TEST(test_reboot_schedules_deferred_restart);
     RUN_TEST(test_reboot_repeat_dispatch_schedules_again);
+    RUN_TEST(test_reboot_schedule_failure_returns_internal_error);
     RUN_TEST(test_get_status_includes_uptime_ms);
 
     // POST /update
