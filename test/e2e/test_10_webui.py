@@ -19,8 +19,11 @@ pw = pytest.importorskip(
 from conftest import (  # noqa: E402
     COUNTER_POLL_S,
     COUNTER_TIMEOUT_S,
+    _wedge_skip_reason,
     capture_skip_or_raise,
+    probe_capture_wedge,
 )
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # noqa: E402
 
 UI_TIMEOUT_MS = 10000
 
@@ -80,10 +83,18 @@ def test_ui_record_control_drives_device(client, guard, capture_ready, page):
 
     _goto_ui(page, client)
     page.click("#btn-rec-start")
-    page.wait_for_function(
-        "document.getElementById('st-rec').textContent === 'REC'",
-        timeout=UI_TIMEOUT_MS,
-    )
+    try:
+        page.wait_for_function(
+            "document.getElementById('st-rec').textContent === 'REC'",
+            timeout=UI_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        # A wedged pipeline answers cmd=start with code 255, so REC
+        # never appears; probe over HTTP to separate that device state
+        # from a genuine UI regression (which still fails as a timeout).
+        if probe_capture_wedge(client):
+            pytest.skip(_wedge_skip_reason())
+        raise
     guard.m_started_recording = True  # registered for teardown stop
     try:
         page.wait_for_function(

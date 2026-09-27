@@ -81,6 +81,15 @@ def _wedge_timing_text():
     return "; ".join(parts) if parts else "timing unavailable"
 
 
+def _wedge_skip_reason():
+    """Skip reason for a capture-pipeline wedge, with recorded timing."""
+    return (
+        "capture pipeline wedged mid-suite (capture commands return "
+        f"code {CAPTURE_INTERNAL_ERROR_CODE}; {_wedge_timing_text()}); "
+        "power-cycle the device and re-run to exercise this coverage"
+    )
+
+
 def is_capture_wedge(exc):
     """True when a failure is the known capture-pipeline wedge (code 255)."""
     return (isinstance(exc, camclient.CamCommandError)
@@ -92,12 +101,30 @@ def capture_skip_or_raise(exc, client=None):
     otherwise re-raise the failure."""
     if is_capture_wedge(exc):
         _record_wedge(client)
-        pytest.skip(
-            "capture pipeline wedged mid-suite (capture commands return "
-            f"code {CAPTURE_INTERNAL_ERROR_CODE}; {_wedge_timing_text()}); "
-            "power-cycle the device and re-run to exercise this coverage"
-        )
+        pytest.skip(_wedge_skip_reason())
     raise exc
+
+
+def probe_capture_wedge(client):
+    """Probe the capture pipeline with stream_start; leave state intact.
+
+    Returns True when the pipeline is wedged (capture commands return
+    the internal error code), recording the wedge timing; otherwise any
+    streaming the probe started is stopped again, and streaming that
+    was already active before the probe (e.g. a web-UI preview) is left
+    running.
+    """
+    was_streaming = bool(client.status().get("streaming"))
+    resp = client.control_raw("stream_start")
+    data = resp.json() if resp.status == 200 else None
+    if isinstance(data, dict) and data.get("result") == "error" and \
+            data.get("code") == CAPTURE_INTERNAL_ERROR_CODE:
+        _record_wedge(client)
+        return True
+    client.control("stream_stop")
+    if was_streaming:
+        client.control("stream_start")
+    return False
 
 # Per-day photo path shape, for the capture-pipeline probe below.
 PHOTO_PATH_RE = re.compile(
@@ -223,17 +250,12 @@ def _capture_pipeline_preflight(cli):
     this runs before the state snapshot, so nothing else would restore it.
     """
     global _CAPTURE_BLOCKED_REASON
-    was_streaming = bool(cli.status().get("streaming"))
-    resp = cli.control_raw("stream_start")
-    data = resp.json() if resp.status == 200 else None
-    if isinstance(data, dict) and data.get("result") == "error" and \
-            data.get("code") == CAPTURE_INTERNAL_ERROR_CODE:
+    if probe_capture_wedge(cli):
         _CAPTURE_BLOCKED_REASON = (
             "device capture pipeline is wedged (capture commands return "
             f"code {CAPTURE_INTERNAL_ERROR_CODE}; photo/record/stream "
             "coverage skipped - power-cycle the device and re-run"
         )
-        _record_wedge(cli)
         _CAPTURE_BLOCKED_REASON += f" ({_wedge_timing_text()})"
         print(
             f"\nWARNING: {_CAPTURE_BLOCKED_REASON}. This is a device "
@@ -241,9 +263,6 @@ def _capture_pipeline_preflight(cli):
             "still runs.\n"
         )
         return
-    cli.control("stream_stop")
-    if was_streaming:
-        cli.control("stream_start")
 
 
 @pytest.fixture(scope="session")
