@@ -73,7 +73,7 @@ the tip of your feature branch and flash manually, then run the suite
 against it.
 
 ```bash
-# Whole suite against the default device (192.168.39.101)
+# Whole suite against the device given by CAM_HOST/CAM_PASSWORD
 script/test-e2e.sh
 
 # Subset / dry run / verbose
@@ -86,8 +86,8 @@ Configuration via environment:
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
-| `CAM_HOST` | device IP | `192.168.39.101` |
-| `CAM_PASSWORD` | web password | repo CLI default |
+| `CAM_HOST` | device IP (required) | unset |
+| `CAM_PASSWORD` | web password (required; empty value if none is configured) | unset |
 | `CAM_EXPECT_GIT` | optional git identity the flashed build must report | unset |
 
 Behavior notes:
@@ -393,7 +393,7 @@ Nominal recording capabilities for the OV2640 camera on the ESP32S3 board, per d
 
 ## CLI Tool
 
-The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints. It shares its HTTP transport with the e2e suite ([`script/python/camclient.py`](script/python/camclient.py)), which also owns the connection defaults (`DEFAULT_HOST`, `DEFAULT_PORT`, `DEFAULT_PASSWORD`) — edit them there to match your device, or pass `--ip` per invocation.
+The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints. It shares its HTTP transport with the e2e suite ([`script/python/camclient.py`](script/python/camclient.py)). Connection settings come from the environment or flags only: pass `--ip` (or set `CAM_HOST`) for the device address and set `CAM_PASSWORD` for the web password — nothing is baked in. `version` and `reboot` fail soft with a clear message while the flashed firmware lacks those endpoints.
 
 ```bash
 # Get camera status (JSON)

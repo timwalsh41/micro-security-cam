@@ -523,7 +523,7 @@ password=admin123
 
 [web]
 port=80
-password=webpass
+password=changeme
 max_streams=4
 
 [camera]

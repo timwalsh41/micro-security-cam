@@ -1,6 +1,8 @@
 """E2E: /status invariants on real hardware."""
 import camclient
 
+# Core telemetry keys; additional keys (e.g. uptime) may be added by
+# newer firmware and must not break the invariants below.
 STATUS_KEYS = {
     "recording",
     "streaming",
@@ -14,10 +16,11 @@ STATUS_KEYS = {
 }
 
 
-def test_status_keys_are_exactly_the_telemetry_set(client):
-    """/status returns exactly the documented telemetry keys."""
+def test_status_required_keys_present(client):
+    """/status carries the documented telemetry keys."""
     status = client.status()
-    assert set(status.keys()) == STATUS_KEYS
+    assert STATUS_KEYS <= set(status.keys()), \
+        f"missing telemetry keys: {STATUS_KEYS - set(status.keys())}"
 
 
 def test_status_value_types_and_ranges(client):

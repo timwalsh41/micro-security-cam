@@ -20,12 +20,12 @@ import urllib.parse
 import urllib.request
 
 # =============================================================
-# Connection settings — defaults match the flashed device config
+# Connection settings — from the environment only.
+# CAM_HOST must be set (CLI: or pass --ip); CAM_PASSWORD carries the
+# device's web password when one is configured. No address or
+# credential is baked into this repository.
 # =============================================================
-DEFAULT_HOST = "192.168.39.101"   # ESP32 IP address (STA or AP mode)
 DEFAULT_PORT = 80                 # Web server port (config.ini [web] section)
-DEFAULT_PASSWORD = "webpass"      # Web password (config.ini [web] section).
-                                  # Empty string if no password is configured.
 
 # Per-request timeout in seconds.
 DEFAULT_TIMEOUT = 10.0
@@ -100,14 +100,22 @@ class CamResponse:
 class CamClient:
     """HTTP client for the camera's web endpoints.
 
-    All methods raise :class:`CamClientError` when the device cannot be
-    reached or the response cannot be delivered; HTTP error statuses
-    are returned as :class:`CamResponse` so callers (and tests) can
-    assert on them.
+    ``host`` is required (no baked-in address). All methods raise
+    :class:`CamClientError` when the device cannot be reached or the
+    response cannot be delivered; HTTP error statuses are returned as
+    :class:`CamResponse` so callers (and tests) can assert on them.
     """
 
-    def __init__(self, host=DEFAULT_HOST, password=DEFAULT_PASSWORD,
-                 port=DEFAULT_PORT, timeout=DEFAULT_TIMEOUT):
+    def __init__(self, host, password="", port=DEFAULT_PORT,
+                 timeout=DEFAULT_TIMEOUT):
+        if not host:
+            raise CamClientError(
+                "no device address: pass --ip or set CAM_HOST"
+            )
+        self.host = host
+        self.password = password
+        self.port = port
+        self.timeout = timeout
         self.host = host
         self.password = password
         self.port = port
@@ -168,7 +176,8 @@ class CamClient:
         except urllib.error.HTTPError as e:
             # Error statuses are responses too; callers assert on them.
             return CamResponse(e.code, e.read(), e.headers)
-        except (urllib.error.URLError, socket.timeout, OSError) as e:
+        except (urllib.error.URLError, socket.timeout,
+                http.client.HTTPException, OSError) as e:
             reason = getattr(e, "reason", None) or e
             error = CamClientError(f"connection failed: {reason}")
             error.reason = reason
@@ -555,8 +564,13 @@ def _is_status_fallback(data):
 
 
 def _is_error_envelope(data):
-    """True when a parsed body is a {"result": ...} result envelope."""
-    return isinstance(data, dict) and "result" in data
+    """True when a parsed body is an explicit error result envelope.
+
+    A successful payload-less control command replies
+    ``{"result":"ok"}``, which means the command EXISTS; only a
+    non-ok envelope indicates the command was rejected.
+    """
+    return isinstance(data, dict) and data.get("result") not in (None, "ok")
 
 
 def _is_connection_reset(error):

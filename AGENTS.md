@@ -100,6 +100,12 @@
 - `test/e2e/` (pytest, run via `script/test-e2e.sh`) is the real-hardware regression suite. Update it as features are added: coverage must stay complementary to the unit test coverage, not duplicate it.
 - The suite shares the camera HTTP transport with the CLI (`script/python/camclient.py`); keep that module the single transport definition when endpoints change.
 
+# Artifact content rules
+
+- No role-based or project-nickname language (no "captain" or nautical phrasing) in any committed content: repo source, markdown, PR titles/descriptions/comments, and commit messages use neutral phrasing only.
+- No private infrastructure details (device IPs, device credentials) in any committed content or PR artifact. Connection settings come from the environment (`CAM_HOST`, `CAM_PASSWORD`) or the `--ip` flag only.
+- PR titles, bodies, comments, and commit messages are audited against these rules before reporting a PR ready; if the validation pipeline rewrites them, re-verify they stayed clean.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

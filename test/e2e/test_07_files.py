@@ -15,7 +15,13 @@ def test_files_root_listing_shape(client):
     assert listing["dir"] == "/"
     assert listing["start"] == 0
     assert isinstance(listing["total"], int)
-    assert listing["total"] == len(listing["entries"])
+    # The listing paginates at one page; a full listing has
+    # total == len(entries), a paginated one total >= len(entries).
+    assert len(listing["entries"]) <= 12
+    assert listing["total"] >= len(listing["entries"])
+    assert listing["more"] == (listing["total"] > len(listing["entries"]))
+    if listing["more"]:
+        assert listing["next"] == listing["start"] + len(listing["entries"])
     for entry in listing["entries"]:
         assert set(entry.keys()) == {"n", "s", "d", "r"}
         assert isinstance(entry["s"], int) and entry["s"] >= 0

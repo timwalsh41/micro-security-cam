@@ -11,8 +11,9 @@ import pytest
 
 import camclient
 
-# The device needs time to reconnect to WiFi after a reboot.
-BOOT_TIMEOUT_S = 120.0
+# The device needs time to reconnect to WiFi after a reboot; a short
+# outage right after the first successful response is common.
+BOOT_TIMEOUT_S = 180.0
 BOOT_POLL_S = 3.0
 
 PERSISTENCE_KEY = "camera.jpeg_quality"
@@ -45,14 +46,22 @@ def reboot_available(client):
 
 
 def _wait_for_reboot(client):
-    """Poll /status until the device answers again after a reboot."""
+    """Poll /status until the device answers stably after a reboot.
+
+    A single early success does not mean the stack is settled; require
+    two consecutive successful calls a poll interval apart.
+    """
     deadline = time.monotonic() + BOOT_TIMEOUT_S
+    consecutive = 0
     while time.monotonic() < deadline:
         try:
             client.status()
-            return
+            consecutive += 1
+            if consecutive >= 2:
+                return
         except camclient.CamClientError:
-            time.sleep(BOOT_POLL_S)
+            consecutive = 0
+        time.sleep(BOOT_POLL_S)
     pytest.fail(f"device did not come back within {BOOT_TIMEOUT_S}s")
 
 

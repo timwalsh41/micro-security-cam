@@ -1349,7 +1349,7 @@ password=admin
 
 [web]
 port=8080
-password=webpass
+password=changeme
 
 [camera]
 resolution=VGA

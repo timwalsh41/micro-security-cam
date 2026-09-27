@@ -102,9 +102,30 @@ def pytest_addoption(parser):
 
 @pytest.fixture(scope="session")
 def client(request):
-    """HTTP client for the device, verified reachable before anything runs."""
-    host = os.environ.get("CAM_HOST", camclient.DEFAULT_HOST)
-    password = os.environ.get("CAM_PASSWORD", camclient.DEFAULT_PASSWORD)
+    """HTTP client for the device, verified reachable before anything runs.
+
+    Connection settings come from the environment only: ``CAM_HOST``
+    and ``CAM_PASSWORD`` are required (an empty ``CAM_PASSWORD`` is
+    legitimate for a device without a configured web password).
+    """
+    host = os.environ.get("CAM_HOST", "")
+    password = os.environ.get("CAM_PASSWORD")
+    if not host:
+        message = (
+            "e2e: CAM_HOST is not set; the suite connects only to the "
+            "address given in the environment"
+        )
+        if request.config.getoption("--e2e-required"):
+            pytest.exit(message, returncode=1)
+        pytest.skip(message)
+    if password is None:
+        message = (
+            "e2e: CAM_PASSWORD is not set (use an empty value if the "
+            "device has no configured web password)"
+        )
+        if request.config.getoption("--e2e-required"):
+            pytest.exit(message, returncode=1)
+        pytest.skip(message)
     cli = camclient.CamClient(host=host, password=password)
 
     try:
@@ -167,33 +188,82 @@ def capture_ready(client):
 
 
 def _version_preflight(cli):
-    """Compare the flashed build identity against CAM_EXPECT_GIT.
+    """Strictly compare the flashed build identity against CAM_EXPECT_GIT.
 
     While the firmware lacks the version endpoint (companion task
     msc-e2e-api), absence is not a failure: print one clear warning
-    and continue.
+    and continue. With the endpoint present the device-reported build
+    is always printed; a set CAM_EXPECT_GIT that does not match is a
+    loud failure, never a silent pass.
     """
     try:
         data = cli.version()
     except camclient.CamEndpointUnavailable:
-        print(
-            "\nWARNING: firmware has no version endpoint yet (msc-e2e-api "
-            "not landed); skipping build-identity verification. The device "
-            "may be running a stale build.\n"
-        )
+        if os.environ.get("CAM_EXPECT_GIT"):
+            print(
+                "\nWARNING: CAM_EXPECT_GIT is set but the firmware has no "
+                "version endpoint; cannot verify the flashed build. The "
+                "device may be running a stale build.\n"
+            )
         return
 
-    git_values = [
-        value for key, value in data.items()
-        if isinstance(value, str) and "git" in key.lower()
-    ]
+    reported = _reported_build_identity(data)
+    print(f"\nDevice build identity: {data}\n")
+
     expected = os.environ.get("CAM_EXPECT_GIT")
-    if expected and git_values and expected not in git_values:
+    if not expected:
+        return
+    if not reported:
         pytest.exit(
-            f"e2e: build identity mismatch — device reports {git_values}, "
+            f"e2e: CAM_EXPECT_GIT={expected} but the version endpoint "
+            f"payload {data!r} carries no comparable build identity; "
+            "refusing to validate an unverified build",
+            returncode=1,
+        )
+    if not _build_identity_matches(reported, expected):
+        pytest.exit(
+            f"e2e: build identity mismatch — device reports {reported!r}, "
             f"CAM_EXPECT_GIT={expected}. Flash the expected build first.",
             returncode=1,
         )
+
+
+def _build_identity_matches(reported, expected):
+    """Match a device-reported build against an expected git identity.
+
+    The device reports a decorated string (e.g. ``v0.0.1-1f27d9``)
+    carrying a short commit sha; the expected value may be a short or
+    full sha. The comparison matches on the hex sha runs, one being a
+    prefix of the other.
+    """
+    reported_sha = _trailing_hex_run(reported)
+    expected_sha = _leading_hex_run(expected)
+    if not reported_sha or not expected_sha:
+        return False
+    shorter, longer = sorted((reported_sha, expected_sha), key=len)
+    return longer.startswith(shorter)
+
+
+def _trailing_hex_run(value):
+    match = re.search(r"[0-9a-f]{6,}$", value)
+    return match.group(0) if match else None
+
+
+def _leading_hex_run(value):
+    match = re.search(r"^[0-9a-f]{6,}", value)
+    return match.group(0) if match else None
+
+
+def _reported_build_identity(data):
+    """Pull a build-identity string out of a version payload."""
+    if not isinstance(data, dict):
+        return None
+    for key, value in data.items():
+        if isinstance(value, str) and (
+            "git" in key.lower() or key.lower() in ("version", "build")
+        ):
+            return value
+    return None
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -230,7 +300,6 @@ class StateGuard:
             self.m_config_ini = client.config()
         except camclient.CamClientError:
             self.m_config_ini = ""
-        self.m_baseline_status = client.status()
         self.m_baseline_files = self._safe_listing(client, lambda: client.files())
         self.m_baseline_logs = self._safe_listing(client, lambda: client.logs())
 
@@ -265,7 +334,7 @@ class StateGuard:
         """Start recording, registered for teardown stop."""
         try:
             data = self.m_client.control("start")
-            CamClient.assert_result_ok(data, "cmd=start")
+            camclient.CamClient.assert_result_ok(data, "cmd=start")
         except camclient.CamClientError as e:
             capture_skip_or_raise(e)
         self.m_started_recording = True
@@ -273,14 +342,14 @@ class StateGuard:
     def stop_recording(self):
         """Stop recording started via start_recording()."""
         data = self.m_client.control("stop")
-        CamClient.assert_result_ok(data, "cmd=stop")
+        camclient.CamClient.assert_result_ok(data, "cmd=stop")
         self.m_started_recording = False
 
     def start_streaming(self):
         """Start streaming, registered for teardown stop."""
         try:
             data = self.m_client.control("stream_start")
-            CamClient.assert_result_ok(data, "cmd=stream_start")
+            camclient.CamClient.assert_result_ok(data, "cmd=stream_start")
         except camclient.CamClientError as e:
             capture_skip_or_raise(e)
         self.m_started_streaming = True
@@ -288,7 +357,7 @@ class StateGuard:
     def stop_streaming(self):
         """Stop streaming started via start_streaming()."""
         data = self.m_client.control("stream_stop")
-        CamClient.assert_result_ok(data, "cmd=stream_stop")
+        camclient.CamClient.assert_result_ok(data, "cmd=stream_stop")
         self.m_started_streaming = False
 
     def take_photo(self):

@@ -1581,7 +1581,7 @@ if (m_config.audio_enabled) m_mic_service->start_capture();
 
 **Option A: PSRAM ring buffer drained in capture context** (implemented)
 
-The original plan specified mic_task writing WAV directly to SD, merged at close. This deviated to Option A per the captain's decision:
+The original plan specified mic_task writing WAV directly to SD, merged at close. This deviated to Option A by design decision:
 
 - `mic_task` reads I2S into a PSRAM ring buffer only (does NOT write SD)
 - The capture task drains audio from the ring buffer at frame activation boundaries
@@ -2142,7 +2142,7 @@ password=admin123
 
 [web]
 port=80
-password=webpass
+password=changeme
 max_streams=4
 
 [camera]

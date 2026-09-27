@@ -10,11 +10,24 @@ from conftest import _wait_for, parse_photo_path
 # Device status polling while a recording spins up.
 SPINUP_TIMEOUT_S = 10.0
 
-# The clip path is /<date>/<date>_<HHMMSS>.avi in device time; the
-# firmware exposes no "current clip path" query, so the suite records
-# a photo immediately before starting to learn the device clock and
-# then probes a small window of candidate start seconds.
+# The clip path is /<date>/<date>_<HHMMSS>_<WxH>_<FPS>fps.avi in
+# device time; the firmware exposes no "current clip path" query and
+# the dir-parameterized listing is unavailable, so the suite records a
+# photo immediately before starting to learn the device clock and then
+# probes a small window of candidate start seconds built from the live
+# video config (resolution dimensions per the camera controller's
+# table, plus the serial suffix the path uniquifier appends).
 CANDIDATE_SECONDS = 8
+RESOLUTION_DIMENSIONS = {
+    "QQVGA": (160, 120),
+    "QVGA": (320, 240),
+    "VGA": (640, 480),
+    "SVGA": (800, 600),
+    "XGA": (1024, 768),
+    "HD": (1280, 720),
+    "SXGA": (1280, 1024),
+    "UXGA": (1600, 1200),
+}
 
 
 def _shift_hhmmss(hhmmss, offset):
@@ -54,22 +67,52 @@ def _record_short_clip(client, guard):
     return clip, file_size
 
 
+def _candidate_clip_paths(client, date, hhmmss):
+    """Build candidate clip paths for the just-recorded clip."""
+    dims = RESOLUTION_DIMENSIONS.get(
+        client.config_get_value("video.resolution").upper()
+    )
+    if dims is None:
+        pytest.fail(
+            f"unknown video.resolution; cannot derive clip naming "
+            f"from {RESOLUTION_DIMENSIONS.keys()}"
+        )
+    width, height = dims
+    fps = client.config_get_value("video.fps")
+    paths = []
+    for k in range(CANDIDATE_SECONDS):
+        stem = f"/{date}/{date}_{_shift_hhmmss(hhmmss, k)}_{width}x{height}_{fps}fps"
+        paths.append(stem + ".avi")
+        paths.append(stem + "_1.avi")
+    return paths
+
+
 def _fetch_completed_clip(client, date, hhmmss, file_size):
-    """Download the just-completed clip by probing candidate paths."""
-    candidates = [
-        f"/{date}/{date}_{_shift_hhmmss(hhmmss, k)}.avi"
-        for k in range(CANDIDATE_SECONDS)
-    ]
+    """Download the just-completed clip by probing candidate paths.
+
+    The size snapshot is taken while the device may still be appending
+    to the clip, so a candidate at least as large as the snapshot is
+    accepted (exact matches preferred); the AVI structural checks in
+    the sibling tests validate the payload itself.
+    """
+    candidates = _candidate_clip_paths(client, date, hhmmss)
+    exact = None
+    grown = None
     for path in candidates:
         try:
             body = client.download(path)
         except camclient.CamClientError:
             continue
         if len(body) == file_size:
-            return path, body
+            exact = (path, body)
+            break
+        if len(body) >= file_size and grown is None:
+            grown = (path, body)
+    if exact or grown:
+        return exact or grown
     pytest.fail(
         "could not locate the completed clip among "
-        f"{candidates} (expected {file_size} bytes); "
+        f"{candidates} (expected >= {file_size} bytes); "
         "this may indicate a stale firmware build or a naming change"
     )
 

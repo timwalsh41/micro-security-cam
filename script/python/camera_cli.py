@@ -6,9 +6,14 @@ via its HTTP command transport (``/status`` and ``/control`` endpoints).
 
 The HTTP transport itself lives in ``camclient.py`` and is shared
 with the end-to-end test suite (`test/e2e/`).
+
+Connection settings come from the environment or flags only:
+``--ip`` (or ``CAM_HOST``) for the device address and ``CAM_PASSWORD``
+for the web password. Nothing is baked in.
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -17,16 +22,7 @@ import camclient
 from camclient import CamClient, CamClientError, CamEndpointUnavailable
 
 # =============================================================
-# Connection settings — defaults live in camclient.py (shared with
-# the e2e suite); edit them there, or pass --ip per invocation.
-# =============================================================
-DEFAULT_HOST = camclient.DEFAULT_HOST    # ESP32 IP address (STA or AP mode)
-PASSWORD = camclient.DEFAULT_PASSWORD    # Web password (config.ini [web]).
-                                         # Set to "" if no password is set.
-
-# =============================================================
-HOST = DEFAULT_HOST
-CLIENT = CamClient(host=HOST, password=PASSWORD)
+CLIENT = None
 
 
 def _format_response(resp) -> int:
@@ -192,8 +188,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--ip",
-        default=DEFAULT_HOST,
-        help=f"ESP32 IP address (default: {DEFAULT_HOST})",
+        default=os.environ.get("CAM_HOST", ""),
+        help="ESP32 IP address (default: $CAM_HOST)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -260,9 +256,14 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    global HOST
-    HOST = args.ip
-    CLIENT.host = HOST
+    global CLIENT
+    try:
+        CLIENT = CamClient(
+            host=args.ip, password=os.environ.get("CAM_PASSWORD", "")
+        )
+    except CamClientError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     if args.command == "status":
         return _cmd_status()
