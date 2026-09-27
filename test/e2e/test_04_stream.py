@@ -1,22 +1,10 @@
 """E2E: live MJPEG streaming on real hardware."""
-import time
-
 import pytest
 
 import camclient
+from conftest import _wait_for
 
 STREAM_SPINUP_TIMEOUT_S = 10.0
-STATUS_POLL_S = 1.0
-
-
-def _wait_for(predicate, timeout, what):
-    """Poll the device until predicate() holds, else fail the test."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(STATUS_POLL_S)
-    pytest.fail(f"timed out after {timeout}s waiting for {what}")
 
 
 def test_stream_lifecycle_and_multipart_frames(client, guard, capture_ready):

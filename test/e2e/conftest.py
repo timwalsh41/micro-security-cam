@@ -28,9 +28,22 @@ import camclient  # noqa: E402
 import avi_parser  # noqa: E402
 
 # Bounded wait for the device status cache (photos/videos counters are
-# cached for one minute on the device).
-COUNTER_TTL_S = 65.0
+# cached for one minute on the device): poll until the cache refreshes.
+COUNTER_TIMEOUT_S = 75.0
 COUNTER_POLL_S = 5.0
+
+# Polling cadence for device status while waiting on a state transition.
+STATUS_POLL_S = 1.0
+
+
+def _wait_for(predicate, timeout, what):
+    """Poll the device until predicate() holds, else fail the test."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(STATUS_POLL_S)
+    pytest.fail(f"timed out after {timeout}s waiting for {what}")
 
 
 def is_capture_wedge(exc):
@@ -119,8 +132,13 @@ def _capture_pipeline_preflight(cli):
     records that state once and prints a prominent warning; the
     camera-dependent modules then skip with the reason, and the rest
     of the suite still runs.
+
+    The probe is otherwise side-effect free: streaming that was already
+    active before the probe (e.g. a web-UI preview) is left running —
+    this runs before the state snapshot, so nothing else would restore it.
     """
     global _CAPTURE_BLOCKED_REASON
+    was_streaming = bool(cli.status().get("streaming"))
     resp = cli.control_raw("stream_start")
     data = resp.json() if resp.status == 200 else None
     if isinstance(data, dict) and data.get("result") == "error" and \
@@ -137,6 +155,8 @@ def _capture_pipeline_preflight(cli):
         )
         return
     cli.control("stream_stop")
+    if was_streaming:
+        cli.control("stream_start")
 
 
 @pytest.fixture(scope="session")

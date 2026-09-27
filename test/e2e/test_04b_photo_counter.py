@@ -7,6 +7,8 @@ import time
 
 import pytest
 
+from conftest import COUNTER_POLL_S, COUNTER_TIMEOUT_S
+
 
 def test_photo_increments_photos_counter(client, guard, capture_ready):
     """The photos counter increments after a capture (device caches it)."""
@@ -20,13 +22,13 @@ def test_photo_increments_photos_counter(client, guard, capture_ready):
 
     # The SD stats panel caches counters for one minute; poll until the
     # cache refreshes rather than asserting against stale data.
-    deadline = time.monotonic() + 75.0
+    deadline = time.monotonic() + COUNTER_TIMEOUT_S
     while time.monotonic() < deadline:
         photos = client.status()["photos"]
         if photos > before:
             return
-        time.sleep(5.0)
+        time.sleep(COUNTER_POLL_S)
     pytest.fail(
-        f"photos counter did not increment within 75s "
+        f"photos counter did not increment within {COUNTER_TIMEOUT_S:.0f}s "
         f"(before={before}, path={path})"
     )

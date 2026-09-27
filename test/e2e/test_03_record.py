@@ -5,10 +5,9 @@ import pytest
 
 import avi_parser
 import camclient
-from conftest import parse_photo_path
+from conftest import _wait_for, parse_photo_path
 
 # Device status polling while a recording spins up.
-STATUS_POLL_S = 1.0
 SPINUP_TIMEOUT_S = 10.0
 
 # The clip path is /<date>/<date>_<HHMMSS>.avi in device time; the
@@ -16,16 +15,6 @@ SPINUP_TIMEOUT_S = 10.0
 # a photo immediately before starting to learn the device clock and
 # then probes a small window of candidate start seconds.
 CANDIDATE_SECONDS = 8
-
-
-def _wait_for(predicate, timeout, what):
-    """Poll the device until predicate() holds, else fail the test."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(STATUS_POLL_S)
-    pytest.fail(f"timed out after {timeout}s waiting for {what}")
 
 
 def _shift_hhmmss(hhmmss, offset):
