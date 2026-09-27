@@ -2,6 +2,7 @@
 #include "stream_service.h"
 #include "web_auth_util.h"
 #include "time_formatter.h"
+#include "version.h"
 #include "hal/time_hal.h"
 #include <cctype>
 #include <cstdio>
@@ -28,7 +29,8 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        StreamService& streams,
                                        hal::WebServerHal& web,
                                        SdController& sd,
-                                       hal::NvsHal& nvs)
+                                       hal::NvsHal& nvs,
+                                       hal::RestartHal& restart)
     : m_video(video)
     , m_camera(camera)
     , m_cmd_handler(cmd_handler)
@@ -39,6 +41,7 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
     , m_web(web)
     , m_sd(sd)
     , m_nvs(nvs)
+    , m_restart(restart)
 {
 }
 
@@ -170,6 +173,22 @@ void SystemOrchestrator::register_commands()
         {
             return this->handle_list_streams(payload, len, response, responseLen);
         });
+
+    m_cmd_handler.register_handler(
+        CommandCode::GET_VERSION,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_get_version(payload, len, response, responseLen);
+        });
+
+    m_cmd_handler.register_handler(
+        CommandCode::REBOOT,
+        [this](const uint8_t* payload, size_t len,
+               uint8_t* response, size_t& responseLen) -> CommandResult
+        {
+            return this->handle_reboot(payload, len, response, responseLen);
+        });
 }
 
 CommandResult SystemOrchestrator::handle_get_status(
@@ -245,7 +264,8 @@ CommandResult SystemOrchestrator::handle_get_status(
         "{\"recording\":%s,\"streaming\":%s,\"sd\":%s,\"frames\":%lu,"
         "\"file_size\":%lu,"
         "\"connected_streams\":%u,"
-        "\"sd_free_bytes\":%" PRIu64 ",\"photos\":%u,\"videos\":%u}",
+        "\"sd_free_bytes\":%" PRIu64 ",\"photos\":%u,\"videos\":%u,"
+        "\"uptime_ms\":%lu}",
         recording ? "true" : "false",
         streaming ? "true" : "false",
         m_sd_available ? "true" : "false",
@@ -254,7 +274,8 @@ CommandResult SystemOrchestrator::handle_get_status(
         static_cast<unsigned int>(active_stream_slot_count),
         free_bytes,
         photos,
-        videos
+        videos,
+        static_cast<unsigned long>(hal::get_millis())
     );
 
     if (written < 0 || static_cast<size_t>(written) >= CommandHandler::MAX_RESPONSE_SIZE)
@@ -587,6 +608,54 @@ CommandResult SystemOrchestrator::handle_list_streams(
     }
 
     responseLen = static_cast<size_t>(written);
+    return CommandResult::SUCCESS;
+}
+
+// ============================================================
+// Device info and maintenance commands
+// ============================================================
+
+CommandResult SystemOrchestrator::handle_get_version(
+    const uint8_t* /* payload */, size_t /* len */,
+    uint8_t* response, size_t& responseLen)
+{
+    char version_buf[32];
+    if (!version::get_version_string(version_buf, sizeof(version_buf)))
+    {
+        m_log.error(SUBSYSTEM, "Version string does not fit buffer");
+        return CommandResult::INTERNAL_ERROR;
+    }
+
+    int written = snprintf(
+        reinterpret_cast<char*>(response),
+        CommandHandler::MAX_RESPONSE_SIZE,
+        "{\"version\":\"%s\"}",
+        version_buf);
+
+    if (written < 0 ||
+        static_cast<size_t>(written) >= CommandHandler::MAX_RESPONSE_SIZE)
+    {
+        return CommandResult::INTERNAL_ERROR;
+    }
+
+    responseLen = static_cast<size_t>(written);
+    return CommandResult::SUCCESS;
+}
+
+CommandResult SystemOrchestrator::handle_reboot(
+    const uint8_t* /* payload */, size_t /* len */,
+    uint8_t* /* response */, size_t& /* responseLen */)
+{
+    // The restart itself is deferred by the RestartHal implementation:
+    // the dispatching request handler still has to deliver its response
+    // (HTTP reply or serial reply) before the device goes down.
+    m_log.warn(SUBSYSTEM, "Reboot requested - restarting in %lu ms",
+               static_cast<unsigned long>(REBOOT_DELAY_MS));
+    if (!m_restart.schedule_restart(REBOOT_DELAY_MS))
+    {
+        m_log.error(SUBSYSTEM, "Failed to schedule restart");
+        return CommandResult::INTERNAL_ERROR;
+    }
     return CommandResult::SUCCESS;
 }
 

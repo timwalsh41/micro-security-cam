@@ -14,7 +14,9 @@
 #include "mock_log_backend.h"
 #include "mock_web_server_hal.h"
 #include "mock_nvs_hal.h"
+#include "mock_restart_hal.h"
 #include "time_formatter.h"
+#include "version.h"
 #include <cstring>
 #include <memory>
 #include <string>
@@ -39,6 +41,7 @@ struct TestFixture
     CommandHandler cmd_handler;
     StreamService stream_service;
     MockWebServerHal web_hal;
+    MockRestartHal restart_hal;
     SystemOrchestrator orchestrator;
 
     /**
@@ -60,7 +63,8 @@ struct TestFixture
         , cmd_handler(logger)
         , stream_service(logger)
         , orchestrator(video, camera_ctrl, cmd_handler, time, config, logger,
-                       stream_service, web_hal, sd_controller, nvs_hal)
+                       stream_service, web_hal, sd_controller, nvs_hal,
+                       restart_hal)
     {
         camera_hal.init_result = hal::CameraInitResult::SUCCESS;
         camera_ctrl.init();
@@ -1390,6 +1394,118 @@ void test_get_status_caches_sd_stats_within_ttl()
 }
 
 // ============================================================
+// Version, reboot, and uptime
+// ============================================================
+
+/**
+ * @brief GET_VERSION returns the firmware version as a JSON object
+ *        built from the compile-time version strings.
+ */
+void test_get_version_returns_version_json()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::GET_VERSION, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "{\"version\":\"%s-%s\"}",
+             version::base_version_string, version::git_hash);
+    TEST_ASSERT_EQUAL_STRING(expected,
+                             reinterpret_cast<const char*>(response));
+}
+
+/**
+ * @brief REBOOT schedules exactly one deferred restart on the restart
+ *        HAL and returns success with no response payload; the mock
+ *        hal means no real restart occurs.
+ */
+void test_reboot_schedules_deferred_restart()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::REBOOT, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::SUCCESS),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_UINT32(0, response_len);
+    TEST_ASSERT_EQUAL_INT(1, f.restart_hal.schedule_count);
+    TEST_ASSERT_EQUAL_UINT32(SystemOrchestrator::REBOOT_DELAY_MS,
+                             f.restart_hal.last_delay_ms);
+}
+
+/**
+ * @brief A second REBOOT before the restart fires schedules a second
+ *        restart (idempotency is owned by the restart HAL); the
+ *        orchestrator always reports success.
+ */
+void test_reboot_repeat_dispatch_schedules_again()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::REBOOT, nullptr, 0,
+                 response, &response_len);
+    dispatch_cmd(f.cmd_handler, CommandCode::REBOOT, nullptr, 0,
+                 response, &response_len);
+
+    TEST_ASSERT_EQUAL_INT(2, f.restart_hal.schedule_count);
+}
+
+/**
+ * @brief REBOOT reports INTERNAL_ERROR when the restart HAL fails to
+ *        schedule the restart, so a caller never sees a success
+ *        response for a reboot that will not happen.
+ */
+void test_reboot_schedule_failure_returns_internal_error()
+{
+    TestFixture f;
+    f.restart_hal.last_result = false;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    CommandResult result = dispatch_cmd(
+        f.cmd_handler, CommandCode::REBOOT, nullptr, 0,
+        response, &response_len);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CommandResult::INTERNAL_ERROR),
+        static_cast<uint8_t>(result));
+    TEST_ASSERT_EQUAL_INT(1, f.restart_hal.schedule_count);
+}
+
+/**
+ * @brief GET_STATUS reports the device uptime in milliseconds from
+ *        the millis clock, so a test can prove a reboot happened.
+ */
+void test_get_status_includes_uptime_ms()
+{
+    TestFixture f;
+    set_mock_millis(123456);
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"uptime_ms\":123456"));
+}
+
+// ============================================================
 // POST /update (bulk config)
 // ============================================================
 
@@ -1582,6 +1698,13 @@ int main()
     RUN_TEST(test_get_status_reports_media_counts);
     RUN_TEST(test_get_status_free_bytes_beyond_32_bits);
     RUN_TEST(test_get_status_caches_sd_stats_within_ttl);
+
+    // Version, reboot, and uptime
+    RUN_TEST(test_get_version_returns_version_json);
+    RUN_TEST(test_reboot_schedules_deferred_restart);
+    RUN_TEST(test_reboot_repeat_dispatch_schedules_again);
+    RUN_TEST(test_reboot_schedule_failure_returns_internal_error);
+    RUN_TEST(test_get_status_includes_uptime_ms);
 
     // POST /update
     RUN_TEST(test_update_no_password_configured_refused);

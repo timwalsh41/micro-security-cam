@@ -115,6 +115,16 @@ class WebCommandTransport : public CommandTransport
          * configured.
          */
         static bool is_file_command(CommandCode code);
+
+        /**
+         * @brief Returns true if the command restarts the device.
+         *
+         * Reboot follows the same restricted-on-web policy as the
+         * config and file commands: it is refused while no web
+         * password is configured so an open access point can never be
+         * restarted by an unauthenticated remote client.
+         */
+        static bool is_reboot_command(CommandCode code);
 };
 
 #endif // WEB_COMMAND_TRANSPORT_H

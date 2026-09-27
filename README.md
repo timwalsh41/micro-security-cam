@@ -248,7 +248,7 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/` | No | Embedded single-page web UI (status, controls, file browser, log viewer, config editor) |
-| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts) |
+| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts, uptime in milliseconds) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |
@@ -260,6 +260,8 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | GET | `/control?cmd=config_set_value&key=<section.key>&value=<val>` | Yes | Set a single config value in the live config (requires a configured web password) |
 | GET | `/control?cmd=config_save&dest=nvs\|sd` | Yes | Persist the live config to NVS or the SD card (requires a configured web password) |
 | GET | `/control?cmd=files&dir=<path>&start=<n>` | Yes | Directory listing JSON (requires a configured web password) |
+| GET | `/control?cmd=version` | Yes | Firmware version as JSON: `{"version":"v0.0.1-<githash>"}` (same build string logged at boot) |
+| GET | `/control?cmd=reboot` | Yes | Restart the device ~0.5 s after the response is delivered (requires a configured web password) |
 | GET | `/files?dir=<path>&start=<n>` | Yes | Directory listing JSON — same handler as `cmd=files`, direct route (file-access policy below) |
 | GET | `/download?path=<file>` | Yes | Download a file from the SD card (file-access policy below) |
 | GET | `/logs?start=<n>` | Yes | Log directory listing JSON (file-access policy below) |
@@ -288,7 +290,7 @@ The number of concurrent viewers is limited by `max_streams` (1–4).
 
 If a web password is configured (in `config.ini` on the SD card or in a config saved to NVS), all control endpoints require HTTP Basic authentication. If no password is set, authentication is disabled (except config and file routes — see below).
 
-Config commands (`cmd=config`, `cmd=config_save`) require a configured web password regardless: with no password set, the web interface refuses them with `UNAUTHORIZED` (web `{"result":"error","code":5}`), and config access stays on the serial interface (`CONFIG_GET`/`CONFIG_SAVE`), which is always available.
+Config commands (`cmd=config`, `cmd=config_save`) require a configured web password regardless: with no password set, the web interface refuses them with `UNAUTHORIZED` (web `{"result":"error","code":5}`), and config access stays on the serial interface (`CONFIG_GET`/`CONFIG_SAVE`), which is always available. `cmd=reboot` follows the same restricted-on-web policy: with no password set it is refused with `UNAUTHORIZED`, so an open access point can never be restarted remotely.
 
 File routes (`/files`, `/download`, `/logs`, `/log`) also require a configured web password: with none set they are refused outright with `401`, since file access is never offered unauthenticated. With a password configured they use HTTP Basic authentication. Downloads are restricted to files inside the date directories and log files under `/logs` — `/config.ini` (which holds credentials) is never downloadable. The clip currently being recorded cannot be downloaded until it closes, and recordings may briefly dip below the configured FPS while a download is running (both share the SD card's chip-select).
 

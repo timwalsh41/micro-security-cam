@@ -634,6 +634,8 @@ package "Command dispatch framework" {
         SET_CONFIG_VALUE = 0x23
         SET_TIME = 0x30
         LIST_FILES = 0x40
+        GET_VERSION = 0x50
+        REBOOT = 0x51
     }
 
     enum CommandResult {
@@ -822,6 +824,7 @@ class SystemOrchestrator {
     -m_stream_password : char[]
     -m_sd : SdController&
     -m_nvs : NvsHal&
+    -m_restart : RestartHal&
     -m_sd_available : bool
     +init()
     +tick()
@@ -840,6 +843,8 @@ class SystemOrchestrator {
     -handle_start_stream()
     -handle_stop_stream()
     -handle_list_streams()
+    -handle_get_version()
+    -handle_reboot()
     -handle_stream_request(request : RequestRef&)
 }
 
@@ -849,6 +854,7 @@ package "External (see Diagram 1 - HAL)" <<Frame>> {
     interface TimerHal_ext as "TimerHal"
     interface WebServerHal_ext as "WebServerHal"
     interface NvsHal_ext as "NvsHal"
+    interface RestartHal_ext as "RestartHal"
 }
 
 package "External (see Diagram 2 - Services)" <<Frame>> {
@@ -887,6 +893,7 @@ SystemOrchestrator --> LoggingService_ext : diagnostics
 SystemOrchestrator --> StreamService_ext : stream control
 SystemOrchestrator --> TimeService_ext : time ops
 SystemOrchestrator --> WebServerHal_ext : /stream route
+SystemOrchestrator --> RestartHal_ext : deferred restart
 
 CameraController --> CameraHal_ext : clamps against capabilities
 VideoController *-- "1" AviClipSession : owns
@@ -1002,6 +1009,7 @@ The HAL provides abstract interfaces that wrap Arduino/ESP32 hardware calls. Eac
 | `MicHal` | `include/hal/mic_hal.h` | I2S PDM microphone initialization, capture start/stop, and sample read. Returns `MicInitResult` and takes a `MicConfig` (sample rate, bit depth, channels, DMA buffer layout, PDM pins). |
 | `LogBackend` | `include/hal/log_backend.h` | Abstract interface for log output destinations. Receives fully formatted log lines from `LoggingService`. |
 | `SerialHal` | `include/hal/serial_hal.h` | UART serial port abstraction. Wraps the Arduino `HardwareSerial` interface (`available`, `read`, `write`, `flush`) behind a mockable interface. |
+| `RestartHal` | `include/hal/restart_hal.h` | Deferred device restart. `schedule_restart(delay_ms)` arms a platform restart that fires after the given delay, so a request handler can deliver its response before the device goes down. |
 
 ### Concrete ESP32 Implementations
 
@@ -1012,6 +1020,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `CameraHalImpl` | `esp_camera_*` functions, `esp_camera_init()`, `esp_camera_fb_get()`/`esp_camera_fb_return()` |
 | `SdCardHalImpl` | Arduino `SD` library (`SD.begin()`, `File` open/write/read/close/seek) |
 | `NvsHalImpl` | ESP32 `Preferences` library (NVS) — `Preferences::begin()`, `getBytes()`, `putBytes()`, `remove()` |
+| `RestartHalImpl` | ESP-IDF `esp_timer` one-shot timer calling `esp_restart()` from the timer task once the requested delay elapses |
 | `TimerHalImpl` | ESP-IDF `timer_group` APIs — 1 MHz clock, ISR-based periodic callbacks. `init()` and `stop()` are the sole toggle points for the registered ISR callback: `init()` attaches it, `stop()` removes it (along with pausing the counter) so no delayed alarm dispatch can invoke the callback after stop returns. Removal is idempotent by design — an attach-state flag guards both removal sites (`stop()` and `init()`'s repeat-teardown), since the ESP-IDF v4.4.7 driver frees the interrupt handle in `timer_isr_callback_remove()` without nulling its internally stored handle, making a second unguarded remove a use-after-free. `init()` re-arms the callback on every call; the ESP-IDF v4.4.7 driver re-initializes an in-use timer in place rather than refusing `timer_init()`, so the repeat-teardown in `init()` is what keeps each start cycle clean. `set_frequency()` only retargets the alarm value and does not affect callback attachment: it requires a running timer (one whose `init()` has attached the callback and whose `stop()` has not detached it) — after `stop()`, a restart must go through `init()` before callbacks dispatch again. |
 | `GpioHal` | Arduino `pinMode()`, `digitalWrite()` |
 | `MicHalImpl` | ESP-IDF I2S driver — `i2s_driver_install()`, `i2s_set_pin()` (PDM RX mode), `i2s_read()`, `i2s_driver_uninstall()` |
@@ -1670,7 +1679,7 @@ The full set of recognised commands, their hex codes, payloads, and transport ma
 
 #### Key Design Points
 
-- **Fixed-size arrays**: Handlers and transports use fixed-size arrays (`MAX_HANDLERS = 16`, `MAX_TRANSPORTS = 4`) rather than dynamic allocation.
+- **Fixed-size arrays**: Handlers and transports use fixed-size arrays (`MAX_HANDLERS = 20`, `MAX_TRANSPORTS = 4`) rather than dynamic allocation.
 - **Tick-driven**: `tick()` polls all registered transports, dispatches pending requests, and sends responses back through the transport.
 - **Response buffer**: Each dispatch provides a `MAX_RESPONSE_SIZE` (1280) byte buffer for the handler to write response data — sized to carry a full serialized configuration (`ConfigService::CONFIG_BUFFER_SIZE`).
 
@@ -1747,6 +1756,7 @@ Top-level system coordinator and command router.
 - `WebServerHal &` — for `/stream` route registration.
 - `SdController &` — for latching SD availability and config persistence to the SD card.
 - `hal::NvsHal &` — for config persistence to NVS.
+- `hal::RestartHal &` — for scheduling the deferred device restart behind the `REBOOT` command.
 
 #### SD-Optional Boot and Degraded Mode
 
@@ -1788,14 +1798,14 @@ Every command returns a `CommandResult` enum value:
 | `0x02` | `INVALID_ARGS` | Payload was missing, too short, or malformed |
 | `0x03` | `INVALID_STATE` | Command cannot be executed in the current system state |
 | `0x04` | `SD_UNAVAILABLE` | Command requires the SD card, which was absent or failed to initialize at boot |
-| `0x05` | `UNAUTHORIZED` | Command refused by the transport's access policy (web config commands without a configured web password) |
+| `0x05` | `UNAUTHORIZED` | Command refused by the transport's access policy (web config, file, and reboot commands without a configured web password) |
 | `0xFF` | `INTERNAL_ERROR` | Hardware or unexpected failure |
 
 #### Command Details
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, and SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only). The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16,"uptime_ms":uint32}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only), and the device uptime in milliseconds from the millis clock. The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks), `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks, and no camera capture is performed). Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
@@ -1808,6 +1818,8 @@ Every command returns a `CommandResult` enum value:
 | `0x23` | `SET_CONFIG_VALUE` | Null-terminated string: `"section.key=value"` | None | Sets a single configuration value in the live (in-RAM) config. The string contains both the key path and the new value separated by `=`. String settings accept any value that fits the field buffer; numeric and boolean settings must satisfy the same constraints as the INI parser (e.g. `web.port` 1–65535, `web.max_streams` 1–4, `video.fps` 1–30, `video.mic_gain` 1–8, jpeg quality ≤ 63, `camera.grab_mode` hexadecimal ≤ 0xFF). Returns `INVALID_ARGS` if the key is unknown or the value is out of range or unparseable; rejected values leave the config unchanged. The change is NOT persisted; run `SET_CONFIG` to commit it to NVS or the SD card. |
 | `0x30` | `SET_TIME` | 4 bytes, raw `uint32_t` (little-endian Unix timestamp) | None | Sets the system Unix time offset. Payload must be exactly 4 bytes; returns `INVALID_ARGS` if too short. |
 | `0x40` | `LIST_FILES` | Text: `"<dir>[ <start>]"` (empty payload lists the SD root; start is a decimal entry index into the directory's emittable sequence, default 0) | JSON string: `{"dir":str,"start":uint,"total":uint,"skipped_long_names":uint,"entries":[{"n":str,"s":bytes,"d":is_dir,"r":recording}...],"more":bool,"next":uint}` | Returns one page (`FileService::PAGE_SIZE` = 12 entries) of a single directory listing with entry name, byte size, directory flag, and a recording flag set on the clip currently being written. Pagination runs over emittable entries only: names too long to serialize are excluded and counted in `skipped_long_names`, `total` counts emittable entries, and `next` is the absolute continuation index (the first unemitted entry, also set when the response buffer stops a page early); `more:false` terminates the listing. Listing is allowlisted to the SD root, `/logs`, and date directories; other paths return `INVALID_ARGS`. Returns `SD_UNAVAILABLE` when the card is absent, `INTERNAL_ERROR` when the directory scan fails. **Deviation from the plan**: file *content* transfer is not a dispatch command (see the `GET /download` route); only the bounded listing rides the command layer. |
+| `0x50` | `GET_VERSION` | None | JSON string: `{"version":str}` | Returns the firmware version string (`version::get_version_string()`, e.g. `"v0.0.1-12f30b"`) — the same build string logged at boot. Serves as the remote-test build identity check: a tester can confirm which build is flashed before running assertions. No side effects. |
+| `0x51` | `REBOOT` | None | None | Schedules a deferred device restart via the injected `hal::RestartHal` (a one-shot timer with a 500 ms margin, `SystemOrchestrator::REBOOT_DELAY_MS`), so the dispatching transport can deliver its response (HTTP reply or serial reply) before the device goes down. Returns `SUCCESS` immediately; the restart itself happens asynchronously. The web transport refuses this command with `UNAUTHORIZED` while no web password is configured (an open access point is never restartable remotely); the serial text protocol maps no command to this code, so `REBOOT` is reachable only via the web `reboot` cmd. |
 
 #### Transport Mappings
 
@@ -1828,6 +1840,8 @@ Every command returns a `CommandResult` enum value:
 | `config_set_value` | `SET_CONFIG_VALUE` | Requires `key` and `value` query parameters (empty `value` blanks the setting) |
 | `set_time` | `SET_TIME` | Requires a `ts` timestamp query parameter (Unix seconds) |
 | `files` | `LIST_FILES` | Optional `dir` query parameter (default `/`) plus optional `start` entry index into the emittable sequence; served as listing JSON. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
+| `version` | `GET_VERSION` | Served as version JSON. Not subject to the restricted-on-web policy, but still requires Basic auth when a web password is configured |
+| `reboot` | `REBOOT` | Deferred restart ~0.5 s after the response is delivered. Follows the config-command restricted-on-web policy (refused with `UNAUTHORIZED` while no web password is configured) |
 
 The web transport sends a JSON response body for all commands (the `GET_CONFIG` body is INI text served as `text/plain`):
 
@@ -2579,6 +2593,8 @@ This workflow covers two phases: **registration** (one-time wiring at startup) a
 
 **File-listing dispatch** — A second dispatch example shows the `cmd=files` request mapping to `LIST_FILES` (0x40), the handler registered by `FileService` rather than `SystemOrchestrator`. `LIST_FILES` is also subject to the config-command restricted-on-web policy: with no web password configured it is refused with `401` before dispatch.
 
+**Reboot dispatch** — A third dispatch example covers the maintenance commands: `cmd=version` maps to `GET_VERSION` (0x50) and returns the build identity as JSON, while `cmd=reboot` maps to `REBOOT` (0x51). Like `LIST_FILES`, `REBOOT` is subject to the restricted-on-web policy: with no web password configured it is refused with `UNAUTHORIZED` before dispatch. When authorized, the handler schedules the restart on the injected `hal::RestartHal` (a one-shot timer with a 500 ms margin) and returns `SUCCESS`, or `INTERNAL_ERROR` if the restart could not be scheduled, so the HTTP response is delivered before the device restarts — the restart itself never runs inside the request handler.
+
 ```plantuml
 @startuml
 title Command Registration & Web Dispatch Flow
@@ -2619,6 +2635,8 @@ ORCH -> CMDH : register_handler(GET_CONFIG, fn)
 ORCH -> CMDH : register_handler(SET_CONFIG, fn)
 ORCH -> CMDH : register_handler(GET_CONFIG_VALUE, fn)
 ORCH -> CMDH : register_handler(SET_CONFIG_VALUE, fn)
+ORCH -> CMDH : register_handler(GET_VERSION, fn)
+ORCH -> CMDH : register_handler(REBOOT, fn)
 
 ORCH --> MAIN : return
 deactivate ORCH

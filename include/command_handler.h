@@ -49,7 +49,7 @@ class CommandHandler
                                uint8_t* response, size_t& responseLen);
 
     private:
-        static constexpr size_t MAX_HANDLERS = 16;
+        static constexpr size_t MAX_HANDLERS = 20;
         static constexpr size_t MAX_TRANSPORTS = 4;
 
         static constexpr const char* SUBSYSTEM = "CMDH";

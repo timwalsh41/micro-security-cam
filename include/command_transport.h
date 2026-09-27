@@ -29,6 +29,8 @@ enum class CommandCode : uint8_t
     SET_CONFIG_VALUE = 0x23,
     SET_TIME = 0x30,
     LIST_FILES = 0x40,      ///< JSON listing of one SD directory (paginated)
+    GET_VERSION = 0x50,     ///< Firmware version string (JSON)
+    REBOOT = 0x51,          ///< Deferred device restart
 };
 
 /** Result codes returned by command handlers. */

@@ -10,6 +10,7 @@
 #include "logging_service.h"
 #include "sd_controller.h"
 #include "hal/nvs_hal.h"
+#include "hal/restart_hal.h"
 #include "hal/time_hal.h"
 #include "hal/web_server_hal.h"
 
@@ -26,6 +27,11 @@ class StreamService;
 class SystemOrchestrator
 {
     public:
+        /** Delay between accepting a REBOOT command and the actual
+         *  restart: long enough for the HTTP response (or serial
+         *  reply) to flush to the client first. */
+        static constexpr hal::millis_t REBOOT_DELAY_MS = 500;
+
         /**
          * @brief Constructs the SystemOrchestrator with injected dependencies.
          *
@@ -40,6 +46,7 @@ class SystemOrchestrator
          * @param sd         Reference to SdController for SD availability and
          *                   config persistence to the SD card.
          * @param nvs        Reference to NvsHal for config persistence to NVS.
+         * @param restart    Reference to RestartHal for deferred device restart.
          */
         SystemOrchestrator(VideoController& video,
                            CameraController& camera,
@@ -50,7 +57,8 @@ class SystemOrchestrator
                            StreamService& streams,
                            hal::WebServerHal& web,
                            SdController& sd,
-                           hal::NvsHal& nvs);
+                           hal::NvsHal& nvs,
+                           hal::RestartHal& restart);
 
         /**
          * @brief Initializes the orchestrator.
@@ -82,6 +90,7 @@ class SystemOrchestrator
 
     private:
         static constexpr const char* SUBSYSTEM = "ORCH";
+
         VideoController& m_video;
         CameraController& m_camera;
         CommandHandler& m_cmd_handler;
@@ -92,6 +101,7 @@ class SystemOrchestrator
         hal::WebServerHal& m_web;
         SdController& m_sd;
         hal::NvsHal& m_nvs;
+        hal::RestartHal& m_restart;
 
         /** Latched SD availability snapshot from init(). */
         bool m_sd_available{false};
@@ -151,6 +161,10 @@ class SystemOrchestrator
                                          uint8_t* response, size_t& responseLen);
         CommandResult handle_list_streams(const uint8_t* payload, size_t len,
                                           uint8_t* response, size_t& responseLen);
+        CommandResult handle_get_version(const uint8_t* payload, size_t len,
+                                         uint8_t* response, size_t& responseLen);
+        CommandResult handle_reboot(const uint8_t* payload, size_t len,
+                                    uint8_t* response, size_t& responseLen);
 
         /** @brief Handler for GET /stream — registers a viewer slot. */
         void handle_stream_request(hal::RequestRef& request);
