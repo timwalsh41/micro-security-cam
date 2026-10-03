@@ -30,7 +30,8 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
                                        hal::WebServerHal& web,
                                        SdController& sd,
                                        hal::NvsHal& nvs,
-                                       hal::RestartHal& restart)
+                                       hal::RestartHal& restart,
+                                       HardwarePeripheralManager& hw_periph)
     : m_video(video)
     , m_camera(camera)
     , m_cmd_handler(cmd_handler)
@@ -42,6 +43,7 @@ SystemOrchestrator::SystemOrchestrator(VideoController& video,
     , m_sd(sd)
     , m_nvs(nvs)
     , m_restart(restart)
+    , m_hw_periph(hw_periph)
 {
 }
 
@@ -258,6 +260,18 @@ CommandResult SystemOrchestrator::handle_get_status(
         videos = m_sd_stats.videos;
     }
 
+    // Build identity and live telemetry for the web UI status panel:
+    // version (from version.h), core temperature, the applied frame
+    // dimensions, and the cumulative delivered-frame count the UI
+    // samples to render the preview framerate.
+    char version_buf[32] = "unknown";
+    if (!version::get_version_string(version_buf, sizeof(version_buf)))
+    {
+        strncpy(version_buf, "unknown", sizeof(version_buf) - 1);
+        version_buf[sizeof(version_buf) - 1] = '\0';
+    }
+    const ResolvedCameraParams& cam_params = m_camera.get_params();
+
     int written = snprintf(
         reinterpret_cast<char*>(response),
         CommandHandler::MAX_RESPONSE_SIZE,
@@ -265,7 +279,11 @@ CommandResult SystemOrchestrator::handle_get_status(
         "\"file_size\":%lu,"
         "\"connected_streams\":%u,"
         "\"sd_free_bytes\":%" PRIu64 ",\"photos\":%u,\"videos\":%u,"
-        "\"uptime_ms\":%lu}",
+        "\"uptime_ms\":%lu,"
+        "\"version\":\"%s\","
+        "\"temperature_c\":%.2f,"
+        "\"width\":%u,\"height\":%u,"
+        "\"stream_frames\":%lu}",
         recording ? "true" : "false",
         streaming ? "true" : "false",
         m_sd_available ? "true" : "false",
@@ -275,7 +293,12 @@ CommandResult SystemOrchestrator::handle_get_status(
         free_bytes,
         photos,
         videos,
-        static_cast<unsigned long>(hal::get_millis())
+        static_cast<unsigned long>(hal::get_millis()),
+        version_buf,
+        static_cast<double>(m_hw_periph.read_temperature()),
+        static_cast<unsigned int>(cam_params.width),
+        static_cast<unsigned int>(cam_params.height),
+        static_cast<unsigned long>(m_streams.total_frames_delivered())
     );
 
     if (written < 0 || static_cast<size_t>(written) >= CommandHandler::MAX_RESPONSE_SIZE)

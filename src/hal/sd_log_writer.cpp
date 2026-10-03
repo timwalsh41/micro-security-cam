@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,8 @@ SdLogWriter::SdLogWriter(SdController& sd_controller,
 
 void SdLogWriter::write(hal::LogLevel level, const char* line)
 {
+    std::lock_guard<std::mutex> lock(m_buffer_mutex);
+
     // Filter by minimum severity level
     if (level < m_min_level)
     {
@@ -63,6 +66,7 @@ void SdLogWriter::write(hal::LogLevel level, const char* line)
 
 void SdLogWriter::tick()
 {
+    std::lock_guard<std::mutex> lock(m_buffer_mutex);
     flush_buffer();
     check_rotate();
 }

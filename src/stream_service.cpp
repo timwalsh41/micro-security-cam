@@ -181,6 +181,8 @@ void StreamService::deliver_frame(const uint8_t* data, size_t len)
         return;
     }
 
+    m_total_frames_delivered.fetch_add(1, std::memory_order_relaxed);
+
     // Build the per-frame part header with the actual Content-Length.
     char header[PART_HEADER_CAPACITY];
     size_t header_len = format_part_header(header, sizeof(header), len);
@@ -244,6 +246,11 @@ uint8_t StreamService::active_slot_count() const
         }
     }
     return count;
+}
+
+uint32_t StreamService::total_frames_delivered() const
+{
+    return m_total_frames_delivered.load(std::memory_order_relaxed);
 }
 
 size_t StreamService::format_part_header(char* buf, size_t cap,

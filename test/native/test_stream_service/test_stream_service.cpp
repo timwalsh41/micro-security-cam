@@ -651,6 +651,46 @@ void test_concurrent_slot_mutation_and_delivery()
 }
 
 // ============================================================
+// Delivered-frame counter
+// ============================================================
+
+/**
+ * @brief The delivered-frame counter starts at zero.
+ */
+void test_delivered_frames_counter_starts_at_zero()
+{
+    TestFixture f;
+
+    TEST_ASSERT_EQUAL_UINT32(0, f.service.total_frames_delivered());
+}
+
+/**
+ * @brief Each deliver_frame() counts once, with or without viewers;
+ *        a null/empty delivery does not count.
+ */
+void test_delivered_frames_counter_counts_every_delivery()
+{
+    TestFixture f;
+
+    // No viewers: the frame still counts (preview rate telemetry).
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    TEST_ASSERT_EQUAL_UINT32(1, f.service.total_frames_delivered());
+
+    f.service.init(4);
+    auto channel = std::make_shared<StreamFrameChannel>();
+    int slot = f.service.start_stream(channel);
+    TEST_ASSERT_TRUE(slot >= 0);
+
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    f.service.deliver_frame(FAKE_JPEG, sizeof(FAKE_JPEG));
+    TEST_ASSERT_EQUAL_UINT32(3, f.service.total_frames_delivered());
+
+    // Rejected deliveries do not count.
+    f.service.deliver_frame(nullptr, 0);
+    TEST_ASSERT_EQUAL_UINT32(3, f.service.total_frames_delivered());
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -677,6 +717,8 @@ int main()
     RUN_TEST(test_stream_end_after_stop_is_noop);
     RUN_TEST(test_stream_sequence_is_strict_parser_consumable);
     RUN_TEST(test_concurrent_slot_mutation_and_delivery);
+    RUN_TEST(test_delivered_frames_counter_starts_at_zero);
+    RUN_TEST(test_delivered_frames_counter_counts_every_delivery);
 
     return UNITY_END();
 }

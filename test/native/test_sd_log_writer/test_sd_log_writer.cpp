@@ -5,8 +5,10 @@
 #include "sd_controller.h"
 #include "time_service.h"
 #include <Arduino.h>
+#include <atomic>
 #include <string>
 #include <cstring>
+#include <thread>
 
 // ============================================================
 // Test fixtures
@@ -326,6 +328,61 @@ void test_retention_maximum_does_not_delete_current_log()
 }
 
 // ============================================================
+// Concurrency
+// ============================================================
+
+/**
+ * @brief Concurrent write() callers racing the flushing tick() never
+ *        corrupt buffered lines: every line lands intact.
+ */
+void test_concurrent_writes_and_ticks_preserve_lines()
+{
+    SdLogWriterFixture f;
+    std::atomic<bool> writers_done{false};
+
+    std::thread ticker([&f, &writers_done]()
+    {
+        while (!writers_done.load())
+        {
+            f.writer.tick();
+            std::this_thread::yield();
+        }
+    });
+
+    auto writer_fn = [&f](int id)
+    {
+        char line[64];
+        for (int i = 0; i < 200; i++)
+        {
+            snprintf(line, sizeof(line), "thread%d line%03d payload",
+                     id, i);
+            f.writer.write(hal::LogLevel::INFO, line);
+        }
+    };
+
+    std::thread w1(writer_fn, 1);
+    std::thread w2(writer_fn, 2);
+    w1.join();
+    w2.join();
+    writers_done.store(true);
+    ticker.join();
+    f.writer.tick();
+
+    std::string content = f.get_log_content("/logs/19700101.log");
+    TEST_ASSERT_FALSE(content.empty());
+    for (int id = 1; id <= 2; id++)
+    {
+        for (int i = 0; i < 200; i++)
+        {
+            char line[64];
+            snprintf(line, sizeof(line), "thread%d line%03d payload",
+                     id, i);
+            TEST_ASSERT_NOT_NULL(strstr(content.c_str(), line));
+        }
+    }
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -396,6 +453,9 @@ int main()
     // Retention cleanup
     RUN_TEST(test_retention_deletes_expired_logs);
     RUN_TEST(test_retention_maximum_does_not_delete_current_log);
+
+    // Concurrency
+    RUN_TEST(test_concurrent_writes_and_ticks_preserve_lines);
 
     return UNITY_END();
 }

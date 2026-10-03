@@ -6,6 +6,7 @@
 #include "time_service.h"
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 /**
  * @file sd_log_writer.h
@@ -25,6 +26,11 @@
  * Implements hal::LogBackend to receive formatted log lines,
  * buffers them in internal DRAM, and flushes to SD card on tick().
  * Supports daily log file rotation and configurable retention.
+ *
+ * Thread safety: write() may be called from several task contexts
+ * while tick() flushes from the main loop; an internal mutex
+ * serializes the buffer and rotation state and is held across the
+ * buffered flush I/O.
  */
 class SdLogWriter : public hal::LogBackend
 {
@@ -109,6 +115,11 @@ class SdLogWriter : public hal::LogBackend
 
         char m_buffer[BUFFER_SIZE];
         size_t m_buffer_pos;
+
+        /**
+         * @brief Serializes write() against the flushing tick().
+         */
+        mutable std::mutex m_buffer_mutex;
 
         /**
          * @brief Flag indicating whether the log directory has been created.
