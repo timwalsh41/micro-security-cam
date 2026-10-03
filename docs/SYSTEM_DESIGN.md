@@ -81,902 +81,747 @@ The firmware is split into four class diagrams, one per architectural layer. Cla
 
 #### 1. Hardware Abstraction Layer (`include/hal/`, `src/hal/`)
 
-```plantuml
-@startuml
-title HAL - Interfaces & ESP32 Implementations
-
-hide empty members
-skinparam classAttributeIconSize 0
-top to bottom direction
-skinparam packageLayout 1
-
-package "HAL interfaces" as HAL_IF {
-
-    interface CameraHal {
-        +init(config : CameraConfig) : CameraInitResult
-        +deinit()
-        +capture() : CameraFrame
-        +release()
-        +is_initialized() : bool
-        +get_capabilities() : CameraCapabilities
+```mermaid
+---
+title: "HAL - Interfaces & ESP32 Implementations"
+---
+classDiagram
+    namespace HAL_IF["HAL interfaces"] {
+        class CameraHal <<interface>> {
+            +init(config : CameraConfig) : CameraInitResult
+            +deinit()
+            +capture() : CameraFrame
+            +release()
+            +is_initialized() : bool
+            +get_capabilities() : CameraCapabilities
+        }
+        class SdCardHal <<interface>> {
+            +init() : SdInitResult
+            +open(path : const char*, mode : FileOpenMode) : bool
+            +write(data : const uint8_t*, len : size_t) : bool
+            +read(buffer : uint8_t*, len : size_t) : size_t
+            +seek(pos : uint32_t) : bool
+            +create_dir(path : const char*) : bool
+            +exists(path : const char*) : bool
+            +remove(path : const char*) : bool
+            +list_dir(dir_path : const char*, callback : DirEntryCallback) : bool
+            +file_size(path : const char*) : size_t
+            +free_bytes() : uint64_t
+            +total_bytes() : uint64_t
+            +close()
+            +is_initialized() : bool
+        }
+        class NvsHal <<interface>> {
+            +begin(namespace_name : const char*) : bool
+            +read_blob(key, buffer, buffer_size) : size_t
+            +write_blob(key, data, len) : bool
+            +erase_key(key) : bool
+        }
+        class SerialHal <<interface>> {
+            +available() : int
+            +read() : int
+            +write(data : const uint8_t*, len : size_t) : size_t
+            +flush()
+        }
+        class TimerHal <<interface>> {
+            +init(interval_us : uint32_t, isr)
+            +set_frequency(interval_us : uint32_t)
+            +start()
+            +stop()
+        }
+        class WifiHal <<interface>> {
+            +mode(sta : bool, ap : bool)
+            +begin_sta(ssid, password)
+            +begin_ap(ssid, password)
+            +status() : WifiStatus
+            +local_ip() : const char*
+            +config_static(ip, gateway, subnet) : bool
+            +disconnect()
+            +is_connected() : bool
+        }
+        class WebServerHal <<interface>> {
+            +init(port : uint16_t) : bool
+            +on(uri, method, handler)
+            +stop()
+        }
+        class MicHal <<interface>> {
+            +init(config : MicConfig) : MicInitResult
+            +start()
+            +stop()
+            +deinit()
+            +read_samples(buffer, count) : size_t
+            +is_initialized() : bool
+        }
+        class RequestRef <<interface>> {
+            +uri() : const char*
+            +method() : HttpMethod
+            +arg(name) : const char*
+            +form_value(name) : const char*
+            +form_value_truncated(name) : bool
+            +header(name) : const char*
+            +auth_header() : const char*
+            +send(code, content_type, content)
+            +send_stream_response(channel, boundary, on_end) : bool
+            +send_data_response(content_type, total_len, filler) : bool
+        }
+        class StreamFrameChannel {
+            +push_part(data, len) : bool
+            +pull(out, max_len) : size_t
+            +close()
+        }
+        class LogBackend <<interface>> {
+            +write(level : LogLevel, line : const char*)
+            +tick()
+        }
+        class HardwarePeripheralManager <<interface>> {
+            +cs_signal(signal : SdSignal)
+            +update_led(led_on : bool)
+            +read_temperature() : float
+            +setup_shared_pin()
+        }
     }
-
-    interface SdCardHal {
-        +init() : SdInitResult
-        +open(path : const char*, mode : FileOpenMode) : bool
-        +write(data : const uint8_t*, len : size_t) : bool
-        +read(buffer : uint8_t*, len : size_t) : size_t
-        +seek(pos : uint32_t) : bool
-        +create_dir(path : const char*) : bool
-        +exists(path : const char*) : bool
-        +remove(path : const char*) : bool
-        +list_dir(dir_path : const char*, callback : DirEntryCallback) : bool
-        +file_size(path : const char*) : size_t
-        +free_bytes() : uint64_t
-        +total_bytes() : uint64_t
-        +close()
-        +is_initialized() : bool
+    namespace HAL_IMPL["ESP32 implementations"] {
+        class CameraHalImpl {
+            -m_initialized : bool
+            -m_frame_acquired : bool
+            -m_fb : camera_fb_t*
+        }
+        class SdCardHalImpl {
+            -m_cs_pin : uint8_t
+            -m_file_open : bool
+        }
+        class SerialHalImpl {
+            -m_write_mutex : SemaphoreHandle_t
+            write() serialised via mutex
+        }
+        class NvsHalImpl {
+            -m_prefs : Preferences
+            -m_open : bool
+        }
+        class TimerHalImpl {
+            ESP-IDF timer_group ISR timer
+        }
+        class MicHalImpl {
+            -m_initialized : bool
+        }
+        class WifiHalImpl {
+            -m_connected : bool
+            -m_ip_buffer : char[16]
+        }
+        class WebServerHalImpl {
+            -m_server : AsyncWebServer*
+        }
+        class AsyncRequestRef {
+            -m_request : AsyncWebServerRequest*
+        }
+        class AsyncWebServerResponse {
+            ESPAsyncWebServer base response
+        }
+        class AsyncJpegStreamResponse {
+            -m_channel : shared_ptr<StreamFrameChannel>
+            +_fillBuffer(buf, maxLen) : size_t
+        }
+        class SerialLogBackend {
+            -m_serial : SerialHal&
+        }
+        class SdLogWriter {
+            -m_sd_controller : SdController&
+            -m_time : TimeService&
+            -m_min_level : LogLevel
+            -m_retention_days : uint8_t
+            -m_buffer : char[4096]
+            -m_buffer_pos : size_t
+            -m_current_date : char[9]
+            +write(level, line)
+            +tick()
+            +current_log_path() : const char*
+            +current_date() : const char*
+        }
+        class MultiLogBackend {
+            -m_backends : LogBackend*[4]
+            -m_min_levels : LogLevel[4]
+            -m_backend_count : size_t
+            +add_backend(backend, min_level) : bool
+            +write(level, line)
+            +tick()
+            +backend_count() : size_t
+        }
+        class HardwarePeripheralManagerImpl {
+            -m_sd_active_mutex : SemaphoreHandle_t
+        }
     }
-
-    interface NvsHal {
-        +begin(namespace_name : const char*) : bool
-        +read_blob(key, buffer, buffer_size) : size_t
-        +write_blob(key, data, len) : bool
-        +erase_key(key) : bool
+    namespace HAL_VALUE["HAL value types"] {
+        class CameraFrame <<struct>> {
+            +data : const uint8_t*
+            +len : size_t
+        }
+        class CameraCapabilities <<struct>> {
+            +max_framesize : FrameSize
+            +min_jpeg_quality : uint8_t
+            +max_fb_count : uint8_t
+            +max_width : uint16_t
+            +max_height : uint16_t
+        }
+        class CameraConfig <<struct>> {
+            +jpeg_quality : uint8_t
+            +frame_size : FrameSize
+            +fb_count : uint8_t
+            +grab_mode : uint8_t
+            +rotation : uint16_t
+        }
+        class FrameSize <<enumeration>> {
+            QQVGA
+            QVGA
+            VGA
+            SVGA
+            XGA
+            HD
+            UXGA
+        }
     }
-
-    interface SerialHal {
-        +available() : int
-        +read() : int
-        +write(data : const uint8_t*, len : size_t) : size_t
-        +flush()
-    }
-
-    interface TimerHal {
-        +init(interval_us : uint32_t, isr)
-        +set_frequency(interval_us : uint32_t)
-        +start()
-        +stop()
-    }
-
-    interface WifiHal {
-        +mode(sta : bool, ap : bool)
-        +begin_sta(ssid, password)
-        +begin_ap(ssid, password)
-        +status() : WifiStatus
-        +local_ip() : const char*
-        +config_static(ip, gateway, subnet) : bool
-        +disconnect()
-        +is_connected() : bool
-    }
-
-    interface WebServerHal {
-        +init(port : uint16_t) : bool
-        +on(uri, method, handler)
-        +stop()
-    }
-
-    interface MicHal {
-        +init(config : MicConfig) : MicInitResult
-        +start()
-        +stop()
-        +deinit()
-        +read_samples(buffer, count) : size_t
-        +is_initialized() : bool
-    }
-
-    interface RequestRef {
-        +uri() : const char*
-        +method() : HttpMethod
-        +arg(name) : const char*
-        +form_value(name) : const char*
-        +form_value_truncated(name) : bool
-        +header(name) : const char*
-        +auth_header() : const char*
-        +send(code, content_type, content)
-        +send_stream_response(channel, boundary, on_end) : bool
-        +send_data_response(content_type, total_len, filler) : bool
-    }
-
-    class StreamFrameChannel {
-        +push_part(data, len) : bool
-        +pull(out, max_len) : size_t
-        +close()
-    }
-
-    interface LogBackend {
-        +write(level : LogLevel, line : const char*)
-        +tick()
-    }
-
-    interface HardwarePeripheralManager {
-        +cs_signal(signal : SdSignal)
-        +update_led(led_on : bool)
-        +read_temperature() : float
-        +setup_shared_pin()
-    }
-}
-
-package "ESP32 implementations" as HAL_IMPL {
-
-    class CameraHalImpl {
-        -m_initialized : bool
-        -m_frame_acquired : bool
-        -m_fb : camera_fb_t*
-    }
-
-    class SdCardHalImpl {
-        -m_cs_pin : uint8_t
-        -m_file_open : bool
-    }
-
-    class SerialHalImpl {
-        -m_write_mutex : SemaphoreHandle_t
-        write() serialised via mutex
-    }
-
-    class NvsHalImpl {
-        -m_prefs : Preferences
-        -m_open : bool
-    }
-
-    class TimerHalImpl {
-        ESP-IDF timer_group ISR timer
-    }
-
-    class MicHalImpl {
-        -m_initialized : bool
-    }
-
-    class WifiHalImpl {
-        -m_connected : bool
-        -m_ip_buffer : char[16]
-    }
-
-    class WebServerHalImpl {
-        -m_server : AsyncWebServer*
-    }
-
-    class AsyncRequestRef {
-        -m_request : AsyncWebServerRequest*
-    }
-
-    class AsyncWebServerResponse {
-        ESPAsyncWebServer base response
-    }
-
-    class AsyncJpegStreamResponse {
-        -m_channel : shared_ptr<StreamFrameChannel>
-        +_fillBuffer(buf, maxLen) : size_t
-    }
-
-    class SerialLogBackend {
-        -m_serial : SerialHal&
-    }
-
-    class SdLogWriter {
-        -m_sd_controller : SdController&
-        -m_time : TimeService&
-        -m_min_level : LogLevel
-        -m_retention_days : uint8_t
-        -m_buffer : char[4096]
-        -m_buffer_pos : size_t
-        -m_current_date : char[9]
-        +write(level, line)
-        +tick()
-        +current_log_path() : const char*
-        +current_date() : const char*
-    }
-
-    class MultiLogBackend {
-        -m_backends : LogBackend*[4]
-        -m_min_levels : LogLevel[4]
-        -m_backend_count : size_t
-        +add_backend(backend, min_level) : bool
-        +write(level, line)
-        +tick()
-        +backend_count() : size_t
-    }
-
-    class HardwarePeripheralManagerImpl {
-        -m_sd_active_mutex : SemaphoreHandle_t
-    }
-}
-
-package "HAL value types" {
-
-    class CameraFrame <<struct>> {
-        +data : const uint8_t*
-        +len : size_t
-    }
-
-    class CameraCapabilities <<struct>> {
-        +max_framesize : FrameSize
-        +min_jpeg_quality : uint8_t
-        +max_fb_count : uint8_t
-        +max_width : uint16_t
-        +max_height : uint16_t
-    }
-
-    class CameraConfig <<struct>> {
-        +jpeg_quality : uint8_t
-        +frame_size : FrameSize
-        +fb_count : uint8_t
-        +grab_mode : uint8_t
-        +rotation : uint16_t
-    }
-
-    class FrameSize <<enumeration>> {
-        QQVGA
-        QVGA
-        VGA
-        SVGA
-        XGA
-        HD
-        UXGA
-    }
-}
-
-' Inheritance arrows point up (-up-|>) so interfaces sit above their
-' implementations. `top to bottom direction` plus `skinparam packageLayout 1`
-' (declared at the top of the diagram) stack each package internally so
-' interfaces sit in the top row and impls in the bottom row of HAL_IF/HAL_IMPL
-' respectively. Per-pair `together { }` blocks at global scope force each
-' interface/impl pair to share a column. AsyncWebServerResponse is declared
-' explicitly inside HAL_IMPL so the inheritance arrow stays in-package.
-'
-' The four cross-package dependency relationships below are drawn as plain
-' `-` lines (no arrowhead, no directional positional hint). PlantUML's
-' directed arrows (`-->`, `..>`, `.down.>`) impose a positional layout
-' constraint that forces source-above-target, which broke the column
-' alignment (see stage 4c of docs/diag/HAL_layout_diag.md — the original
-' `RequestRef .down.> StreamFrameChannel` arrow was the culprit). The plain
-' lines document the relationships without disrupting the layout.
-together {
-    HAL_IF.CameraHal   -[hidden]down- HAL_IMPL.CameraHalImpl
-}
-together {
-    HAL_IF.SdCardHal   -[hidden]down- HAL_IMPL.SdCardHalImpl
-}
-together {
-    HAL_IF.SerialHal   -[hidden]down- HAL_IMPL.SerialHalImpl
-}
-together {
-    HAL_IF.NvsHal      -[hidden]down- HAL_IMPL.NvsHalImpl
-}
-together {
-    HAL_IF.TimerHal    -[hidden]down- HAL_IMPL.TimerHalImpl
-}
-together {
-    HAL_IF.WifiHal     -[hidden]down- HAL_IMPL.WifiHalImpl
-}
-together {
-    HAL_IF.WebServerHal -[hidden]down- HAL_IMPL.WebServerHalImpl
-}
-together {
-    HAL_IF.RequestRef  -[hidden]down- HAL_IMPL.AsyncRequestRef
-}
-together {
-    HAL_IF.StreamFrameChannel -[hidden]down- HAL_IMPL.AsyncJpegStreamResponse
-}
-together {
-    HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.SerialLogBackend
-}
-together {
-    HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.SdLogWriter
-}
-together {
-    HAL_IF.LogBackend  -[hidden]down- HAL_IMPL.MultiLogBackend
-}
-
-CameraHalImpl -up-|> CameraHal
-SdCardHalImpl -up-|> SdCardHal
-SerialHalImpl -up-|> SerialHal
-TimerHalImpl -up-|> TimerHal
-WifiHalImpl -up-|> WifiHal
-WebServerHalImpl -up-|> WebServerHal
-AsyncRequestRef .up.|> RequestRef
-AsyncJpegStreamResponse -up-|> AsyncWebServerResponse
-SerialLogBackend -up-|> LogBackend
-SdLogWriter -up-|> LogBackend
-MultiLogBackend -up-|> LogBackend
-HardwarePeripheralManagerImpl -up-|> HardwarePeripheralManager
-
-SerialLogBackend - SerialHal : writes log lines
-SdLogWriter - SdController : buffered SD writes
-SdLogWriter - TimeService : day rotation timestamps
-MultiLogBackend -up- LogBackend : fans out to
-WebServerHalImpl - AsyncRequestRef : creates per request
-RequestRef - StreamFrameChannel : send_stream_response()
-AsyncJpegStreamResponse - StreamFrameChannel : pulls parts
-
-@enduml
+    CameraHalImpl --|> CameraHal
+    SdCardHalImpl --|> SdCardHal
+    SerialHalImpl --|> SerialHal
+    TimerHalImpl --|> TimerHal
+    WifiHalImpl --|> WifiHal
+    WebServerHalImpl --|> WebServerHal
+    AsyncRequestRef ..|> RequestRef
+    AsyncJpegStreamResponse --|> AsyncWebServerResponse
+    SerialLogBackend --|> LogBackend
+    SdLogWriter --|> LogBackend
+    MultiLogBackend --|> LogBackend
+    HardwarePeripheralManagerImpl --|> HardwarePeripheralManager
+    SerialLogBackend -- SerialHal : writes log lines
+    SdLogWriter -- SdController : buffered SD writes
+    SdLogWriter -- TimeService : day rotation timestamps
+    MultiLogBackend -- LogBackend : fans out to
+    WebServerHalImpl -- AsyncRequestRef : creates per request
+    RequestRef -- StreamFrameChannel : send_stream_response()
+    AsyncJpegStreamResponse -- StreamFrameChannel : pulls parts
 ```
 
 Note: `hal/gpio_hal.h` and `hal/time_hal.h` are free-function modules within namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()`) and are therefore not shown as classes.
 
 #### 2. Service Layer
 
-```plantuml
-@startuml
-title Service Layer - Time, Logging, LED, SD, Streaming, Config, WiFi, Web
-
-hide empty members
-skinparam classAttributeIconSize 0
-
-package "Services" {
-
-    interface TimeService {
-        +now() : millis_t
-        +delay_ms(ms)
-        +delay_us(us)
-        +set_unix_offset(unix_time, system_ms)
-        +is_time_set() : bool
-        +unix_now() : uint32_t
-        +localtime() : std::tm
-        +{static} elapsed_ms(since, now) : millis_t
+```mermaid
+---
+title: "Service Layer - Time, Logging, LED, SD, Streaming, Config, WiFi, Web"
+---
+classDiagram
+    namespace Services["Services"] {
+        class TimeService <<interface>> {
+            +now() : millis_t
+            +delay_ms(ms)
+            +delay_us(us)
+            +set_unix_offset(unix_time, system_ms)
+            +is_time_set() : bool
+            +unix_now() : uint32_t
+            +localtime() : std::tm
+            +elapsed_ms(since, now) : millis_t$
+        }
+        class RealTimeService {
+            -m_offset_pair : atomic<uint64_t>
+            -m_time_set : atomic<bool>
+        }
+        class LogLevel <<hal>> {
+            DEBUG
+            INFO
+            WARNING
+            ERROR
+        }
+        class LoggingService {
+            -m_backend : LogBackend&
+            -m_time : TimeService&
+            +log(level, subsystem, fmt)
+            +debug(subsystem, fmt)
+            +info(subsystem, fmt)
+            +warn(subsystem, fmt)
+            +error(subsystem, fmt)
+        }
+        class LedMode <<enumeration>> {
+            OFF
+            ON
+            PULSE_ON
+            BLINK
+        }
+        class LedStateMachine {
+            -m_mode : LedMode
+            -m_on_duration_ms : millis_t
+            -m_off_duration_ms : millis_t
+            +set_mode(mode, on_ms, off_ms)
+            +tick() : bool
+        }
+        class SdSignal <<peripherals>> {
+            IDLE
+            CS_ACTIVE
+            CS_INACTIVE
+        }
+        class SdController {
+            -m_state : SdState
+            -m_sd_hal : SdCardHal&
+            -m_cs_signal_fn : CsSignalFn
+            +tick() : SdSignal
+            +start_write(path, data, len, mode)
+            +start_read(path, buffer, buffer_size)
+            +init_card() : SdInitResult
+            +is_card_available() : bool
+            +write_sync(path, data, len, mode) : bool
+            +read_sync(path, buffer, size) : size_t
+            +write_at_sync(path, offset, data, len) : bool
+            +read_at_sync(path, offset, buffer, len) : size_t
+            +size_sync(path) : size_t
+            +free_bytes_sync() : uint64_t
+            +total_bytes_sync() : uint64_t
+            +create_dir_sync(path) : bool
+            +exists_sync(path) : bool
+            +remove_sync(path) : bool
+            +list_dir_sync(dir_path, callback) : bool
+        }
+        class IStreamService <<interface>> {
+            +deliver_frame(data : const uint8_t*, len : size_t)
+            +stop_all_streams()
+        }
+        class StreamService {
+            +MAX_STREAMS = 8
+            -m_slots : StreamSlot[MAX_STREAMS]
+            -m_max_streams : uint8_t
+            +init(max_streams : uint8_t)
+            +start_stream(channel : shared_ptr<StreamFrameChannel>) : int
+            +stop_stream(slot : uint8_t)
+            +stop_all_streams()
+            +deliver_frame(data, len)
+            +on_stream_ended(channel : StreamFrameChannel*)
+            +active_slot_count() : uint8_t
+        }
+        class ConfigService {
+            -m_logger : LoggingService&
+            -m_config : ConfigData
+            -m_mutex : std::mutex
+            +load(data : const uint8_t*, length : size_t) : bool
+            +overlay(data : const uint8_t*, length : size_t) : bool
+            +config() : const ConfigData&
+            +mutable_config() : ConfigData&
+            +get_config_value(key, value_out, max_len) : bool
+            +set_config_value(key, value) : bool
+            +serialize(buffer, buffer_size) : size_t
+            +load_nvs(nvs : NvsHal&) : bool
+            +save_nvs(nvs : NvsHal&) : bool
+            +load_sd(sd : SdController&) : bool
+            +save_sd(sd : SdController&) : bool
+        }
+        class WifiService {
+            -m_hal : WifiHal&
+            -m_connected : bool
+            +init(sta : WifiConfig, ap : ApConfig, timeout_secs : uint16_t)
+            +is_connected() : bool
+            +local_ip() : const char*
+            -start_ap(ap : ApConfig)
+        }
+        class WebServerService {
+            -m_hal : WebServerHal&
+            -m_password : char[]
+            +init(config : WebConfig)
+            -handle_index(request : RequestRef&)
+            -check_auth(request : RequestRef&) : bool
+        }
+        class FileService {
+            -m_sd : SdController&
+            -m_cmd_handler : CommandHandler&
+            -m_log : LoggingService&
+            -m_active_clip : function
+            -m_password : char[]
+            +PAGE_SIZE = 12
+            +LOG_TAIL_MAX_BYTES = 16384
+            +DOWNLOAD_CHUNK_SIZE = 4096
+            +init(web : WebServerHal&, password)
+            +set_active_clip_provider(provider)
+            +handle_list_files(payload, len, response, responseLen)
+            -handle_files_request(request)
+            -handle_download_request(request)
+            -handle_logs_request(request)
+            -handle_log_request(request)
+            +is_valid_path(path) : bool$
+            +is_allowed_listing_dir(dir) : bool$
+            +is_allowed_download_path(path) : bool$
+            +build_listing_json(dir, start, buf, max_len) : size_t
+            -check_auth(request) : bool
+        }
     }
-
-    class RealTimeService {
-        -m_offset_pair : atomic<uint64_t>
-        -m_time_set : atomic<bool>
+    namespace ExtHal["External (see Diagram 1 - HAL)"] {
+        class LogBackend <<interface>>
+        class SdCardHal <<interface>>
+        class NvsHal <<interface>>
+        class WifiHal <<interface>>
+        class WebServerHal <<interface>>
+        class RequestRef <<interface>>
+        class StreamFrameChannel
     }
-
-    enum LogLevel <<hal>> {
-        DEBUG
-        INFO
-        WARNING
-        ERROR
+    namespace ExtOrch["External (see Diagram 3 - Orchestration)"] {
+        class CommandHandler
     }
-
-    class LoggingService {
-        -m_backend : LogBackend&
-        -m_time : TimeService&
-        +log(level, subsystem, fmt)
-        +debug(subsystem, fmt)
-        +info(subsystem, fmt)
-        +warn(subsystem, fmt)
-        +error(subsystem, fmt)
+    namespace ExtUtil["External (see Diagram 4 - Utilities)"] {
+        class ConfigData
+        class IniParser
     }
-
-    enum LedMode {
-        OFF
-        ON
-        PULSE_ON
-        BLINK
-    }
-
-    class LedStateMachine {
-        -m_mode : LedMode
-        -m_on_duration_ms : millis_t
-        -m_off_duration_ms : millis_t
-        +set_mode(mode, on_ms, off_ms)
-        +tick() : bool
-    }
-
-    enum SdSignal <<peripherals>> {
-        IDLE
-        CS_ACTIVE
-        CS_INACTIVE
-    }
-
-    class SdController {
-        -m_state : SdState
-        -m_sd_hal : SdCardHal&
-        -m_cs_signal_fn : CsSignalFn
-        +tick() : SdSignal
-        +start_write(path, data, len, mode)
-        +start_read(path, buffer, buffer_size)
-        +init_card() : SdInitResult
-        +is_card_available() : bool
-        +write_sync(path, data, len, mode) : bool
-        +read_sync(path, buffer, size) : size_t
-        +write_at_sync(path, offset, data, len) : bool
-        +read_at_sync(path, offset, buffer, len) : size_t
-        +size_sync(path) : size_t
-        +free_bytes_sync() : uint64_t
-        +total_bytes_sync() : uint64_t
-        +create_dir_sync(path) : bool
-        +exists_sync(path) : bool
-        +remove_sync(path) : bool
-        +list_dir_sync(dir_path, callback) : bool
-    }
-
-    interface IStreamService {
-        +deliver_frame(data : const uint8_t*, len : size_t)
-        +stop_all_streams()
-    }
-
-    class StreamService {
-        +MAX_STREAMS = 8
-        -m_slots : StreamSlot[MAX_STREAMS]
-        -m_max_streams : uint8_t
-        +init(max_streams : uint8_t)
-        +start_stream(channel : shared_ptr<StreamFrameChannel>) : int
-        +stop_stream(slot : uint8_t)
-        +stop_all_streams()
-        +deliver_frame(data, len)
-        +on_stream_ended(channel : StreamFrameChannel*)
-        +active_slot_count() : uint8_t
-    }
-
-    class ConfigService {
-        -m_logger : LoggingService&
-        -m_config : ConfigData
-        -m_mutex : std::mutex
-        +load(data : const uint8_t*, length : size_t) : bool
-        +overlay(data : const uint8_t*, length : size_t) : bool
-        +config() : const ConfigData&
-        +mutable_config() : ConfigData&
-        +get_config_value(key, value_out, max_len) : bool
-        +set_config_value(key, value) : bool
-        +serialize(buffer, buffer_size) : size_t
-        +load_nvs(nvs : NvsHal&) : bool
-        +save_nvs(nvs : NvsHal&) : bool
-        +load_sd(sd : SdController&) : bool
-        +save_sd(sd : SdController&) : bool
-    }
-
-    class WifiService {
-        -m_hal : WifiHal&
-        -m_connected : bool
-        +init(sta : WifiConfig, ap : ApConfig, timeout_secs : uint16_t)
-        +is_connected() : bool
-        +local_ip() : const char*
-        -start_ap(ap : ApConfig)
-    }
-
-    class WebServerService {
-        -m_hal : WebServerHal&
-        -m_password : char[]
-        +init(config : WebConfig)
-        -handle_index(request : RequestRef&)
-        -check_auth(request : RequestRef&) : bool
-    }
-
-    class FileService {
-        -m_sd : SdController&
-        -m_cmd_handler : CommandHandler&
-        -m_log : LoggingService&
-        -m_active_clip : function
-        -m_password : char[]
-        +PAGE_SIZE = 12
-        +LOG_TAIL_MAX_BYTES = 16384
-        +DOWNLOAD_CHUNK_SIZE = 4096
-        +init(web : WebServerHal&, password)
-        +set_active_clip_provider(provider)
-        +handle_list_files(payload, len, response, responseLen)
-        -handle_files_request(request)
-        -handle_download_request(request)
-        -handle_logs_request(request)
-        -handle_log_request(request)
-        +{static} is_valid_path(path) : bool
-        +{static} is_allowed_listing_dir(dir) : bool
-        +{static} is_allowed_download_path(path) : bool
-        +build_listing_json(dir, start, buf, max_len) : size_t
-        -check_auth(request) : bool
-    }
-}
-
-package "External (see Diagram 1 - HAL)" <<Frame>> {
-    interface LogBackend_ext as "LogBackend"
-    interface SdCardHal_ext as "SdCardHal"
-    interface NvsHal_ext as "NvsHal"
-    interface WifiHal_ext as "WifiHal"
-    interface WebServerHal_ext as "WebServerHal"
-    interface RequestRef_ext as "RequestRef"
-    class StreamFrameChannel_ext as "StreamFrameChannel"
-}
-
-package "External (see Diagram 3 - Orchestration)" <<Frame>> {
-    class CommandHandler_ext as "CommandHandler"
-}
-
-package "External (see Diagram 4 - Utilities)" <<Frame>> {
-    class ConfigData_ext as "ConfigData"
-    class IniParser_ext as "IniParser"
-}
-
-RealTimeService -up-|> TimeService
-StreamService -up-|> IStreamService
-
-LoggingService --> LogBackend_ext : formats lines
-LoggingService --> TimeService : timestamps
-LoggingService ..> LogLevel
-LedStateMachine --> TimeService : elapsed time
-LedStateMachine ..> LedMode
-SdController --> SdCardHal_ext : file I/O
-SdController --> TimeService : CS timing
-SdController ..> SdSignal : tick() output
-StreamService *-- "0..8" StreamFrameChannel_ext : stream slots
-StreamService --> LoggingService : diagnostics
-ConfigService --> LoggingService : diagnostics
-ConfigService *-- "1" ConfigData_ext : owns
-ConfigService ..> IniParser_ext : load()/overlay() parse via IniParser
-ConfigService ..> NvsHal_ext : load_nvs()/save_nvs()
-ConfigService ..> SdController : load_sd()/save_sd()
-WifiService --> WifiHal_ext : connection
-WifiService --> TimeService : timeouts
-WifiService --> LoggingService : diagnostics
-WebServerService --> WebServerHal_ext : registers GET /
-WebServerService --> LoggingService : diagnostics
-WebServerService ..> RequestRef_ext : handle_index()
-FileService --> SdController_ext : listing / download / log-tail reads
-FileService --> CommandHandler_ext : registers LIST_FILES (0x40)
-FileService ..> RequestRef_ext : /files, /download, /logs, /log handlers
-FileService --> LoggingService : diagnostics
-
-@enduml
+    RealTimeService --|> TimeService
+    StreamService --|> IStreamService
+    LoggingService --> LogBackend : formats lines
+    LoggingService --> TimeService : timestamps
+    LoggingService ..> LogLevel
+    LedStateMachine --> TimeService : elapsed time
+    LedStateMachine ..> LedMode
+    SdController --> SdCardHal : file I/O
+    SdController --> TimeService : CS timing
+    SdController ..> SdSignal : tick() output
+    StreamService *-- "0..8" StreamFrameChannel : stream slots
+    StreamService --> LoggingService : diagnostics
+    ConfigService --> LoggingService : diagnostics
+    ConfigService *-- "1" ConfigData : owns
+    ConfigService ..> IniParser : load()/overlay() parse via IniParser
+    ConfigService ..> NvsHal : load_nvs()/save_nvs()
+    ConfigService ..> SdController : load_sd()/save_sd()
+    WifiService --> WifiHal : connection
+    WifiService --> TimeService : timeouts
+    WifiService --> LoggingService : diagnostics
+    WebServerService --> WebServerHal : registers GET /
+    WebServerService --> LoggingService : diagnostics
+    WebServerService ..> RequestRef : handle_index()
+    FileService --> SdController_ext : listing / download / log-tail reads
+    FileService --> CommandHandler : registers LIST_FILES (0x40)
+    FileService ..> RequestRef : /files, /download, /logs, /log handlers
+    FileService --> LoggingService : diagnostics
 ```
 
 #### 3. Orchestration & Command Layer
 
-```plantuml
-@startuml
-title Orchestration & Command Layer - Orchestrator, Controllers, Dispatch
-
-hide empty members
-skinparam classAttributeIconSize 0
-
-package "Command dispatch framework" {
-
-    enum CommandCode {
-        GET_STATUS = 0x01
-        START_RECORDING = 0x10
-        STOP_RECORDING = 0x11
-        TAKE_PHOTO = 0x12
-        START_STREAM = 0x13
-        STOP_STREAM = 0x14
-        LIST_STREAMS = 0x15
-        SET_CONFIG = 0x20
-        GET_CONFIG = 0x21
-        GET_CONFIG_VALUE = 0x22
-        SET_CONFIG_VALUE = 0x23
-        SET_TIME = 0x30
-        LIST_FILES = 0x40
-        GET_VERSION = 0x50
-        REBOOT = 0x51
+```mermaid
+---
+title: "Orchestration & Command Layer - Orchestrator, Controllers, Dispatch"
+---
+classDiagram
+    namespace CmdDispatch["Command dispatch framework"] {
+        class CommandCode <<enumeration>> {
+            GET_STATUS = 0x01
+            START_RECORDING = 0x10
+            STOP_RECORDING = 0x11
+            TAKE_PHOTO = 0x12
+            START_STREAM = 0x13
+            STOP_STREAM = 0x14
+            LIST_STREAMS = 0x15
+            SET_CONFIG = 0x20
+            GET_CONFIG = 0x21
+            GET_CONFIG_VALUE = 0x22
+            SET_CONFIG_VALUE = 0x23
+            SET_TIME = 0x30
+            LIST_FILES = 0x40
+            GET_VERSION = 0x50
+            REBOOT = 0x51
+        }
+        class CommandResult <<enumeration>> {
+            SUCCESS = 0x00
+            UNRECOGNIZED = 0x01
+            INVALID_ARGS = 0x02
+            INVALID_STATE = 0x03
+            SD_UNAVAILABLE = 0x04
+            UNAUTHORIZED = 0x05
+            INTERNAL_ERROR = 0xFF
+        }
+        class CommandTransport <<interface>> {
+            +has_request() : bool
+            +read_request(code, payload, payload_len)
+            +send_response(result, data, len)
+        }
+        class WebCommandTransport {
+            -m_web : WebServerHal&
+            -m_handler : CommandHandler&
+            -m_password : char[]
+            +register_routes(password : const char*)
+            -check_auth(request : RequestRef&) : bool
+            -map_cmd_string(cmd : const char*) : CommandCode
+            -dispatch_and_respond(request, code)
+            -handle_status(request : RequestRef&)
+            -handle_control(request : RequestRef&)
+        }
+        class SerialCommandTransport {
+            +LINE_BUFFER_SIZE = 128
+            -m_serial : SerialHal&
+            -m_line_buffer : char[128]
+            -m_request_ready : bool
+            -m_echo_enabled : bool
+            +set_echo_enabled(enabled : bool)
+            -echo_line()
+            -parse_command(cmd, args, code, payload, payload_len) : bool
+        }
+        class CommandHandler {
+            +MAX_RESPONSE_SIZE = 1280
+            -m_log : LoggingService&
+            -m_handlers : HandlerEntry[16]
+            -m_transports : CommandTransport*[4]
+            +register_handler(code, handler)
+            +add_transport(transport : CommandTransport&)
+            +tick()
+            +dispatch(code, payload, len, response, responseLen) : CommandResult
+        }
     }
-
-    enum CommandResult {
-        SUCCESS = 0x00
-        UNRECOGNIZED = 0x01
-        INVALID_ARGS = 0x02
-        INVALID_STATE = 0x03
-        SD_UNAVAILABLE = 0x04
-        UNAUTHORIZED = 0x05
-        INTERNAL_ERROR = 0xFF
+    namespace Controllers["Controllers"] {
+        class CameraController {
+            -m_hal : CameraHal&
+            -m_config : CameraConfig
+            -m_initialized : bool
+            -m_frame_acquired : bool
+            -m_current_frame : CameraFrame
+            -m_actual_params : ResolvedCameraParams
+            +init() : CameraInitResult
+            +init(params : ResolvedCameraParams) : CameraInitResult
+            +deinit()
+            +capture_frame() : CameraCaptureResult
+            +get_frame() : CameraFrame
+            +release_frame()
+            +get_params() : const ResolvedCameraParams&
+        }
+        class VideoController {
+            -m_slots : ConsumerSlot[3]
+            -m_record_sink : RecordSink
+            -m_stream_sink : StreamSink
+            -m_clip_session : AviClipSession
+            -m_stream_service : IStreamService*
+            -m_requests : PipelineRequest[8]
+            -m_executor_active : atomic<bool>
+            -m_pipeline_drained : atomic<bool>
+            -m_config : VideoConfig
+            -m_width : uint16_t
+            -m_height : uint16_t
+            -m_mic : MicService*
+            -m_audio_buffer : vector<int16_t>
+            -m_audio_chunk_size : size_t
+            +init(config : VideoConfig, width, height) : bool
+            +set_mic_service(mic : MicService*)
+            +start_recording() : bool
+            +stop_recording()
+            +capture_photo(path : const char*) : bool
+            +make_unique_path(base_path, out, out_size) : bool
+            +start_streaming() : bool
+            +stop_streaming()
+            +set_stream_service(stream_service)
+            +register_frame_consumer(consumer) : int
+            +unregister_frame_consumer(id)
+            +is_recording() : bool
+            +is_streaming() : bool
+            +is_capture_active() : bool
+            -capture_and_dispatch_frame()
+            -drain_audio_to_clip()
+            -handle_clip_closure()
+            -process_requests() / execute_request()
+            -executor_take_photo(path)
+            -finish_command()
+            -ensure_loop_running() : bool
+        }
+        class AviClipSession {
+            -m_avi_writer : AviWriter
+            -m_close_requested : atomic<bool>
+            -m_close_pending : bool
+            -m_frames_recorded : atomic<uint32_t>
+            -m_audio_samples_recorded : atomic<uint32_t>
+            -m_file_size : atomic<uint32_t>
+            -m_file_path : char[64]
+            -m_clip_path : char[64]
+            +open() : bool
+            +close()
+            +append_frame(data, len)
+            +append_audio_chunk(data, len)
+            +request_close() / consume_close_request() : bool
+            +is_open() / close_pending() : bool
+            +frames_recorded() / file_size() : uint32_t
+            +audio_samples_recorded() : uint32_t
+            +is_audio_enabled() : bool
+        }
+        class AviWriter {
+            -m_header : vector<uint8_t>
+            -m_frame_chunk : vector<uint8_t>
+            -m_index_entries : vector<IndexEntry>
+            +open(path, fps, width, height) : bool
+            +write_frame(jpeg_data, jpeg_len) : bool
+            +close() : bool
+            +header() : AviBytes
+            +last_frame_chunk() : AviBytes
+            +patched_header() : AviBytes
+            +index() : AviBytes
+            +open_audio(sample_rate, bits_per_sample, channels) : bool
+            +write_audio_chunk(audio_data, audio_len) : bool
+            +last_audio_chunk() : AviBytes
+        }
+        class MicService {
+            -m_hal : MicHal&
+            -m_log : LoggingService&
+            -m_config : ConfigService&
+            -m_ring_buffer : int16_t*
+            -m_write_idx : atomic<size_t>
+            -m_read_idx : atomic<size_t>
+            -m_capturing : volatile bool
+            -m_task_handle : void*
+            +init() : bool
+            +start() : bool
+            +stop() : bool
+            +deinit()
+            +get_audio_chunk(buffer, max_samples) : size_t
+            +available_samples() : size_t
+            +generate_wav_header(header, header_size, data_size) : bool
+            +sample_rate() : uint32_t
+            +is_capturing() : bool
+            +mic_loop()
+        }
+        class ICaptureScheduler <<interface>> {
+            +start(interval_ms, frame_callback) : bool
+            +stop()
+            +on_frame_capture()
+        }
+        class CaptureSchedulerEsp32 {
+            -m_timer : TimerHal&
+            -m_task : atomic<TaskHandle_t>
+            -m_stop_requested : atomic<bool>
+            -m_exit_sem : SemaphoreHandle_t
+        }
     }
-
-    interface CommandTransport {
-        +has_request() : bool
-        +read_request(code, payload, payload_len)
-        +send_response(result, data, len)
-    }
-
-    class WebCommandTransport {
-        -m_web : WebServerHal&
-        -m_handler : CommandHandler&
-        -m_password : char[]
-        +register_routes(password : const char*)
-        -check_auth(request : RequestRef&) : bool
-        -map_cmd_string(cmd : const char*) : CommandCode
-        -dispatch_and_respond(request, code)
-        -handle_status(request : RequestRef&)
-        -handle_control(request : RequestRef&)
-    }
-
-    class SerialCommandTransport {
-        +LINE_BUFFER_SIZE = 128
-        -m_serial : SerialHal&
-        -m_line_buffer : char[128]
-        -m_request_ready : bool
-        -m_echo_enabled : bool
-        +set_echo_enabled(enabled : bool)
-        -echo_line()
-        -parse_command(cmd, args, code, payload, payload_len) : bool
-    }
-
-    class CommandHandler {
-        +MAX_RESPONSE_SIZE = 1280
-        -m_log : LoggingService&
-        -m_handlers : HandlerEntry[16]
-        -m_transports : CommandTransport*[4]
-        +register_handler(code, handler)
-        +add_transport(transport : CommandTransport&)
+    class SystemOrchestrator {
+        -m_video : VideoController&
+        -m_camera : CameraController&
+        -m_cmd_handler : CommandHandler&
+        -m_streams : StreamService&
+        -m_stream_password : char[]
+        -m_sd : SdController&
+        -m_nvs : NvsHal&
+        -m_restart : RestartHal&
+        -m_sd_available : bool
+        +init()
         +tick()
-        +dispatch(code, payload, len, response, responseLen) : CommandResult
+        +is_sd_available() : bool
+        -register_commands()
+        -register_stream_route()
+        -handle_get_status()
+        -handle_start_recording()
+        -handle_stop_recording()
+        -handle_take_photo()
+        -handle_set_time()
+        -handle_set_config()
+        -handle_get_config()
+        -handle_get_config_value()
+        -handle_set_config_value()
+        -handle_start_stream()
+        -handle_stop_stream()
+        -handle_list_streams()
+        -handle_get_version()
+        -handle_reboot()
+        -handle_stream_request(request : RequestRef&)
     }
-}
-
-package "Controllers" {
-
-    class CameraController {
-        -m_hal : CameraHal&
-        -m_config : CameraConfig
-        -m_initialized : bool
-        -m_frame_acquired : bool
-        -m_current_frame : CameraFrame
-        -m_actual_params : ResolvedCameraParams
-        +init() : CameraInitResult
-        +init(params : ResolvedCameraParams) : CameraInitResult
-        +deinit()
-        +capture_frame() : CameraCaptureResult
-        +get_frame() : CameraFrame
-        +release_frame()
-        +get_params() : const ResolvedCameraParams&
+    namespace ExtHal["External (see Diagram 1 - HAL)"] {
+        class CameraHal <<interface>>
+        class SerialHal <<interface>>
+        class TimerHal <<interface>>
+        class WebServerHal <<interface>>
+        class NvsHal <<interface>>
+        class RestartHal <<interface>>
     }
-
-    class VideoController {
-        -m_slots : ConsumerSlot[3]
-        -m_record_sink : RecordSink
-        -m_stream_sink : StreamSink
-        -m_clip_session : AviClipSession
-        -m_stream_service : IStreamService*
-        -m_requests : PipelineRequest[8]
-        -m_executor_active : atomic<bool>
-        -m_pipeline_drained : atomic<bool>
-        -m_config : VideoConfig
-        -m_width : uint16_t
-        -m_height : uint16_t
-        -m_mic : MicService*
-        -m_audio_buffer : vector<int16_t>
-        -m_audio_chunk_size : size_t
-        +init(config : VideoConfig, width, height) : bool
-        +set_mic_service(mic : MicService*)
-        +start_recording() : bool
-        +stop_recording()
-        +capture_photo(path : const char*) : bool
-        +make_unique_path(base_path, out, out_size) : bool
-        +start_streaming() : bool
-        +stop_streaming()
-        +set_stream_service(stream_service)
-        +register_frame_consumer(consumer) : int
-        +unregister_frame_consumer(id)
-        +is_recording() : bool
-        +is_streaming() : bool
-        +is_capture_active() : bool
-        -capture_and_dispatch_frame()
-        -drain_audio_to_clip()
-        -handle_clip_closure()
-        -process_requests() / execute_request()
-        -executor_take_photo(path)
-        -finish_command()
-        -ensure_loop_running() : bool
+    namespace ExtSvc["External (see Diagram 2 - Services)"] {
+        class IStreamService <<interface>>
+        class ConfigService
+        class LoggingService
+        class SdController
+        class StreamService
+        class TimeService <<interface>>
     }
-
-    class AviClipSession {
-        -m_avi_writer : AviWriter
-        -m_close_requested : atomic<bool>
-        -m_close_pending : bool
-        -m_frames_recorded : atomic<uint32_t>
-        -m_audio_samples_recorded : atomic<uint32_t>
-        -m_file_size : atomic<uint32_t>
-        -m_file_path : char[64]
-        -m_clip_path : char[64]
-        +open() : bool
-        +close()
-        +append_frame(data, len)
-        +append_audio_chunk(data, len)
-        +request_close() / consume_close_request() : bool
-        +is_open() / close_pending() : bool
-        +frames_recorded() / file_size() : uint32_t
-        +audio_samples_recorded() : uint32_t
-        +is_audio_enabled() : bool
+    namespace ExtUtil["External (see Diagram 4 - Utilities)"] {
+        class ResolvedCameraParams
     }
-
-    class AviWriter {
-        -m_header : vector<uint8_t>
-        -m_frame_chunk : vector<uint8_t>
-        -m_index_entries : vector<IndexEntry>
-        +open(path, fps, width, height) : bool
-        +write_frame(jpeg_data, jpeg_len) : bool
-        +close() : bool
-        +header() : AviBytes
-        +last_frame_chunk() : AviBytes
-        +patched_header() : AviBytes
-        +index() : AviBytes
-        +open_audio(sample_rate, bits_per_sample, channels) : bool
-        +write_audio_chunk(audio_data, audio_len) : bool
-        +last_audio_chunk() : AviBytes
-    }
-
-    class MicService {
-        -m_hal : MicHal&
-        -m_log : LoggingService&
-        -m_config : ConfigService&
-        -m_ring_buffer : int16_t*
-        -m_write_idx : atomic<size_t>
-        -m_read_idx : atomic<size_t>
-        -m_capturing : volatile bool
-        -m_task_handle : void*
-        +init() : bool
-        +start() : bool
-        +stop() : bool
-        +deinit()
-        +get_audio_chunk(buffer, max_samples) : size_t
-        +available_samples() : size_t
-        +generate_wav_header(header, header_size, data_size) : bool
-        +sample_rate() : uint32_t
-        +is_capturing() : bool
-        +mic_loop()
-    }
-
-    interface ICaptureScheduler {
-        +start(interval_ms, frame_callback) : bool
-        +stop()
-        +on_frame_capture()
-    }
-
-    class CaptureSchedulerEsp32 {
-        -m_timer : TimerHal&
-        -m_task : atomic<TaskHandle_t>
-        -m_stop_requested : atomic<bool>
-        -m_exit_sem : SemaphoreHandle_t
-    }
-}
-
-class SystemOrchestrator {
-    -m_video : VideoController&
-    -m_camera : CameraController&
-    -m_cmd_handler : CommandHandler&
-    -m_streams : StreamService&
-    -m_stream_password : char[]
-    -m_sd : SdController&
-    -m_nvs : NvsHal&
-    -m_restart : RestartHal&
-    -m_sd_available : bool
-    +init()
-    +tick()
-    +is_sd_available() : bool
-    -register_commands()
-    -register_stream_route()
-    -handle_get_status()
-    -handle_start_recording()
-    -handle_stop_recording()
-    -handle_take_photo()
-    -handle_set_time()
-    -handle_set_config()
-    -handle_get_config()
-    -handle_get_config_value()
-    -handle_set_config_value()
-    -handle_start_stream()
-    -handle_stop_stream()
-    -handle_list_streams()
-    -handle_get_version()
-    -handle_reboot()
-    -handle_stream_request(request : RequestRef&)
-}
-
-package "External (see Diagram 1 - HAL)" <<Frame>> {
-    interface CameraHal_ext as "CameraHal"
-    interface SerialHal_ext as "SerialHal"
-    interface TimerHal_ext as "TimerHal"
-    interface WebServerHal_ext as "WebServerHal"
-    interface NvsHal_ext as "NvsHal"
-    interface RestartHal_ext as "RestartHal"
-}
-
-package "External (see Diagram 2 - Services)" <<Frame>> {
-    interface IStreamService_ext as "IStreamService"
-    class ConfigService_ext as "ConfigService"
-    class LoggingService_ext as "LoggingService"
-    class SdController_ext as "SdController"
-    class StreamService_ext as "StreamService"
-    interface TimeService_ext as "TimeService"
-}
-
-package "External (see Diagram 4 - Utilities)" <<Frame>> {
-    class ResolvedCameraParams_ext as "ResolvedCameraParams"
-}
-
-WebCommandTransport -up-|> CommandTransport
-SerialCommandTransport -up-|> CommandTransport
-CaptureSchedulerEsp32 -up-|> ICaptureScheduler
-
-CommandHandler o--> "0..4" CommandTransport : polled in tick()
-CommandHandler --> LoggingService_ext : diagnostics
-CommandHandler ..> CommandCode
-CommandHandler ..> CommandResult
-WebCommandTransport --> WebServerHal_ext : registers /status, /control
-WebCommandTransport --> CommandHandler : dispatch()
-SerialCommandTransport --> SerialHal_ext : line protocol
-SerialCommandTransport --> TimeService_ext : echo timestamps
-
-SystemOrchestrator --> VideoController : record control
-SystemOrchestrator --> VideoController : photo capture
-SystemOrchestrator --> CommandHandler : register handlers
-SystemOrchestrator --> ConfigService_ext : config access
-SystemOrchestrator --> SdController_ext : SD availability + config save
-SystemOrchestrator --> NvsHal_ext : config save
-SystemOrchestrator --> LoggingService_ext : diagnostics
-SystemOrchestrator --> StreamService_ext : stream control
-SystemOrchestrator --> TimeService_ext : time ops
-SystemOrchestrator --> WebServerHal_ext : /stream route
-SystemOrchestrator --> RestartHal_ext : deferred restart
-
-CameraController --> CameraHal_ext : clamps against capabilities
-VideoController *-- "1" AviClipSession : owns
-AviClipSession *-- "1" AviWriter : owns
-VideoController --> CameraController : capture cycle
-VideoController --> SdController_ext : sync writes
-VideoController --> LoggingService_ext : diagnostics
-VideoController --> TimeService_ext : clip duration
-VideoController --> ICaptureScheduler : frame pacing
-VideoController --> MicService : audio drain (optional)
-VideoController --> "0..1" IStreamService_ext : optional frame sink + viewer teardown
-VideoController --> StreamService_ext : set_stream_service() wiring
-VideoController o-right-> "0..3" IFrameConsumer : consumer registry
-CaptureSchedulerEsp32 --> TimerHal_ext : periodic ISR
-
-@enduml
+    WebCommandTransport --|> CommandTransport
+    SerialCommandTransport --|> CommandTransport
+    CaptureSchedulerEsp32 --|> ICaptureScheduler
+    CommandHandler o--> "0..4" CommandTransport : polled in tick()
+    CommandHandler --> LoggingService : diagnostics
+    CommandHandler ..> CommandCode
+    CommandHandler ..> CommandResult
+    WebCommandTransport --> WebServerHal : registers /status, /control
+    WebCommandTransport --> CommandHandler : dispatch()
+    SerialCommandTransport --> SerialHal : line protocol
+    SerialCommandTransport --> TimeService : echo timestamps
+    SystemOrchestrator --> VideoController : record control
+    SystemOrchestrator --> VideoController : photo capture
+    SystemOrchestrator --> CommandHandler : register handlers
+    SystemOrchestrator --> ConfigService : config access
+    SystemOrchestrator --> SdController : SD availability + config save
+    SystemOrchestrator --> NvsHal : config save
+    SystemOrchestrator --> LoggingService : diagnostics
+    SystemOrchestrator --> StreamService : stream control
+    SystemOrchestrator --> TimeService : time ops
+    SystemOrchestrator --> WebServerHal : /stream route
+    SystemOrchestrator --> RestartHal : deferred restart
+    CameraController --> CameraHal : clamps against capabilities
+    VideoController *-- "1" AviClipSession : owns
+    AviClipSession *-- "1" AviWriter : owns
+    VideoController --> CameraController : capture cycle
+    VideoController --> SdController : sync writes
+    VideoController --> LoggingService : diagnostics
+    VideoController --> TimeService : clip duration
+    VideoController --> ICaptureScheduler : frame pacing
+    VideoController --> MicService : audio drain (optional)
+    VideoController --> "0..1" IStreamService : optional frame sink + viewer teardown
+    VideoController --> StreamService : set_stream_service() wiring
+    VideoController o--> "0..3" IFrameConsumer : consumer registry
+    CaptureSchedulerEsp32 --> TimerHal : periodic ISR
 ```
 
 Note: `VideoController` owns its `AviClipSession` (composition), which owns the `AviWriter`; `AviWriter` performs no I/O — formatted bytes flow through `SdController`.
 
 #### 4. Utilities & Configuration Data
 
-```plantuml
-@startuml
-title Utilities & Configuration Data
-
-hide empty members
-skinparam classAttributeIconSize 0
-
-package "Utilities" {
-
-    class IniParser <<utility>> {
-        +{static} defaults() : ConfigData
-        +{static} parse(content, length) : ConfigData
-        +{static} overlay(base, content, length) : ConfigData
-        +{static} serialize(data, buffer, buffer_size) : size_t
+```mermaid
+---
+title: "Utilities & Configuration Data"
+---
+classDiagram
+    namespace Utilities["Utilities"] {
+        class IniParser <<utility>> {
+            +defaults() : ConfigData$
+            +parse(content, length) : ConfigData$
+            +overlay(base, content, length) : ConfigData$
+            +serialize(data, buffer, buffer_size) : size_t$
+        }
+        class TimeFormatter <<utility>> {
+            +format_date(unix_seconds, out, size) : bool$
+            +format_time(unix_seconds, out, size) : bool$
+        }
+        class PathUtils <<utility>> {
+            +make_unique_path(base_path, exists, out, out_size) : bool$
+            +extract_parent_dir(path, out, out_size) : bool$
+        }
+        class PlatformInitializer <<utility>> {
+            +init()
+            -suppress_esp_idf_logging()
+        }
     }
-
-    class TimeFormatter <<utility>> {
-        +{static} format_date(unix_seconds, out, size) : bool
-        +{static} format_time(unix_seconds, out, size) : bool
+    namespace ConfigDataNS["Configuration / camera data structures"] {
+        class ConfigData <<struct>> {
+            +wifi : WifiConfig
+            +ap : ApConfig
+            +web : WebConfig
+            +camera : CameraConfig
+            +video : VideoConfig
+            nested structs hold fixed-size
+            char arrays with typed defaults
+        }
+        class CameraImageConfig <<struct>> {
+            +resolution : const char*
+            +jpeg_quality : uint8_t
+            +fb_count : uint8_t
+        }
+        class ResolvedCameraParams <<struct>> {
+            +hal_config : CameraConfig
+            +width : uint16_t
+            +height : uint16_t
+        }
     }
-
-    class PathUtils <<utility>> {
-        +{static} make_unique_path(base_path, exists, out, out_size) : bool
-        +{static} extract_parent_dir(path, out, out_size) : bool
-    }
-
-    class PlatformInitializer <<utility>> {
-        +init()
-        -suppress_esp_idf_logging()
-    }
-}
-
-package "Configuration / camera data structures" {
-
-    class ConfigData <<struct>> {
-        +wifi : WifiConfig
-        +ap : ApConfig
-        +web : WebConfig
-        +camera : CameraConfig
-        +video : VideoConfig
-        nested structs hold fixed-size
-        char arrays with typed defaults
-    }
-
-    class CameraImageConfig <<struct>> {
-        +resolution : const char*
-        +jpeg_quality : uint8_t
-        +fb_count : uint8_t
-    }
-
-    class ResolvedCameraParams <<struct>> {
-        +hal_config : CameraConfig
-        +width : uint16_t
-        +height : uint16_t
-    }
-}
-
-IniParser ..> ConfigData : parse() / serialize()
-CameraImageConfig ..> ResolvedCameraParams : build_camera_config()\n(free function in camera_controller.h)
-
-@enduml
+    IniParser ..> ConfigData : parse() / serialize()
+    CameraImageConfig ..> ResolvedCameraParams : build_camera_config()<br/>(free function in camera_controller.h)
 ```
 
 Notes: all four utility classes are static-only (no instance state). The free function `check_basic_auth(auth_header, password)` (`web_auth_util.h`) is shared by `WebServerService` and `WebCommandTransport` for HTTP Basic validation and is likewise not a class. `PlatformInitializer` is instantiated once by `CameraRunnerImpl` and called at the top of `setup()`.
@@ -1959,40 +1804,35 @@ the single loop; `is_recording()` / `is_streaming()` report each
 subscription directly, and `is_capture_active()` reports whether the loop
 is running for any consumer.
 
-```plantuml
-@startuml
-title VideoController Producer / Subscriber Model
-
-interface ICaptureScheduler
-interface IFrameConsumer
-
-class VideoController {
-  registry : ConsumerSlot[3]
-  +register_frame_consumer(c) : int
-  +unregister_frame_consumer(id)
-  +is_recording() / is_streaming() / is_capture_active()
-  -capture_and_dispatch_frame()
-}
-
-class RecordSink {
-  AVI format + SD write
-}
-class StreamSink {
-  IStreamService::deliver_frame()
-}
-
-ICaptureScheduler ..> VideoController : frame trigger
-circle "frame pump" as PUMP
-VideoController ..> PUMP
-PUMP --> IFrameConsumer : on_frame(data, len)
-IFrameConsumer <|.. RecordSink
-IFrameConsumer <|.. StreamSink
-note bottom of IFrameConsumer
-  future subscribers (e.g. phase-6 motion detection)
-end note
-VideoController --> RecordSink : owns
-VideoController --> StreamSink : owns
-@enduml
+```mermaid
+---
+title: "VideoController Producer / Subscriber Model"
+---
+classDiagram
+    class ICaptureScheduler <<interface>>
+    class IFrameConsumer <<interface>>
+    class VideoController {
+        registry : ConsumerSlot[3]
+        +register_frame_consumer(c) : int
+        +unregister_frame_consumer(id)
+        +is_recording() / is_streaming() / is_capture_active()
+        -capture_and_dispatch_frame()
+    }
+    class RecordSink {
+        AVI format + SD write
+    }
+    class StreamSink {
+        IStreamService::deliver_frame()
+    }
+    class PUMP["frame pump"]
+    ICaptureScheduler ..> VideoController : frame trigger
+    VideoController ..> PUMP
+    PUMP --> IFrameConsumer : on_frame(data, len)
+    RecordSink ..|> IFrameConsumer
+    StreamSink ..|> IFrameConsumer
+    note for IFrameConsumer "future subscribers (e.g. phase-6 motion detection)"
+    VideoController --> RecordSink : owns
+    VideoController --> StreamSink : owns
 ```
 
 Built-in consumers:
@@ -2025,215 +1865,214 @@ On ESP32, `CaptureSchedulerEsp32` implements the scheduler using a hardware time
 
 The following diagram shows the continuous recording flow, including normal frame capture and the clip rotation path:
 
-```plantuml
-@startuml
-title Continuous Video Recording Flow
+```mermaid
+---
+title: "Continuous Video Recording Flow"
+---
+sequenceDiagram
+    participant MAIN as CameraRunner<br/>(loop)
+    participant CS as CaptureScheduler<br/>Esp32
+    participant TMR as TimerHalImpl<br/>(ISR)
+    participant TASK as Capture Task<br/>(CPU0)
+    participant VC as VideoController
+    participant MIC as MicService
+    participant MICHAL as MicHal
+    participant RS as RecordSink<br/>(bound slot)
+    participant ST as StreamSink<br/>(bound slot)
+    participant SS as StreamService
+    participant CAM as CameraController
+    participant ACS as AviClipSession
+    participant AVI as AviWriter
+    participant SDC as SdController
+    participant SD@{ "type" : "database" } as SD Card
 
-participant "CameraRunner\n(loop)" as MAIN
-participant "CaptureScheduler\nEsp32" as CS
-participant "TimerHalImpl\n(ISR)" as TMR
-participant "Capture Task\n(CPU0)" as TASK
-participant "VideoController" as VC
-participant "MicService" as MIC
-participant "MicHal" as MICHAL
-participant "RecordSink\n(bound slot)" as RS
-participant "StreamSink\n(bound slot)" as ST
-participant "StreamService" as SS
-participant "CameraController" as CAM
-participant "AviClipSession" as ACS
-participant "AviWriter" as AVI
-participant "SdController" as SDC
-database "SD Card" as SD
+    note over MAIN,SD: Recording Start
 
-== Recording Start ==
-
-MAIN -> VC : start_recording()
-activate VC
-VC -> VC : post START_RECORDING
-note right: executed by the executor (capture task\nor a waiting command task's serve path) at\nan activation boundary — the steps below\nrun under the executor token
-VC -> ACS : open()
-ACS -> AVI : open(path, fps, w, h)
-note right: Generates 224-byte\nAVI header template
-ACS -> SDC : write_sync(path, header, WRITE)
-activate SDC
-SDC -> SD : open(WRITE) → write(224 B) → close()
-SD --> SDC
-deactivate SDC
-VC -> MIC : start()
-activate MIC
-MIC -> MICHAL : start()
-MIC -> MIC : spawn mic_task
-note right: mic_task reads I2S samples into\nthe PSRAM ring buffer continuously;\nthe capture task drains audio at\nframe boundaries
-MIC --> VC : return true
-deactivate MIC
-VC -> VC : ensure_loop_running()
-note right: skipped when another consumer\n(e.g. streaming) already keeps\nthe loop running
-VC -> CS : start(interval_ms, callback)
-activate CS
-CS -> CS : init timer ISR
-CS -> TASK : xTaskCreatePinnedToCore()
-CS -> TMR : start()
-deactivate CS
-VC -> VC : acquire_free_slot() +\nbind_slot(id, RecordSink)
-note right: is_recording() is the\nregistry subscription
-VC --> MAIN : return true
-deactivate VC
-
-== Per-Frame Capture Loop ==
-
-loop at configured FPS interval
-
-TMR -> CS : on_frame_capture()
-CS -> TASK : vTaskNotifyGiveFromISR()
-activate TASK
-
-TASK -> VC : capture_and_dispatch_frame()
-activate VC
-
-VC -> CAM : capture_frame()
-CAM --> VC : SUCCESS
-
-VC -> CAM : get_frame()
-CAM --> VC : JPEG data
-
-VC -> VC : iterate registered slots
-note right: frame dispatch over the\nconsumer registry
-
-VC -> RS : on_frame(jpeg, len)
-activate RS
-RS -> ACS : append_frame(jpeg_data, len)
-activate ACS
-ACS -> AVI : write_frame(jpeg_data, len)
-note right: Wraps JPEG as 0x00dc\nAVI chunk with padding
-
-AVI --> ACS : last_frame_chunk()
-
-ACS -> SDC : write_sync(path, chunk, APPEND)
-activate SDC
-SDC -> SD : open(APPEND) → write(chunk) → close()
-SD --> SDC
-deactivate SDC
-deactivate ACS
-deactivate RS
-
-alt streaming also subscribed
-    VC -> ST : on_frame(jpeg, len)
-    activate ST
-    ST -> SS : deliver_frame(jpeg, len)
-    deactivate ST
-end
-
-VC -> CAM : release_frame()
-
-== Mic task reads I2S (concurrent, CPU1) ==
-
-note over MIC, MICHAL : mic_task loop (runs continuously while recording)\nreads I2S samples into the PSRAM ring buffer\nvia MicHal::read_samples(), applies gain,\nand writes to ring buffer
-
-== Audio drain at frame boundary ==
-
-VC -> MIC : get_audio_chunk(buffer, max_samples)
-activate MIC
-MIC --> VC : audio samples
-activate VC
-VC -> ACS : append_audio_chunk(audio, len)
-activate ACS
-ACS -> AVI : write_audio_chunk(audio, len)
-note right: Wraps PCM as 0x01wb\nAVI audio chunk with padding
-AVI --> ACS : last_audio_chunk()
-ACS -> SDC : write_sync(path, chunk, APPEND)
-activate SDC
-SDC -> SD : open(APPEND) → write(chunk) → close()
-SD --> SDC
-deactivate SDC
-deactivate ACS
-deactivate VC
-deactivate MIC
-
-ACS -> ACS : frames_recorded++\nfile_size += chunk.len (written bytes only)
-
-ACS -> ACS : check clip limits\n(duration, file size)
-
-alt clip limit reached (auto-rotate)
-    VC -> ACS : close()
-    note right: Appends index,\nthen seeks to offset 0\nto overwrite header
-    ACS -> SDC : write_sync(path, index, APPEND)
+    MAIN ->> VC : start_recording()
+    activate VC
+    VC ->> VC : post START_RECORDING
+    note right of VC: executed by the executor (capture task<br/>or a waiting command task's serve path) at<br/>an activation boundary — the steps below<br/>run under the executor token
+    VC ->> ACS : open()
+    ACS ->> AVI : open(path, fps, w, h)
+    note right of AVI: Generates 224-byte<br/>AVI header template
+    ACS ->> SDC : write_sync(path, header, WRITE)
     activate SDC
-    SDC -> SD : open(APPEND) → write(idx1) → close()
-    SD --> SDC
+    SDC ->> SD : open(WRITE) → write(224 B) → close()
+    SD -->> SDC:
     deactivate SDC
-    ACS -> SDC : write_at_sync(path, 0, patched_hdr)
-    activate SDC
-    SDC -> SD : open → seek(0) → write(hdr) → close()
-    SD --> SDC
-    deactivate SDC
-    VC -> ACS : open()
-    note right: New file, new\nplaceholder header
-    ACS -> SDC : write_sync(path, header, WRITE)
-    activate SDC
-    SDC -> SD : open(WRITE) → write(224 B) → close()
-    SD --> SDC
-    deactivate SDC
-end
-
-deactivate VC
-deactivate TASK
-
-end
-
-== Explicit Stop ==
-
-MAIN -> VC : stop_recording()
-activate VC
-VC -> VC : post STOP_RECORDING
-VC -> VC : executor: request_close() +\ndetach_consumer(RecordSink)
-note right: is_recording() false once the\nrequest executes (bounded by\none frame period); start_recording()\nrejected until then (clip close pending)
-VC -> MIC : stop()
-activate MIC
-MIC -> MIC : clear m_capturing flag
-MIC -> MIC : join mic_task
-MIC -> MICHAL : stop()
-MIC --> VC : return
-deactivate MIC
-alt other consumers keep the loop running
-    VC -> VC : loop keeps running;
-    note right: clip is finalized by the\nnext frame callback\n(one frame period bound);\nstart_recording() rejected\nuntil then (clip close pending)
-else last subscriber: teardown
-    VC -> CS : stop()
+    VC ->> MIC : start()
+    activate MIC
+    MIC ->> MICHAL : start()
+    MIC ->> MIC : spawn mic_task
+    note right of MIC: mic_task reads I2S samples into<br/>the PSRAM ring buffer continuously#59;<br/>the capture task drains audio at<br/>frame boundaries
+    MIC -->> VC : return true
+    deactivate MIC
+    VC ->> VC : ensure_loop_running()
+    note right of VC: skipped when another consumer<br/>(e.g. streaming) already keeps<br/>the loop running
+    VC ->> CS : start(interval_ms, callback)
     activate CS
-    CS -> TMR : stop()
-    CS -> TASK : xTaskNotifyGive()
-    CS -> TASK : join (bounded wait on exit semaphore)
-    note right: stop() blocks until the\ntask has run its final\ncallback and exited
-    CS --> VC : return
+    CS ->> CS : init timer ISR
+    CS ->> TASK : xTaskCreatePinnedToCore()
+    CS ->> TMR : start()
     deactivate CS
-    VC -> SS : stop_all_streams()
-    note right: viewers closed after the join
-end
-deactivate VC
+    VC ->> VC : acquire_free_slot() +<br/>bind_slot(id, RecordSink)
+    note right of VC: is_recording() is the<br/>registry subscription
+    VC -->> MAIN : return true
+    deactivate VC
 
-activate TASK
-TASK -> VC : capture_and_dispatch_frame()
-activate VC
-VC -> ACS : close()
-note right: Appends index,\nthen seeks to offset 0\nto overwrite header
-ACS -> SDC : write_sync(path, index, APPEND)
-activate SDC
-SDC -> SD : open(APPEND) → write(idx1) → close()
-SD --> SDC
-deactivate SDC
-ACS -> SDC : write_at_sync(path, 0, patched_hdr)
-activate SDC
-SDC -> SD : open(READ_WRITE) → seek(0) → write(hdr) → close()
-note right: READ_WRITE preserves\nexisting content; only\nthe header bytes are\nreplaced
-SD --> SDC
-deactivate SDC
-VC -> VC : clip finalized
-note right: clip-close-pending cleared
-deactivate VC
-TASK -> TASK : vTaskDelete()
-deactivate TASK
+    note over MAIN,SD: Per-Frame Capture Loop
 
-@enduml
+    loop at configured FPS interval
+
+    TMR ->> CS : on_frame_capture()
+    CS ->> TASK : vTaskNotifyGiveFromISR()
+    activate TASK
+
+    TASK ->> VC : capture_and_dispatch_frame()
+    activate VC
+
+    VC ->> CAM : capture_frame()
+    CAM -->> VC : SUCCESS
+
+    VC ->> CAM : get_frame()
+    CAM -->> VC : JPEG data
+
+    VC ->> VC : iterate registered slots
+    note right of VC: frame dispatch over the<br/>consumer registry
+
+    VC ->> RS : on_frame(jpeg, len)
+    activate RS
+    RS ->> ACS : append_frame(jpeg_data, len)
+    activate ACS
+    ACS ->> AVI : write_frame(jpeg_data, len)
+    note right of AVI: Wraps JPEG as 0x00dc<br/>AVI chunk with padding
+
+    AVI -->> ACS : last_frame_chunk()
+
+    ACS ->> SDC : write_sync(path, chunk, APPEND)
+    activate SDC
+    SDC ->> SD : open(APPEND) → write(chunk) → close()
+    SD -->> SDC:
+    deactivate SDC
+    deactivate ACS
+    deactivate RS
+
+    alt streaming also subscribed
+        VC ->> ST : on_frame(jpeg, len)
+        activate ST
+        ST ->> SS : deliver_frame(jpeg, len)
+        deactivate ST
+    end
+
+    VC ->> CAM : release_frame()
+
+    note over MAIN,SD: Mic task reads I2S (concurrent, CPU1)
+
+    note over MIC, MICHAL: mic_task loop (runs continuously while recording)<br/>reads I2S samples into the PSRAM ring buffer<br/>via MicHal::read_samples(), applies gain,<br/>and writes to ring buffer
+
+    note over MAIN,SD: Audio drain at frame boundary
+
+    VC ->> MIC : get_audio_chunk(buffer, max_samples)
+    activate MIC
+    MIC -->> VC : audio samples
+    activate VC
+    VC ->> ACS : append_audio_chunk(audio, len)
+    activate ACS
+    ACS ->> AVI : write_audio_chunk(audio, len)
+    note right of AVI: Wraps PCM as 0x01wb<br/>AVI audio chunk with padding
+    AVI -->> ACS : last_audio_chunk()
+    ACS ->> SDC : write_sync(path, chunk, APPEND)
+    activate SDC
+    SDC ->> SD : open(APPEND) → write(chunk) → close()
+    SD -->> SDC:
+    deactivate SDC
+    deactivate ACS
+    deactivate VC
+    deactivate MIC
+
+    ACS ->> ACS : frames_recorded++<br/>file_size += chunk.len (written bytes only)
+
+    ACS ->> ACS : check clip limits<br/>(duration, file size)
+
+    alt clip limit reached (auto-rotate)
+        VC ->> ACS : close()
+        note right of ACS: Appends index,<br/>then seeks to offset 0<br/>to overwrite header
+        ACS ->> SDC : write_sync(path, index, APPEND)
+        activate SDC
+        SDC ->> SD : open(APPEND) → write(idx1) → close()
+        SD -->> SDC:
+        deactivate SDC
+        ACS ->> SDC : write_at_sync(path, 0, patched_hdr)
+        activate SDC
+        SDC ->> SD : open → seek(0) → write(hdr) → close()
+        SD -->> SDC:
+        deactivate SDC
+        VC ->> ACS : open()
+        note right of ACS: New file, new<br/>placeholder header
+        ACS ->> SDC : write_sync(path, header, WRITE)
+        activate SDC
+        SDC ->> SD : open(WRITE) → write(224 B) → close()
+        SD -->> SDC:
+        deactivate SDC
+    end
+
+    deactivate VC
+    deactivate TASK
+
+    end
+
+    note over MAIN,SD: Explicit Stop
+
+    MAIN ->> VC : stop_recording()
+    activate VC
+    VC ->> VC : post STOP_RECORDING
+    VC ->> VC : executor: request_close() +<br/>detach_consumer(RecordSink)
+    note right of VC: is_recording() false once the<br/>request executes (bounded by<br/>one frame period)#59; start_recording()<br/>rejected until then (clip close pending)
+    VC ->> MIC : stop()
+    activate MIC
+    MIC ->> MIC : clear m_capturing flag
+    MIC ->> MIC : join mic_task
+    MIC ->> MICHAL : stop()
+    MIC -->> VC : return
+    deactivate MIC
+    alt other consumers keep the loop running
+        VC ->> VC : loop keeps running#59;
+        note right of VC: clip is finalized by the<br/>next frame callback<br/>(one frame period bound)#59;<br/>start_recording() rejected<br/>until then (clip close pending)
+    else last subscriber: teardown
+        VC ->> CS : stop()
+        activate CS
+        CS ->> TMR : stop()
+        CS ->> TASK : xTaskNotifyGive()
+        CS ->> TASK : join (bounded wait on exit semaphore)
+        note right of TASK: stop() blocks until the<br/>task has run its final<br/>callback and exited
+        CS -->> VC : return
+        deactivate CS
+        VC ->> SS : stop_all_streams()
+        note right of SS: viewers closed after the join
+    end
+    deactivate VC
+
+    activate TASK
+    TASK ->> VC : capture_and_dispatch_frame()
+    activate VC
+    VC ->> ACS : close()
+    note right of ACS: Appends index,<br/>then seeks to offset 0<br/>to overwrite header
+    ACS ->> SDC : write_sync(path, index, APPEND)
+    activate SDC
+    SDC ->> SD : open(APPEND) → write(idx1) → close()
+    SD -->> SDC:
+    deactivate SDC
+    ACS ->> SDC : write_at_sync(path, 0, patched_hdr)
+    activate SDC
+    SDC ->> SD : open(READ_WRITE) → seek(0) → write(hdr) → close()
+    note right of SD: READ_WRITE preserves<br/>existing content#59; only<br/>the header bytes are<br/>replaced
+    SD -->> SDC:
+    deactivate SDC
+    VC ->> VC : clip finalized
+    note right of VC: clip-close-pending cleared
+    deactivate VC
+    TASK ->> TASK : vTaskDelete()
+    deactivate TASK
 ```
 
 **Clip close blocks frame capture.** While the clip close runs (`AviClipSession::close()`) — appending the index and overwriting the placeholder header — no new frames are captured. The next frame is processed after the clip is fully written and (for auto-rotation) the new clip is opened.
@@ -2242,69 +2081,64 @@ deactivate TASK
 
 All pipeline-state mutation is serialized behind the executor token (`m_executor_active`): command tasks (web transport or serial main-loop) never mutate state directly — they post requests into a bounded request ring and wait (bounded) with `m_command_mutex` released, while the capture task, as the single executor, consumes the queue at activation boundaries. The diagram below traces a command through post, execution, and the drain-driven teardown join, plus the two alternative paths: the serve path (a waiting command task claims the token while the capture task is between activations) and fire-and-forget (a command issued from within `on_frame()`).
 
-```plantuml
-@startuml
-title Executor Command Pipeline — Posting, Execution, and Teardown
+```mermaid
+---
+title: "Executor Command Pipeline — Posting, Execution, and Teardown"
+---
+sequenceDiagram
+    participant CMD as Command Task<br/>(transport /<br/>main-loop task)
+    participant RING as Request Queue<br/>(fixed ring of 8)
+    participant EXE as Capture Task<br/>(single executor)
+    participant CS as ICaptureScheduler
+    participant SS as StreamService
 
-participant "Command Task\n(transport /\nmain-loop task)" as CMD
-participant "Request Queue\n(fixed ring of 8)" as RING
-participant "Capture Task\n(single executor)" as EXE
-participant "ICaptureScheduler" as CS
-participant "StreamService" as SS
+    note over CMD,SS: Post (command side, serialized by m_command_mutex)
 
-== Post (command side, serialized by m_command_mutex) ==
+    CMD ->> CMD : lock m_command_mutex
+    CMD ->> RING : write slot + publish<br/>(m_queue_mutex, handoff only)
+    CMD ->> RING : m_queued.fetch_add(1)
+    CMD ->> CMD : unlock m_command_mutex
+    CMD ->> CMD : wait_for_completion()<br/>(m_command_mutex RELEASED across the wait)
+    note over CMD: polls the shared completion box<br/>(completion->done, atomic) up to<br/>REQUEST_COMPLETION_TIMEOUT_MS
 
-CMD -> CMD : lock m_command_mutex
-CMD -> RING : write slot + publish\n(m_queue_mutex, handoff only)
-CMD -> RING : m_queued.fetch_add(1)
-CMD -> CMD : unlock m_command_mutex
-CMD -> CMD : wait_for_completion()\n(m_command_mutex RELEASED across the wait)
-note over CMD : polls the shared completion box\n(completion->done, atomic) up to\nREQUEST_COMPLETION_TIMEOUT_MS
+    note over EXE, RING: Two tasks race for the executor token (m_executor_active):<br/>the capture task at its next activation boundary, or —<br/>only while the capture task is between activations —<br/>the waiting command task's serve path (try-acquire).
 
-note over EXE, RING
-  Two tasks race for the executor token (m_executor_active):
-  the capture task at its next activation boundary, or —
-  only while the capture task is between activations —
-  the waiting command task's serve path (try-acquire).
-end note
+    note over CMD,SS: Execute (executor activation boundary)
 
-== Execute (executor activation boundary) ==
+    EXE ->> EXE : CAS m_executor_active false → true<br/>(token held for the whole activation)
+    EXE ->> RING : claim batch: m_queued.exchange(0)<br/>+ snapshot (m_queue_mutex, handoff only)
+    EXE ->> EXE : execute each request against<br/>executor-owned state (slot bind/detach,<br/>clip open/close, sink wiring)
+    EXE ->> EXE : completion->done = true<br/>(after the whole batch has run)
+    alt batch detached the last consumer
+        EXE ->> EXE : m_close_viewers_pending = true<br/>m_pipeline_drained = true<br/>(batch-level drain arming)
+    end
+    EXE ->> EXE : release token<br/>(m_executor_active = false)
 
-EXE -> EXE : CAS m_executor_active false → true\n(token held for the whole activation)
-EXE -> RING : claim batch: m_queued.exchange(0)\n+ snapshot (m_queue_mutex, handoff only)
-EXE -> EXE : execute each request against\nexecutor-owned state (slot bind/detach,\nclip open/close, sink wiring)
-EXE -> EXE : completion->done = true\n(after the whole batch has run)
-alt batch detached the last consumer
-    EXE -> EXE : m_close_viewers_pending = true\nm_pipeline_drained = true\n(batch-level drain arming)
-end
-EXE -> EXE : release token\n(m_executor_active = false)
+    note over CMD,SS: Drain → bounded teardown join (command side)
 
-== Drain → bounded teardown join (command side) ==
+    CMD ->> CMD : finish_command():<br/>lock m_command_mutex
+    CMD ->> CMD : m_pipeline_drained.exchange(false) == true<br/>→ this task owns the join
+    CMD ->> CMD : unlock m_command_mutex<br/>(never join under the mutex)
+    CMD ->> CS : stop() — bounded task join<br/>(m_command_mutex still released)
+    CMD ->> CMD : re-lock m_command_mutex#59;<br/>m_loop_active = false
+    alt registry refilled / work re-queued during join
+        CMD ->> CMD : restart loop#59; queued subcase closes<br/>ended-session viewers and re-arms<br/>m_pipeline_drained
+    else registry still empty
+        CMD ->> SS : stop_all_streams()<br/>(m_close_viewers_pending consumed once)
+    end
 
-CMD -> CMD : finish_command():\nlock m_command_mutex
-CMD -> CMD : m_pipeline_drained.exchange(false) == true\n→ this task owns the join
-CMD -> CMD : unlock m_command_mutex\n(never join under the mutex)
-CMD -> CS : stop() — bounded task join\n(m_command_mutex still released)
-CMD -> CMD : re-lock m_command_mutex;\nm_loop_active = false
-alt registry refilled / work re-queued during join
-    CMD -> CMD : restart loop; queued subcase closes\nended-session viewers and re-arms\nm_pipeline_drained
-else registry still empty
-    CMD -> SS : stop_all_streams()\n(m_close_viewers_pending consumed once)
-end
+    note over CMD,SS: Serve path (rare: capture task between activations)
 
-== Serve path (rare: capture task between activations) ==
+    CMD ->> CMD : lock m_command_mutex
+    CMD ->> EXE : try-acquire m_executor_active<br/>(never blocks the capture task)
+    CMD ->> RING : process_requests() — serve the<br/>queued batch on the command thread
+    CMD ->> EXE : release token
+    CMD ->> CMD : unlock m_command_mutex
 
-CMD -> CMD : lock m_command_mutex
-CMD -> EXE : try-acquire m_executor_active\n(never blocks the capture task)
-CMD -> RING : process_requests() — serve the\nqueued batch on the command thread
-CMD -> EXE : release token
-CMD -> CMD : unlock m_command_mutex
+    note over CMD,SS: Fire-and-forget (command issued from on_frame())
 
-== Fire-and-forget (command issued from on_frame()) ==
-
-EXE -> RING : post_request() (t_executor_context)\n→ queued, no waiter
-EXE -> SS : no command task to consume the drain:\nexecutor closes viewers itself at the next\nactivation boundary (process_pending_viewer_close);\nm_pipeline_drained stays armed for the\nnext command task
-@enduml
+    EXE ->> RING : post_request() (t_executor_context)<br/>→ queued, no waiter
+    EXE ->> SS : no command task to consume the drain:<br/>executor closes viewers itself at the next<br/>activation boundary (process_pending_viewer_close)#59;<br/>m_pipeline_drained stays armed for the<br/>next command task
 ```
 
 The concurrent primitives the diagram references:
@@ -2325,106 +2159,100 @@ The concurrent primitives the diagram references:
 
 The following diagram shows the live MJPEG streaming flow: an explicit `START_STREAM` starts the capture loop, a browser connects to `/stream`, and each captured frame is delivered to the connected viewer.
 
-```plantuml
-@startuml
-title Live MJPEG Streaming Flow
+```mermaid
+---
+title: "Live MJPEG Streaming Flow"
+---
+sequenceDiagram
+    participant CLIENT as Client<br/>(browser)
+    participant ORCH as SystemOrchestrator
+    participant VC as VideoController
+    participant ST as StreamSink<br/>(bound slot)
+    participant CS as CaptureScheduler<br/>Esp32
+    participant TASK as Capture Task<br/>(CPU0)
+    participant CAM as CameraController
+    participant SS as StreamService
+    participant CH as StreamFrameChannel<br/>(per viewer)
+    participant RESP as AsyncJpegStream<br/>Response
+    participant TCP as AsyncTCP<br/>(client)
 
-participant "Client\n(browser)" as CLIENT
-participant "SystemOrchestrator" as ORCH
-participant "VideoController" as VC
-participant "StreamSink\n(bound slot)" as ST
-participant "CaptureScheduler\nEsp32" as CS
-participant "Capture Task\n(CPU0)" as TASK
-participant "CameraController" as CAM
-participant "StreamService" as SS
-participant "StreamFrameChannel\n(per viewer)" as CH
-participant "AsyncJpegStream\nResponse" as RESP
-participant "AsyncTCP\n(client)" as TCP
+    note over CLIENT,TCP: Start preview
 
-== Start preview ==
+    CLIENT ->> ORCH : START_STREAM (cmd=stream_start)
+    ORCH ->> VC : start_streaming()
+    activate VC
+    VC ->> VC : post START_STREAMING
+    note right of VC: executed by the executor (capture task<br/>or a waiting command task's serve path) at<br/>an activation boundary — the steps below<br/>run under the executor token
+    VC ->> VC : ensure_loop_running()
+    note right of VC: starts the loop only when<br/>no consumer is served yet<br/>(reused when recording is active)
+    VC ->> CS : start(interval_ms, callback)
+    note right of CS: capture loop on,<br/>no clip opened
+    VC ->> VC : acquire_free_slot() +<br/>bind_slot(id, StreamSink)
+    note right of VC: is_streaming() is the<br/>registry subscription
+    VC -->> ORCH : true
+    deactivate VC
+    ORCH -->> CLIENT : {"result":"ok"}
 
-CLIENT -> ORCH : START_STREAM (cmd=stream_start)
-ORCH -> VC : start_streaming()
-activate VC
-VC -> VC : post START_STREAMING
-note right: executed by the executor (capture task\nor a waiting command task's serve path) at\nan activation boundary — the steps below\nrun under the executor token
-VC -> VC : ensure_loop_running()
-note right: starts the loop only when\nno consumer is served yet\n(reused when recording is active)
-VC -> CS : start(interval_ms, callback)
-note right: capture loop on,\nno clip opened
-VC -> VC : acquire_free_slot() +\nbind_slot(id, StreamSink)
-note right: is_streaming() is the\nregistry subscription
-VC --> ORCH : true
-deactivate VC
-ORCH --> CLIENT : {"result":"ok"}
+    note over CLIENT,TCP: Viewer connects
 
-== Viewer connects ==
+    CLIENT ->> ORCH : GET /stream
+    ORCH ->> ORCH : check_basic_auth()
+    ORCH ->> ORCH : is_streaming()? (yes)
+    ORCH ->> CH : new StreamFrameChannel()
+    ORCH ->> SS : start_stream(channel)
+    activate SS
+    SS ->> CH : push_part(placeholder JPEG part
+    note right of CH: well-formed first part#59; the channel<br/>holds bytes at response attach (primed)
+    SS -->> ORCH : slot index
+    deactivate SS
+    ORCH ->> RESP : send_stream_response(channel, boundary, on_end)
+    activate RESP
+    RESP ->> TCP : framework writes HTTP 200 +<br/>multipart/x-mixed-replace headers
+    note right of TCP: the response is attached with send()#59;<br/>the framework drives it entirely
 
-CLIENT -> ORCH : GET /stream
-ORCH -> ORCH : check_basic_auth()
-ORCH -> ORCH : is_streaming()? (yes)
-ORCH -> CH : new StreamFrameChannel()
-ORCH -> SS : start_stream(channel)
-activate SS
-SS -> CH : push_part(placeholder JPEG part
-note right: well-formed first part; the channel\nholds bytes at response attach (primed)
-SS --> ORCH : slot index
-deactivate SS
-ORCH -> RESP : send_stream_response(channel, boundary, on_end)
-activate RESP
-RESP -> TCP : framework writes HTTP 200 +\nmultipart/x-mixed-replace headers
-note right: the response is attached with send();\nthe framework drives it entirely
+    note over CLIENT,TCP: Frame delivery loop
 
-== Frame delivery loop ==
+    loop at configured FPS interval
 
-loop at configured FPS interval
+    TASK ->> VC : capture_and_dispatch_frame()
+    activate VC
+    VC ->> CAM : capture_frame()
+    CAM -->> VC : JPEG frame
+    VC ->> VC : iterate registered slots
+    note right of VC: frame dispatch over the<br/>consumer registry
+    VC ->> ST : on_frame(jpeg, len)
+    activate ST
+    ST ->> SS : deliver_frame(jpeg, len)
+    activate SS
+    SS ->> CH : push_part(boundary + headers +<br/>JPEG bytes + footer)
+    note right of CH: complete part pushed into the<br/>bounded per-viewer mailbox#59;<br/>dropped when the viewer is slow
+    deactivate SS
+    deactivate ST
+    VC ->> CAM : release_frame()
+    VC ->> RESP : (framework poll/ack)
+    RESP ->> CH : pull(pending part bytes)
+    note right of CH: framework flow control — bytes are<br/>pulled as the client acknowledges,<br/>so no send-buffer truncation
+    RESP ->> TCP : chunked transfer-encoding write
+    deactivate VC
 
-TASK -> VC : capture_and_dispatch_frame()
-activate VC
-VC -> CAM : capture_frame()
-CAM --> VC : JPEG frame
-VC -> VC : iterate registered slots
-note right: frame dispatch over the\nconsumer registry
-VC -> ST : on_frame(jpeg, len)
-activate ST
-ST -> SS : deliver_frame(jpeg, len)
-activate SS
-SS -> CH : push_part(boundary + headers +\nJPEG bytes + footer)
-note right: complete part pushed into the\nbounded per-viewer mailbox;\ndropped when the viewer is slow
-deactivate SS
-deactivate ST
-VC -> CAM : release_frame()
-VC -> RESP : (framework poll/ack)
-RESP -> CH : pull(pending part bytes)
-note right: framework flow control — bytes are\npulled as the client acknowledges,\nso no send-buffer truncation
-RESP -> TCP : chunked transfer-encoding write
-deactivate VC
+    end
 
-end
+    note over CLIENT,TCP: Stop preview
 
-== Stop preview ==
-
-CLIENT -> ORCH : STOP_STREAM (cmd=stream_stop)
-ORCH -> VC : stop_streaming()
-VC -> VC : post STOP_STREAMING
-note right: executor detaches the sink at the next\nactivation boundary (or via the serve path)\n— steps below run under the executor token
-VC -> VC : detach_consumer(StreamSink)
-alt recording keeps the loop running
-    VC -> VC : queue deferred viewer close
-    note over VC,SS
-      the capture task closes the viewers at the
-      next frame dispatch (one frame period bound):
-      process_pending_viewer_close() -> stop_all_streams();
-      a START_STREAM within the window cancels the close
-    end note
-else last subscriber: teardown
-    VC -> CS : stop() (only when no consumer remains)
-    VC -> SS : stop_all_streams()
-    note right: channels ended and slots freed\nafter the join
-end
-ORCH --> CLIENT : {"result":"ok"}
-
-@enduml
+    CLIENT ->> ORCH : STOP_STREAM (cmd=stream_stop)
+    ORCH ->> VC : stop_streaming()
+    VC ->> VC : post STOP_STREAMING
+    note right of VC: executor detaches the sink at the next<br/>activation boundary (or via the serve path)<br/>— steps below run under the executor token
+    VC ->> VC : detach_consumer(StreamSink)
+    alt recording keeps the loop running
+        VC ->> VC : queue deferred viewer close
+        note over VC,SS: the capture task closes the viewers at the<br/>next frame dispatch (one frame period bound):<br/>process_pending_viewer_close() -> stop_all_streams()#59;<br/>a START_STREAM within the window cancels the close
+    else last subscriber: teardown
+        VC ->> CS : stop() (only when no consumer remains)
+        VC ->> SS : stop_all_streams()
+        note right of SS: channels ended and slots freed<br/>after the join
+    end
+    ORCH -->> CLIENT : {"result":"ok"}
 ```
 
 The `/stream` handler attaches a real streaming response via `request.send_stream_response()` (an `AsyncAbstractResponse` subclass with chunked transfer-encoding). The transport framework writes the HTTP headers itself, pulls pre-formatted multipart parts from the per-viewer `StreamFrameChannel` as the client acknowledges data, and completes the response when the channel is closed and drained or the client disconnects. Returning from the handler without attaching a response would make the transport emit a `501 Not Implemented` (with `Connection: close`) and kill the stream at birth — the defect this design replaces.
@@ -2595,187 +2423,184 @@ This workflow covers two phases: **registration** (one-time wiring at startup) a
 
 **Reboot dispatch** — A third dispatch example covers the maintenance commands: `cmd=version` maps to `GET_VERSION` (0x50) and returns the build identity as JSON, while `cmd=reboot` maps to `REBOOT` (0x51). Like `LIST_FILES`, `REBOOT` is subject to the restricted-on-web policy: with no web password configured it is refused with `UNAUTHORIZED` before dispatch. When authorized, the handler schedules the restart on the injected `hal::RestartHal` (a one-shot timer with a 500 ms margin) and returns `SUCCESS`, or `INTERNAL_ERROR` if the restart could not be scheduled, so the HTTP response is delivered before the device restarts — the restart itself never runs inside the request handler.
 
-```plantuml
-@startuml
-title Command Registration & Web Dispatch Flow
+```mermaid
+---
+title: "Command Registration & Web Dispatch Flow"
+---
+sequenceDiagram
+    %% ==================================================================
+    %% Participant declarations
+    %% ==================================================================
+    participant MAIN as CameraRunner<br/>init
+    participant ORCH as SystemOrchestrator
+    participant CMDH as CommandHandler
+    participant WCT as WebCommandTransport
+    participant FS as FileService
+    participant WSH as WebServerHalImpl
+    participant HTTP_CLIENT as HTTP Client<br/>(Browser)
 
-' ==================================================================
-' Participant declarations
-' ==================================================================
-participant "CameraRunner\ninit" as MAIN
-participant "SystemOrchestrator" as ORCH
-participant "CommandHandler" as CMDH
-participant "WebCommandTransport" as WCT
-participant "FileService" as FS
-participant "WebServerHalImpl" as WSH
-participant "HTTP Client\n(Browser)" as HTTP_CLIENT
+    %% ==================================================================
+    %% Registration phase (one-time, during setup())
+    %% ==================================================================
+    note over MAIN,HTTP_CLIENT: Registration Phase (setup)
 
-' ==================================================================
-' Registration phase (one-time, during setup())
-' ==================================================================
-=== Registration Phase (setup) ===
+    MAIN ->> ORCH : init()
+    activate ORCH
 
-MAIN -> ORCH : init()
-activate ORCH
+    ORCH ->> CMDH : register_handler(GET_STATUS, fn)
+    activate CMDH
+    CMDH -->> ORCH : ok
+    deactivate CMDH
 
-ORCH -> CMDH : register_handler(GET_STATUS, fn)
-activate CMDH
-CMDH --> ORCH : ok
-deactivate CMDH
+    ORCH ->> CMDH : register_handler(START_RECORDING, fn)
+    activate CMDH
+    CMDH -->> ORCH : ok
+    deactivate CMDH
 
-ORCH -> CMDH : register_handler(START_RECORDING, fn)
-activate CMDH
-CMDH --> ORCH : ok
-deactivate CMDH
+    ORCH ->> CMDH : register_handler(STOP_RECORDING, fn)
+    ORCH ->> CMDH : register_handler(TAKE_PHOTO, fn)
+    ORCH ->> CMDH : register_handler(SET_TIME, fn)
+    ORCH ->> CMDH : register_handler(GET_CONFIG, fn)
+    ORCH ->> CMDH : register_handler(SET_CONFIG, fn)
+    ORCH ->> CMDH : register_handler(GET_CONFIG_VALUE, fn)
+    ORCH ->> CMDH : register_handler(SET_CONFIG_VALUE, fn)
+    ORCH ->> CMDH : register_handler(GET_VERSION, fn)
+    ORCH ->> CMDH : register_handler(REBOOT, fn)
 
-ORCH -> CMDH : register_handler(STOP_RECORDING, fn)
-ORCH -> CMDH : register_handler(TAKE_PHOTO, fn)
-ORCH -> CMDH : register_handler(SET_TIME, fn)
-ORCH -> CMDH : register_handler(GET_CONFIG, fn)
-ORCH -> CMDH : register_handler(SET_CONFIG, fn)
-ORCH -> CMDH : register_handler(GET_CONFIG_VALUE, fn)
-ORCH -> CMDH : register_handler(SET_CONFIG_VALUE, fn)
-ORCH -> CMDH : register_handler(GET_VERSION, fn)
-ORCH -> CMDH : register_handler(REBOOT, fn)
+    ORCH -->> MAIN : return
+    deactivate ORCH
 
-ORCH --> MAIN : return
-deactivate ORCH
+    MAIN ->> WCT : register_routes(password)
+    activate WCT
 
-MAIN -> WCT : register_routes(password)
-activate WCT
+    WCT ->> WSH : on("/status", GET, [this](RequestRef& req) { handle_status(req)#59; })
+    activate WSH
+    note right of WSH: Lambda captures this —<br/>no static trampoline
+    WSH -->> WCT : ok
+    deactivate WSH
 
-WCT -> WSH : on("/status", GET, [this](RequestRef& req) { handle_status(req); })
-activate WSH
-note right: Lambda captures this —\nno static trampoline
-WSH --> WCT : ok
-deactivate WSH
+    WCT ->> WSH : on("/control", GET, [this](RequestRef& req) { handle_control(req)#59; })
+    activate WSH
+    note right of WSH: Same pattern for<br/>/control route
+    WSH -->> WCT : ok
+    deactivate WSH
 
-WCT -> WSH : on("/control", GET, [this](RequestRef& req) { handle_control(req); })
-activate WSH
-note right: Same pattern for\n/control route
-WSH --> WCT : ok
-deactivate WSH
+    MAIN ->> FS : init(web_server_hal, password)
+    activate FS
 
-MAIN -> FS : init(web_server_hal, password)
-activate FS
+    FS ->> CMDH : register_handler(LIST_FILES, fn)
+    activate CMDH
+    CMDH -->> FS : ok
+    deactivate CMDH
 
-FS -> CMDH : register_handler(LIST_FILES, fn)
-activate CMDH
-CMDH --> FS : ok
-deactivate CMDH
+    FS ->> WSH : on("/files", GET, ...) + on("/download", GET, ...)
+    FS ->> WSH : on("/logs", GET, ...) + on("/log", GET, ...)
+    activate WSH
+    note right of WSH: All four routes attach<br/>before the server starts
+    WSH -->> FS : ok
+    deactivate WSH
 
-FS -> WSH : on("/files", GET, ...) + on("/download", GET, ...)
-FS -> WSH : on("/logs", GET, ...) + on("/log", GET, ...)
-activate WSH
-note right: All four routes attach\nbefore the server starts
-WSH --> FS : ok
-deactivate WSH
+    FS -->> MAIN : return
+    deactivate FS
 
-FS --> MAIN : return
-deactivate FS
+    WCT -->> MAIN : return
+    deactivate WCT
 
-WCT --> MAIN : return
-deactivate WCT
+    %% ==================================================================
+    %% Runtime dispatch phase
+    %% ==================================================================
+    note over MAIN,HTTP_CLIENT: Runtime Dispatch (async callback)
 
-' ==================================================================
-' Runtime dispatch phase
-' ==================================================================
-=== Runtime Dispatch (async callback) ===
+    HTTP_CLIENT ->> WSH : HTTP GET /control?cmd=start
+    note right of WSH: AsyncWebServer receives<br/>request and invokes the<br/>registered lambda callback
 
-HTTP_CLIENT -> WSH : HTTP GET /control?cmd=start
-note right: AsyncWebServer receives\nrequest and invokes the\nregistered lambda callback
+    %% AsyncWebServer calls the lambda directly — no handle_client() polling
+    WSH ->> WCT : handle_control(request_ref)
+    activate WCT
+    note right of WCT: Lambda creates AsyncRequestRef<br/>and forwards to WCT
 
-' AsyncWebServer calls the lambda directly — no handle_client() polling
-WSH -> WCT : handle_control(request_ref)
-activate WCT
-note right: Lambda creates AsyncRequestRef\nand forwards to WCT
+    %% Auth check
+    WCT ->> WCT : check_auth(request)
+    note right of WCT: request.auth_header()<br/>vs configured password
 
-' Auth check
-WCT -> WCT : check_auth(request)
-note right: request.auth_header()\nvs configured password
+    %% Dispatch command
+    WCT ->> CMDH : dispatch(START_RECORDING, payload, len, response, &responseLen)
+    activate CMDH
 
-' Dispatch command
-WCT -> CMDH : dispatch(START_RECORDING, payload, len, response, &responseLen)
-activate CMDH
+    %% CommandHandler finds the matching registered handler
+    CMDH ->> CMDH : Look up START_RECORDING<br/>in handler table
 
-' CommandHandler finds the matching registered handler
-CMDH -> CMDH : Look up START_RECORDING\nin handler table
+    %% Execute the handler (lambda capturing SystemOrchestrator)
+    CMDH ->> ORCH : handle_start_recording()
+    activate ORCH
 
-' Execute the handler (lambda capturing SystemOrchestrator)
-CMDH -> ORCH : handle_start_recording()
-activate ORCH
+    %% Delegate to VideoController
+    ORCH ->> ORCH : m_video.start_recording()
+    note right of ORCH: Posts START_RECORDING#59; the<br/>executor opens the clip, starts<br/>the capture loop if needed, and<br/>binds a RecordSink slot
 
-' Delegate to VideoController
-ORCH -> ORCH : m_video.start_recording()
-note right: Posts START_RECORDING; the\nexecutor opens the clip, starts\nthe capture loop if needed, and\nbinds a RecordSink slot
+    ORCH -->> CMDH : return SUCCESS
+    deactivate ORCH
 
-ORCH --> CMDH : return SUCCESS
-deactivate ORCH
+    CMDH -->> WCT : return SUCCESS
+    deactivate CMDH
 
-CMDH --> WCT : return SUCCESS
-deactivate CMDH
+    %% Build and send JSON response
+    WCT ->> WCT : Build JSON response<br/>{"result":"ok"}
+    WCT ->> WSH : send(200, "application/json", json)
+    activate WSH
+    WSH -->> HTTP_CLIENT : HTTP 200 {"result":"ok"}
+    deactivate WSH
 
-' Build and send JSON response
-WCT -> WCT : Build JSON response\n{\"result\":\"ok\"}
-WCT -> WSH : send(200, "application/json", json)
-activate WSH
-WSH --> HTTP_CLIENT : HTTP 200 {\"result\":\"ok\"}
-deactivate WSH
+    WCT -->> WSH : return
+    deactivate WCT
 
-WCT --> WSH : return
-deactivate WCT
+    WSH -->> MAIN : return
 
-WSH --> MAIN : return
-deactivate WSH
+    %% ==================================================================
+    %% Runtime dispatch phase — file listing
+    %% ==================================================================
+    note over MAIN,HTTP_CLIENT: Runtime Dispatch (file listing)
 
-' ==================================================================
-' Runtime dispatch phase — file listing
-' ==================================================================
-== Runtime Dispatch (file listing) ==
+    HTTP_CLIENT ->> WSH : HTTP GET /control?cmd=files&dir=/logs&start=0
+    note right of WSH: Same route callback as<br/>the first dispatch example
 
-HTTP_CLIENT -> WSH : HTTP GET /control?cmd=files&dir=/logs&start=0
-note right: Same route callback as\nthe first dispatch example
+    WSH ->> WCT : handle_control(request_ref)
+    activate WCT
 
-WSH -> WCT : handle_control(request_ref)
-activate WCT
+    %% Auth check + restricted-on-web policy
+    WCT ->> WCT : check_auth(request)
+    note right of WCT: LIST_FILES is restricted on web:<br/>refused 401 when no password set
 
-' Auth check + restricted-on-web policy
-WCT -> WCT : check_auth(request)
-note right: LIST_FILES is restricted on web:\nrefused 401 when no password set
+    %% Dispatch command
+    WCT ->> CMDH : dispatch(LIST_FILES, payload, len, response, &responseLen)
+    activate CMDH
 
-' Dispatch command
-WCT -> CMDH : dispatch(LIST_FILES, payload, len, response, &responseLen)
-activate CMDH
+    %% CommandHandler finds the matching registered handler
+    CMDH ->> CMDH : Look up LIST_FILES<br/>in handler table
 
-' CommandHandler finds the matching registered handler
-CMDH -> CMDH : Look up LIST_FILES\nin handler table
+    %% Execute the handler (registered by FileService)
+    CMDH ->> FS : handle_list_files(payload)
+    activate FS
 
-' Execute the handler (registered by FileService)
-CMDH -> FS : handle_list_files(payload)
-activate FS
+    FS ->> FS : Validate path & allowlist<br/>(dir, start) → build one<br/>listing page, flag active clip
+    note right of FS: SD access is single-transaction,<br/>CS-arbitrated via SdController
 
-FS -> FS : Validate path & allowlist\n(dir, start) → build one\nlisting page, flag active clip
-note right: SD access is single-transaction,\nCS-arbitrated via SdController
+    FS -->> CMDH : return listing JSON<br/>(response buffer)
+    deactivate FS
 
-FS --> CMDH : return listing JSON\n(response buffer)
-deactivate FS
+    CMDH -->> WCT : return SUCCESS
+    deactivate CMDH
 
-CMDH --> WCT : return SUCCESS
-deactivate CMDH
+    %% Build and send JSON response
+    WCT ->> WSH : send(200, "application/json", json)
+    activate WSH
+    WSH -->> HTTP_CLIENT : HTTP 200 {listing JSON}
+    deactivate WSH
 
-' Build and send JSON response
-WCT -> WSH : send(200, "application/json", json)
-activate WSH
-WSH --> HTTP_CLIENT : HTTP 200 {listing JSON}
-deactivate WSH
+    WCT -->> WSH : return
+    deactivate WCT
 
-WCT --> WSH : return
-deactivate WCT
-
-WSH --> MAIN : return
-deactivate WSH
-
-@enduml
+    WSH -->> MAIN : return
 ```
 
 The diagram illustrates the complete round-trip:
