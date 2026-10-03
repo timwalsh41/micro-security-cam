@@ -47,9 +47,9 @@ const char* AsyncRequestRef::arg(const char* name) const
     if (m_request != nullptr && name != nullptr)
     {
         String val = m_request->arg(name);
-        strncpy(m_arg_buf, val.c_str(), ARG_BUF_SIZE - 1);
-        m_arg_buf[ARG_BUF_SIZE - 1] = '\0';
-        return m_arg_buf;
+        // Values are stored per parameter name: a handler that reads a
+        // second parameter keeps valid pointers to the first one.
+        return m_arg_store.put(name, val.c_str());
     }
     return "";
 }
