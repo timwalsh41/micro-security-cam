@@ -13,6 +13,11 @@ STATUS_KEYS = {
     "sd_free_bytes",
     "photos",
     "videos",
+    "version",
+    "temperature_c",
+    "width",
+    "height",
+    "stream_frames",
 }
 
 
@@ -29,9 +34,27 @@ def test_status_value_types_and_ranges(client):
     for key in ("recording", "streaming", "sd"):
         assert isinstance(status[key], bool), f"{key} must be bool"
     for key in ("frames", "file_size", "connected_streams",
-                "sd_free_bytes", "photos", "videos"):
+                "sd_free_bytes", "photos", "videos", "width", "height",
+                "stream_frames"):
         assert isinstance(status[key], int), f"{key} must be int"
         assert status[key] >= 0, f"{key} must be non-negative"
+    assert status["width"] > 0 and status["height"] > 0, \
+        "frame dimensions must be positive"
+    assert isinstance(status["temperature_c"], (int, float)), \
+        "temperature_c must be numeric"
+    assert -40.0 <= status["temperature_c"] <= 120.0, \
+        f"temperature_c out of range: {status['temperature_c']}"
+
+
+def test_status_version_matches_version_command(client):
+    """The status panel's version string is the build identity from
+    the version endpoint (both render version.h)."""
+    status = client.status()
+    version_payload = client.version()
+    assert isinstance(status["version"], str) and status["version"], \
+        "status version must be a non-empty string"
+    assert status["version"] == version_payload["version"], \
+        "status version disagrees with the version endpoint"
 
 
 def test_status_connected_streams_matches_stream_list(client):

@@ -79,6 +79,8 @@ textarea#config{width:100%;min-height:260px;background:#0d1117;color:var(--fg);b
     <div class="stat"><div class="k">SD free</div><div class="v" id="st-free">-</div></div>
     <div class="stat"><div class="k">Photos today</div><div class="v" id="st-photos">-</div></div>
     <div class="stat"><div class="k">Videos today</div><div class="v" id="st-videos">-</div></div>
+    <div class="stat"><div class="k">Version</div><div class="v" id="st-version">-</div></div>
+    <div class="stat"><div class="k">Core temp</div><div class="v" id="st-temp">-</div></div>
   </div>
   <p class="muted">Auto-refreshes every 5 s.</p>
 </section>
@@ -100,6 +102,7 @@ textarea#config{width:100%;min-height:260px;background:#0d1117;color:var(--fg);b
 <section id="preview">
   <h2>Live preview</h2>
   <img id="preview-img" src="" alt="">
+  <p class="muted" id="preview-meta">-</p>
   <p class="muted">Preview uses the MJPEG <code>/stream</code> endpoint; it
   works while preview (streaming) is started.</p>
 </section>
@@ -129,7 +132,7 @@ textarea#config{width:100%;min-height:260px;background:#0d1117;color:var(--fg);b
   <pre class="log" id="log-view">Select a log file above.</pre>
 </section>
 
-<section id="config">
+<section id="config-section">
   <h2>Configuration</h2>
   <div class="row" style="margin-bottom:8px">
     <button id="btn-config-load">Reload config</button>
@@ -164,6 +167,31 @@ async function api(path){
 
 // ---------- status ----------
 function isDirName(n){return n!=='logs';}
+// Framerate sampling: stream_frames deltas between status polls.
+let preview_sample = null;
+function renderPreview(s){
+  const has_res=typeof s.width==='number'&&typeof s.height==='number'&&
+    s.width>0&&s.height>0;
+  const res=has_res?(s.width+'x'+s.height):'-';
+  let fps_text='';
+  const has_frames=typeof s.stream_frames==='number';
+  if(s.streaming&&has_frames){
+    const now=Date.now();
+    if(preview_sample&&now>preview_sample.at){
+      const delta=s.stream_frames-preview_sample.frames;
+      const elapsed=(now-preview_sample.at)/1000;
+      if(delta>=0&&elapsed>0){
+        fps_text=' @ '+(delta/elapsed).toFixed(1)+' fps';
+      }
+    }
+    if(!fps_text){fps_text=' @ measuring\u2026';}
+    preview_sample={frames:s.stream_frames,at:now};
+  }else{
+    preview_sample=null;
+    if(s.streaming){fps_text=' @ measuring\u2026';}
+  }
+  $('preview-meta').textContent=res+fps_text;
+}
 function renderStatus(s){
   $('st-rec').textContent=s.recording?'REC':'off';
   $('st-rec').style.color=s.recording?'var(--err)':'var(--muted)';
@@ -175,6 +203,10 @@ function renderStatus(s){
   $('st-free').textContent=s.sd?fmtBytes(s.sd_free_bytes):'no card';
   $('st-photos').textContent=s.sd?s.photos:'-';
   $('st-videos').textContent=s.sd?s.videos:'-';
+  $('st-version').textContent=s.version||'-';
+  $('st-temp').textContent=(typeof s.temperature_c==='number')
+    ?s.temperature_c.toFixed(1)+' \u00b0C':'-';
+  renderPreview(s);
   const badge=$('sd-badge');
   badge.textContent=s.sd?'SD ready':'SD missing';
   badge.style.background=s.sd?'#1f4433':'#4b2222';
@@ -202,8 +234,18 @@ $('btn-rec-stop').onclick=()=>control('stop');
 $('btn-photo').onclick=async()=>{
   try{
     const r=await api('/control?cmd=photo');
-    const j=await r.json();
-    msg('photo: '+j);
+    const text=await r.text();
+    // Success returns the saved path as plain text; failures return a
+    // JSON error envelope, so parse tolerantly instead of assuming one.
+    let data=null;
+    try{data=JSON.parse(text);}catch(e){}
+    if(data&&typeof data==='object'&&data.result==='error'){
+      msg('photo: error '+(data.code!==undefined?data.code:'unknown'));
+    }else if(text.charAt(0)==='/'){
+      msg('photo: '+text);
+    }else{
+      msg('photo: unexpected response (HTTP '+r.status+')');
+    }
     refreshStatus();
   }catch(e){msg(e.message);}
 };
@@ -293,7 +335,7 @@ async function refreshLogs(start){
   start=start||0;
   try{
     const r=await api('/logs?start='+start);
-    if(!r.ok)return;
+    if(!r.ok){throw new Error('HTTP '+r.status);}
     const j=await r.json();
     logStart=j.start;
     const ul=$('log-list');
@@ -322,7 +364,20 @@ async function refreshLogs(start){
       ' of '+j.total;
     $('btn-log-next').disabled=!j.more;
     $('btn-log-prev').disabled=logStart===0;
-  }catch(e){/* leave the list as-is */}
+  }catch(e){
+    // Surface listing failures instead of leaving the viewer blank.
+    const ul=$('log-list');
+    ul.innerHTML='';
+    const li=document.createElement('li');
+    const span=document.createElement('span');
+    span.className='err';
+    span.textContent='log listing failed: '+e.message;
+    li.appendChild(span);
+    ul.appendChild(li);
+    $('log-page-info').textContent='';
+    $('btn-log-next').disabled=true;
+    $('btn-log-prev').disabled=true;
+  }
 }
 $('btn-log-next').onclick=()=>refreshLogs(logStart+12);
 $('btn-log-prev').onclick=()=>refreshLogs(logStart>12?logStart-12:0);

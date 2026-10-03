@@ -556,8 +556,15 @@ def _assert_wellformed_jpeg(data):
 # Fallback detection helpers
 # =============================================================
 def _is_status_fallback(data):
-    """True when a parsed body is the status telemetry fallback."""
-    return isinstance(data, dict) and set(data.keys()) <= STATUS_KEYS
+    """True when a parsed body is the status telemetry fallback.
+
+    The fallback is the full telemetry payload: it carries every core
+    status key. Newer firmware may add keys beyond the recognized core
+    set, so membership of the core keys (not a subset test against the
+    whole payload) identifies it; a single-key payload such as
+    ``{"version": ...}`` is a real endpoint response, not a fallback.
+    """
+    return isinstance(data, dict) and STATUS_KEYS <= set(data.keys())
 
 
 def _is_error_envelope(data):

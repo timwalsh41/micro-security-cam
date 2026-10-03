@@ -25,6 +25,53 @@ def _logs_listing(client):
     return resp.json()
 
 
+def _log_sizes(client):
+    """Map of log-file name -> size, or {} when /logs is unavailable."""
+    try:
+        listing = client.logs()
+    except camclient.CamClientError:
+        return {}
+    return {e["n"]: e["s"] for e in listing["entries"] if not e["d"]}
+
+
+def _wait_until(predicate, timeout, poll_s=2.0):
+    """Poll until predicate() holds; return its final value."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(poll_s)
+    return bool(predicate())
+
+
+@pytest.fixture(scope="module", autouse=True)
+def sd_logging_ready(client, guard):
+    """Ensure the SD log sink is active before the log tests run.
+
+    ``sd_enabled`` defaults to ``after_set_time``, so a freshly
+    booted device writes no SD logs until the wall clock is set. The
+    fixture sets it (the guard restores it at teardown) and waits for
+    the first flushed log data. With an SD card present the firmware
+    must produce logs: if it never does, the log sink is unwired and
+    the module fails here instead of skipping silently.
+    """
+    if not client.status().get("sd"):
+        pytest.skip("SD card unavailable; log coverage cannot run")
+    mode = client.config_get_value("logging.sd_enabled").lower()
+    if mode == "false":
+        pytest.skip(
+            "logging.sd_enabled=false; SD logging disabled by configuration"
+        )
+    if _log_sizes(client):
+        return
+    guard.advance_time(int(time.time()))
+    if not _wait_until(lambda: bool(_log_sizes(client)), 30.0):
+        pytest.fail(
+            "no SD log data appeared within 30s of set_time: the "
+            "firmware's SD log sink never writes to the card"
+        )
+
+
 def _require_sd_logging(client, listing):
     """Skip when the build produces no SD logs at all."""
     if listing is None or listing["total"] == 0:
@@ -105,8 +152,7 @@ def test_log_rotation_advances_to_a_new_date_file(client, guard, capture_ready):
     names = _log_names(client)
     if names is None:
         pytest.skip(
-            "no /logs listing: this firmware build does not write logs "
-            "to the SD card"
+            "no /logs listing: SD logging is unavailable on this device"
         )
     # The advance triggers the firmware's retention pass with cutoff
     # advanced_date - retention_days; refuse when that pass would delete
@@ -125,15 +171,17 @@ def test_log_rotation_advances_to_a_new_date_file(client, guard, capture_ready):
         )
 
     # set_time itself produces a log line, which lands in the new
-    # date's file after the rotation check runs.
+    # date's file after the rotation check runs; the sink flushes on
+    # a short cadence, so poll for the new file instead of reading
+    # synchronously.
     guard.advance_time(_date_unix(today) + 2 * DAY_S)
     try:
+        _wait_until(
+            lambda: _log_names(client) is not None
+            and f"{advanced_date}.log" in _log_names(client),
+            15.0,
+        )
         names = _log_names(client)
-        if names is None:
-            pytest.skip(
-                "no /logs listing after time advance: this firmware "
-                "build does not write logs to the SD card"
-            )
         guard.track_created(f"/logs/{advanced_date}.log")
         assert f"{advanced_date}.log" in names, \
             f"no log file for advanced date {advanced_date}: {names}"
@@ -179,14 +227,25 @@ def test_log_retention_deletes_expired_suite_log(client, guard, capture_ready):
     guard.advance_time(today_unix - DAY_S)
     guard.advance_time(int(time.time()))
     try:
+        _wait_until(
+            lambda: _log_names(client) is not None
+            and f"{backdated}.log" in _log_names(client),
+            15.0,
+        )
         names = _log_names(client)
         assert f"{backdated}.log" in names, \
             f"backdated log {backdated}.log was not created: {names}"
 
         # Advance by exactly retention_days: the cutoff lands on today,
         # so the backdated file expires while today's baseline survives.
+        # The retention pass runs at the rotation on the next flush.
         expiry = _date_str(today_unix + retention_days * DAY_S)
         guard.advance_time(today_unix + retention_days * DAY_S)
+        _wait_until(
+            lambda: _log_names(client) is not None
+            and f"{backdated}.log" not in _log_names(client),
+            15.0,
+        )
         names = _log_names(client)
         assert f"{backdated}.log" not in names, \
             f"expired log {backdated}.log survived retention"
