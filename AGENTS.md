@@ -12,7 +12,7 @@
     - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source ~/.platformio/penv/bin/activate && pio test -e native`
     - Do not execute tool calls with `requestAllowNetwork=true` by default - in the environment settings are whitelisted domains that will be required for PlatformIO command calls, if we hit a blocked domain we'll add it to the whitelist; only use `requestAllowNetwork=true` if truly needed
 - Use terminal commands to read files outside of the project folder
-- `platformio.ini` leaves `platform = espressif32` unpinned: after any camera-init failure at boot (serial shows `Camera initialization failed` and the device stays unreachable over HTTP), first check `pio platform list` for a platform substitution on the host - builds must resolve the official `espressif32`, not a community fork
+- `platformio.ini` pins `platform = espressif32 @ 7.0.1` (the proven-good official stack); do not unpin or override it - a silently substituted platform previously produced camera-init failures at boot with the device unreachable over HTTP
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
     - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests
