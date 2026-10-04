@@ -1148,7 +1148,7 @@ Buffered log writer for SD card storage. Implements `hal::LogBackend` to receive
 - **Line format**: Same as serial output: `[YYYY-MM-DD HH:MM:SS] [uptime] [subsystem] [LEVEL ] message`
 - **Buffering**: Log lines are buffered in a 4 KB internal buffer. The buffer is flushed to SD when full or on each `tick()` call from the main loop.
 - **Day rotation**: When the day changes (detected by comparing current UTC date with stored date), the buffer is flushed and a new log file is started.
-- **Retention**: Old log files are deleted based on `retention_days` config setting (default: 7 days). Deletion happens at day rollover.
+- **Retention**: Old log files are deleted based on `retention_days` config setting (default: 7 days). Deletion happens at day rollover. Files dated in 1970, which derive from an unset wall clock (boot period before `set_time`), are exempt from the retention pass and are never expired; clock-dated files are deleted per `retention_days` as before.
 - **Thread safety**: `write()` may be called from several task contexts while `tick()` flushes from the main loop; an internal mutex serializes the buffer and rotation state and is held across the buffered flush I/O. Nothing logs from inside an SD transaction, so this lock and the shared-pin CS mutex are always acquired in the same order.
 
 **Memory overhead**: ~4 KB DRAM for the write buffer, plus ~100 bytes for object state.

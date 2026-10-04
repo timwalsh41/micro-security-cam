@@ -143,7 +143,10 @@ def test_log_rotation_advances_to_a_new_date_file(client, guard, capture_ready):
         _date_unix(today) + (2 - retention_days) * DAY_S
     )
     existing_dates = {name[:8] for name in names if LOG_FILE_RE.match(name)}
-    if any(date < cutoff_date for date in existing_dates):
+    # 1970 dates derive from an unset wall clock; retention never
+    # expires them, so they are not deletion casualties.
+    if any(date < cutoff_date and not date.startswith("1970")
+           for date in existing_dates):
         pytest.skip(
             f"the advance would expire logs dated before {cutoff_date} "
             "(logging.retention_days=" + str(retention_days) + "); the "
@@ -193,7 +196,10 @@ def test_log_retention_deletes_expired_suite_log(client, guard, capture_ready):
             "(/logs is empty or absent), so log coverage cannot run"
         )
     existing_dates = {name[:8] for name in names if LOG_FILE_RE.match(name)}
-    if any(date < today for date in existing_dates):
+    # 1970 dates derive from an unset wall clock; retention never
+    # expires them, so they are not deletion casualties.
+    if any(date < today and not date.startswith("1970")
+           for date in existing_dates):
         pytest.skip(
             "card holds baseline logs older than today; the retention "
             "pass would delete device data the suite cannot restore"

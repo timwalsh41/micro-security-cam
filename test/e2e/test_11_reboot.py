@@ -200,7 +200,8 @@ def test_sd_true_boot_log_survives_set_time(client, guard, reboot_available):
     cutoff_date = time.strftime("%Y%m%d",
                                 time.gmtime(now - retention_days * 86400))
     stale = [name for name in _log_sizes(client)
-             if LOG_FILE_RE.match(name) and name[:8] < cutoff_date]
+             if LOG_FILE_RE.match(name) and name[:4] != "1970"
+             and name[:8] < cutoff_date]
     if stale:
         pytest.skip(
             f"the set_time retention pass would delete device logs older "
