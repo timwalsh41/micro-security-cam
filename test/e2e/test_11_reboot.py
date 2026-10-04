@@ -151,6 +151,12 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
     if not client.status().get("sd"):
         pytest.skip("SD card unavailable; cold-boot gating not testable")
 
+    # Snapshot the inventory before the reboot so the boot-time write
+    # window is inside the checked span; drain a flush cadence first so
+    # in-flight writes from the running session land in the baseline.
+    time.sleep(3)
+    pre_gate = _log_sizes(client)
+
     try:
         client.reboot()
     except camclient.CamClientError:
@@ -160,8 +166,7 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
     # A fresh boot has no wall clock yet: the after_set_time gate must
     # hold SD logging off. Allow a couple of flush cadences for any
     # wrongly-buffered data to surface, then require the inventory to
-    # be unchanged.
-    pre_gate = _log_sizes(client)
+    # be unchanged from the pre-reboot baseline.
     time.sleep(3)
     still = _log_sizes(client)
     if _new_or_grown(pre_gate, still):

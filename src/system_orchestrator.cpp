@@ -267,11 +267,7 @@ CommandResult SystemOrchestrator::handle_get_status(
     // dimensions, and the cumulative delivered-frame count the UI
     // samples to render the preview framerate.
     char version_buf[32] = "unknown";
-    if (!version::get_version_string(version_buf, sizeof(version_buf)))
-    {
-        strncpy(version_buf, "unknown", sizeof(version_buf) - 1);
-        version_buf[sizeof(version_buf) - 1] = '\0';
-    }
+    version::get_version_string(version_buf, sizeof(version_buf));
     const ResolvedCameraParams& cam_params = m_camera.get_params();
 
     // local_ip() returns per-call storage in the WiFi HAL; snapshot it
