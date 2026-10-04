@@ -145,10 +145,19 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
     try:
         page.click("#btn-stream-start")
         guard.m_started_streaming = True  # registered for teardown stop
-        page.wait_for_function(
-            "document.getElementById('st-stream').textContent === 'live'",
-            timeout=UI_TIMEOUT_MS,
-        )
+        try:
+            page.wait_for_function(
+                "document.getElementById('st-stream').textContent === 'live'",
+                timeout=UI_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError:
+            # A wedged pipeline answers cmd=stream_start with code 255,
+            # so 'live' never appears; probe over HTTP to separate that
+            # known device state from a genuine UI regression (which
+            # still fails as a timeout).
+            if probe_capture_wedge(client):
+                pytest.skip(_wedge_skip_reason())
+            raise
         try:
             # The MJPEG multipart stream must actually render: the browser
             # only sets naturalWidth once a frame has decoded.
@@ -213,11 +222,19 @@ def test_ui_photo_control_reports_saved_path(client, guard, capture_ready, page)
 
     _goto_ui(page, client)
     page.click("#btn-photo")
-    page.wait_for_function(
-        "document.getElementById('ctrl-msg').textContent.startsWith"
-        "('photo: /')",
-        timeout=UI_TIMEOUT_MS,
-    )
+    try:
+        page.wait_for_function(
+            "document.getElementById('ctrl-msg').textContent.startsWith"
+            "('photo: /')",
+            timeout=UI_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        # A wedged pipeline answers cmd=photo with an error envelope the
+        # button renders as an error message; probe to separate that
+        # known device state from a genuine UI regression.
+        if probe_capture_wedge(client):
+            pytest.skip(_wedge_skip_reason())
+        raise
     msg = page.locator("#ctrl-msg").text_content()
     guard.track_created(msg.split("photo: ", 1)[1])
 
