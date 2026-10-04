@@ -1,5 +1,6 @@
 #include "camera_runner.h"
 #include "hal/time_hal.h"
+#include "log_level_parser.h"
 #include "platform_initializer.h"
 #include "hal/camera_hal_impl.h"
 #include "hal/serial_hal_impl.h"
@@ -36,7 +37,6 @@
 #include "stream_service.h"
 #include "version.h"
 #include <memory>
-#include <strings.h>
 
 using hal::millis_t;
 
@@ -55,35 +55,6 @@ namespace constants
     constexpr millis_t LED_TICK_TIME_MS = 5;
     constexpr millis_t LOG_HEARTBEAT_TIME_MS = 30000;
     constexpr millis_t SD_LOG_FLUSH_TIME_MS = 1000;
-}
-
-/**
- * @brief Maps a configured level name to a LogLevel (unknown names
- *        default to INFO).
- */
-static hal::LogLevel parse_log_level(const char* name)
-{
-    if (name != nullptr)
-    {
-        if (strcasecmp(name, "debug") == 0)
-        {
-            return hal::LogLevel::DEBUG;
-        }
-        if (strcasecmp(name, "warn") == 0 ||
-            strcasecmp(name, "warning") == 0)
-        {
-            return hal::LogLevel::WARNING;
-        }
-        if (strcasecmp(name, "error") == 0)
-        {
-            return hal::LogLevel::ERROR;
-        }
-        if (strcasecmp(name, "info") == 0)
-        {
-            return hal::LogLevel::INFO;
-        }
-    }
-    return hal::LogLevel::INFO;
 }
 
 /**
@@ -181,7 +152,7 @@ public:
         {
             m_sd_log_writer.reset(new SdLogWriter(
                 m_sd_controller, m_real_time,
-                parse_log_level(logging_config.sd_min_level),
+                log_level::parse(logging_config.sd_min_level),
                 logging_config.retention_days));
             if (logging_config.sd_enabled == SdEnabledMode::TRUE)
             {

@@ -122,6 +122,17 @@ def test_config_persists_to_nvs_across_reboot(client, guard, reboot_available):
         client.config_save("nvs")
 
 
+def _unset_clock_sizes(sizes):
+    """Inventory subset whose names derive from an unset wall clock.
+
+    Only these files can grow during the boot window: the reboot
+    clears the clock, so pre-reboot session lines flush to clock-dated
+    files instead.
+    """
+    return {name: size for name, size in sizes.items()
+            if name.startswith("1970")}
+
+
 def _new_or_grown(before, after):
     """True when the log inventory gained a file or grew an existing one.
 
@@ -166,11 +177,13 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
 
     # A fresh boot has no wall clock yet: the after_set_time gate must
     # hold SD logging off. Allow a couple of flush cadences for any
-    # wrongly-buffered data to surface, then require the inventory to
-    # be unchanged from the pre-reboot baseline.
+    # wrongly-buffered data to surface, then require the unset-clock
+    # portion of the inventory to be unchanged from the pre-reboot
+    # baseline.
     time.sleep(3)
     still = _log_sizes(client)
-    if _new_or_grown(pre_gate, still):
+    if _new_or_grown(_unset_clock_sizes(pre_gate),
+                     _unset_clock_sizes(still)):
         pytest.fail(
             "SD log data was written on a cold boot before set_time "
             "despite sd_enabled=after_set_time"
