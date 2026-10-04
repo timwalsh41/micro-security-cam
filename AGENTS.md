@@ -83,7 +83,7 @@
     - Be concise but comprehensive when editing this file - review it in its entirety to ensure no redundant information is added
     - This is a record of the design architecture, NOT a record of the implementation history - do not refer to how a feature or implementation has changed, or what plan or project phase features were introduced or modifed, just document the current state
     - Do not call out the number of tests per module, this is a number that may vary over time, does not add useful information to the user understanding at this level of abstraction, and is prone to get out of date.
-- Use PlantUML to render UML diagrams (class diagrams, sequence diagrams, etc.)
+- Use Mermaid to render UML diagrams (class diagrams, sequence diagrams, etc.)
 - In documentation markdowns, enclose all symbols and filenames in `backticks`
 
 # Other

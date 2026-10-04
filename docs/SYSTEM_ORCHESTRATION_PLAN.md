@@ -254,337 +254,108 @@ main.cpp (significant changes)
 
 ## System Architecture Diagram
 
-The following PlantUML class diagram shows the complete system architecture at plan completion (post-Slice 7). Composition (owned) relationships use filled diamonds; aggregation (reference) relationships use open diamonds. Dashed arrows indicate dependency.
+The following Mermaid diagram shows the complete system architecture at plan completion (post-Slice 7). Composition (owned) relationships use thick arrows; aggregation (reference) relationships use open circles at the source end. Dashed arrows indicate dependency.
 
-```plantuml
-@startuml
-skinparam classAttributeIconSize 0
-skinparam linetype ortho
-skinparam nodesep 40
-skinparam ranksep 30
+```mermaid
+---
+title: "System Architecture — Post-Slice 7"
+---
+flowchart TB
+    subgraph HAL_Layer["HAL Layer"]
+        WifiHal["WifiHal<br/>+mode(Mode)<br/>+begin(ssid, pass)<br/>+soft_ap(ssid, pass)<br/>+status() : Status<br/>+local_ip() : char*<br/>+disconnect()<br/>+is_connected() : bool"]
+        WebServerHal["WebServerHal<br/>+init(port)<br/>+on(uri, method, handler)<br/>+send(code, type, content)"]
+        TimerHal["TimerHal<br/>+init(interval_us, isr)<br/>+set_frequency(interval_us)<br/>+start()<br/>+stop()"]
+        MicHal["MicHal<br/>+init(config) : bool<br/>+start()<br/>+stop()<br/>+read(buf, max) : size_t<br/>+deinit()"]
+        CameraHal["CameraHal<br/>+init(config) : CameraInitResult<br/>+deinit()<br/>+capture() : CameraFrame<br/>+release()"]
+        StreamWriter["StreamWriter<br/>+write(data, len) : size_t<br/>+close()"]
+        WifiHalImpl
+        WebServerHalImpl
+        TimerHalImpl
+        MicHalImpl
+        CameraHalImpl
+        AsyncWebStreamWriter["AsyncWebStreamWriter<br/>-m_client : AsyncClient*"]
+        WifiHalImpl -.-> WifiHal
+        WebServerHalImpl -.-> WebServerHal
+        TimerHalImpl -.-> TimerHal
+        MicHalImpl -.-> MicHal
+        CameraHalImpl -.-> CameraHal
+        AsyncWebStreamWriter -.-> StreamWriter
+    end
+    subgraph Command_Framework["Command Framework"]
+        CommandTransport["CommandTransport<br/>+send_response(code, data, len)<br/>+has_request() : bool<br/>+read_request(code, payload, len)"]
+        WebCommandTransport["WebCommandTransport<br/>-WebServerHal& m_web<br/>-CommandHandler& m_handler<br/>+register_routes()"]
+        SerialCommandTransport["SerialCommandTransport<br/>-CommandHandler& m_handler<br/>-SerialHal& m_serial<br/>-m_line_buffer[128]"]
+        WebCommandTransport -.-> CommandTransport
+        SerialCommandTransport -.-> CommandTransport
+        CommandHandler["CommandHandler<br/>-LoggingService& m_log<br/>-handler_map<br/>-transport_list[]<br/>+register_handler(code, fn)<br/>+add_transport(transport)<br/>+tick()<br/>+dispatch(code, payload, len, response, rlen)"]
+        CommandHandler o-->|*| CommandTransport
+    end
+    subgraph Services["Services"]
+        WifiService["WifiService<br/>-WifiHal& m_hal<br/>-LoggingService& m_log<br/>+init(sta, ap, timeout_secs)<br/>+is_connected() : bool<br/>+local_ip() : char*"]
+        WebServerService["WebServerService<br/>-WebServerHal& m_hal<br/>-CommandHandler& m_cmd_handler<br/>-LoggingService& m_log<br/>+init(config)"]
+        StreamService["StreamService<br/>-LoggingService& m_log<br/>-StreamSlot m_slots[4]<br/>-m_max_streams<br/>+init(max_streams) : bool<br/>+start_stream(slot, writer) : bool<br/>+stop_stream(slot)<br/>+deliver_frame(slot, data, len)<br/>+active_slot_count() : uint8_t<br/>-sustain_task(param)"]
+        MicService["MicService<br/>-MicHal& m_hal<br/>-SdController& m_sd<br/>-LoggingService& m_log<br/>-m_task_handle<br/>-m_do_capture : bool<br/>-m_gain : uint8_t<br/>+init(config, gain)<br/>+start_capture() : bool<br/>+stop_capture() : bool<br/>+has_wav_file() : bool<br/>-mic_task_entry(param)<br/>-mic_loop()"]
+        SystemOrchestrator["SystemOrchestrator<br/>-VideoController& m_video<br/>-CameraController& m_camera<br/>-CommandHandler& m_cmd_handler<br/>-TimeService& m_time<br/>-ConfigService& m_config<br/>-LoggingService& m_log<br/>-MicService* m_mic<br/>-StreamService* m_stream<br/>-MotionDetector* m_motion<br/>-m_active_capture : CaptureType<br/>-m_schedules[8]<br/>-m_recording_start_time : uint32_t<br/>-m_motion_stop_time : uint32_t<br/>-m_min_duration_stop_time : uint32_t<br/>-m_motion_stop_requested : bool<br/>-m_in_schedule_window : bool<br/>+init()<br/>+tick()<br/>+current_capture_type() : CaptureType<br/>+start_video_recording(duration_secs) : bool<br/>+stop_video_recording() : bool<br/>+capture_photo(path) : bool<br/>+start_timelapse(interval) : bool<br/>+stop_timelapse() : bool<br/>+set_schedule(idx, entry)<br/>+evaluate_schedule() : bool<br/>+on_motion_detected()<br/>+on_motion_stopped()<br/>-register_commands()<br/>-switch_to_photo_mode()<br/>-switch_to_video_mode()<br/>-find_active_motion_schedule() : ScheduleEntry*<br/>-handle_tick_stop_logic()"]
+    end
+    subgraph Core_Components["Core Components"]
+        VideoController["VideoController<br/>-CameraController& m_camera<br/>-SdController& m_sd<br/>-TimeService& m_time<br/>-LoggingService& m_log<br/>-TimerHal& m_timer<br/>-AviWriter m_avi_writer<br/>-StreamService* m_stream_service<br/>-MicService* m_mic_service<br/>-MotionDetector* m_motion_detector<br/>-m_capture_task_handle<br/>+init(config)<br/>+start_recording()<br/>+stop_recording()<br/>+capture_photo(path)<br/>+state() : RecordingState<br/>+set_stream_service(svc)<br/>+set_mic_service(svc)<br/>+set_motion_detector(det)<br/>-capture_task_entry(param)<br/>-on_frame_capture()<br/>-frame_isr()"]
+        CameraController["CameraController<br/>-CameraHal& m_hal<br/>-m_config<br/>+init(config)<br/>+capture_frame() : bool<br/>+get_frame() : camera_fb_t*<br/>+release_frame()"]
+        MotionDetector["MotionDetector<br/>-m_prev_frame[96*96]<br/>-m_curr_frame[96*96]<br/>-m_decode_buffer[640*480]<br/>-m_config<br/>+init(config, width, height) : bool<br/>+process_frame(jpeg, len) : MotionResult<br/>+reset()<br/>-downscale_96x96(grayscale, src_w, src_h, dst)"]
+        AviWriter["AviWriter<br/>+open(path)<br/>+write_frame(data, len)<br/>+write_audio_stream_header(rate, bits, ch)<br/>+write_audio_chunk(data, len)<br/>+build_index()<br/>+close()"]
+        AviIndex["AviIndex<br/>+add_entry(fourcc, size, offset)<br/>+write_to_sd(file)<br/>+reset()"]
+        SdController["SdController<br/>+begin()<br/>+end()<br/>+open(path, mode) : File<br/>+close(file)<br/>+exists(path) : bool"]
+    end
+    subgraph Existing_Services["Existing Services"]
+        ConfigService["ConfigService<br/>+load(data, len)<br/>+config() : ConfigData&<br/>+mutable_config() : ConfigData&"]
+        TimeService["TimeService<br/>+now() : millis_t<br/>+elapsed_ms(start) : millis_t<br/>+set_unix_offset(unix_time, system_ms)<br/>+unix_now() : uint32_t"]
+        LoggingService["LoggingService<br/>+log(level, fmt, ...)"]
+        LedStateMachine["LedStateMachine<br/>+tick() : bool"]
+    end
 
- title System Architecture — Post-Slice 7
+    %% Relationships
+    WifiService -.->|uses| WifiHal
+    WebServerService -.->|uses| WebServerHal
+    MicService -.->|uses| MicHal
+    MicService -.->|uses| SdController
 
- package "HAL Layer" {
-    interface WifiHal {
-        +mode(Mode)
-        +begin(ssid, pass)
-        +soft_ap(ssid, pass)
-        +status() : Status
-        +local_ip() : char*
-        +disconnect()
-        +is_connected() : bool
-    }
+    SystemOrchestrator o--> VideoController
+    SystemOrchestrator o--> CameraController
+    SystemOrchestrator o--> CommandHandler
+    SystemOrchestrator o--> ConfigService
+    SystemOrchestrator o--> TimeService
+    SystemOrchestrator o--> LoggingService
+    SystemOrchestrator o-->|optional| MicService
+    SystemOrchestrator o-->|optional| StreamService
+    SystemOrchestrator o-->|optional| MotionDetector
 
-    interface WebServerHal {
-        +init(port)
-        +on(uri, method, handler)
-        +send(code, type, content)
-    }
+    VideoController ==> AviWriter
+    VideoController -.->|uses| CameraController
+    VideoController -.->|uses| SdController
+    VideoController -.->|uses| TimeService
+    VideoController -.->|uses| LoggingService
+    VideoController -.->|uses| TimerHal
+    VideoController o-->|optional| StreamService
+    VideoController o-->|optional| MicService
+    VideoController o-->|optional| MotionDetector
 
-    interface TimerHal {
-        +init(interval_us, isr)
-        +set_frequency(interval_us)
-        +start()
-        +stop()
-    }
+    CameraController -.->|uses| CameraHal
 
-    interface MicHal {
-        +init(config) : bool
-        +start()
-        +stop()
-        +read(buf, max) : size_t
-        +deinit()
-    }
+    WebServerService -.->|references| CommandHandler
 
-    interface CameraHal {
-        +init(config) : CameraInitResult
-        +deinit()
-        +capture() : CameraFrame
-        +release()
-    }
-
-    interface StreamWriter {
-        +write(data, len) : size_t
-        +close()
-    }
-
-    class WifiHalImpl {
-    }
-    class WebServerHalImpl {
-    }
-    class TimerHalImpl {
-    }
-    class MicHalImpl {
-    }
-    class CameraHalImpl {
-    }
-    class AsyncWebStreamWriter {
-        -m_client : AsyncClient*
-    }
-
-    WifiHalImpl ..|> WifiHal
-    WebServerHalImpl ..|> WebServerHal
-    TimerHalImpl ..|> TimerHal
-    MicHalImpl ..|> MicHal
-    CameraHalImpl ..|> CameraHal
-    AsyncWebStreamWriter ..|> StreamWriter
-}
-
- package "Command Framework" {
-    abstract class CommandTransport {
-        +send_response(code, data, len)
-        +has_request() : bool
-        +read_request(code, payload, len)
-    }
-
-    class WebCommandTransport {
-        -WebServerHal& m_web
-        -CommandHandler& m_handler
-        +register_routes()
-    }
-
-    class SerialCommandTransport {
-        -CommandHandler& m_handler
-        -SerialHal& m_serial
-        -m_line_buffer[128]
-    }
-
-    WebCommandTransport ..|> CommandTransport
-    SerialCommandTransport ..|> CommandTransport
-
-    class CommandHandler {
-        -LoggingService& m_log
-        -handler_map
-        -transport_list[]
-        +register_handler(code, fn)
-        +add_transport(transport)
-        +tick()
-        +dispatch(code, payload, len, response, rlen)
-    }
-
-    CommandHandler o-left-> "*" CommandTransport
-}
-
- package "Services" {
-    class WifiService {
-        -WifiHal& m_hal
-        -LoggingService& m_log
-        +init(sta, ap, timeout_secs)
-        +is_connected() : bool
-        +local_ip() : char*
-    }
-
-    class WebServerService {
-        -WebServerHal& m_hal
-        -CommandHandler& m_cmd_handler
-        -LoggingService& m_log
-        +init(config)
-    }
-
-    class StreamService {
-        -LoggingService& m_log
-        -StreamSlot m_slots[4]
-        -m_max_streams
-        +init(max_streams) : bool
-        +start_stream(slot, writer) : bool
-        +stop_stream(slot)
-        +deliver_frame(slot, data, len)
-        +active_slot_count() : uint8_t
-        -sustain_task(param)
-    }
-
-    class MicService {
-        -MicHal& m_hal
-        -SdController& m_sd
-        -LoggingService& m_log
-        -m_task_handle
-        -m_do_capture : bool
-        -m_gain : uint8_t
-        +init(config, gain)
-        +start_capture() : bool
-        +stop_capture() : bool
-        +has_wav_file() : bool
-        -mic_task_entry(param)
-        -mic_loop()
-    }
-
-    class SystemOrchestrator {
-        -VideoController& m_video
-        -CameraController& m_camera
-        -CommandHandler& m_cmd_handler
-        -TimeService& m_time
-        -ConfigService& m_config
-        -LoggingService& m_log
-        -MicService* m_mic
-        -StreamService* m_stream
-        -MotionDetector* m_motion
-        -m_active_capture : CaptureType
-        -m_schedules[8]
-        -m_recording_start_time : uint32_t
-        -m_motion_stop_time : uint32_t
-        -m_min_duration_stop_time : uint32_t
-        -m_motion_stop_requested : bool
-        -m_in_schedule_window : bool
-        +init()
-        +tick()
-        +current_capture_type() : CaptureType
-        +start_video_recording(duration_secs) : bool
-        +stop_video_recording() : bool
-        +capture_photo(path) : bool
-        +start_timelapse(interval) : bool
-        +stop_timelapse() : bool
-        +set_schedule(idx, entry)
-        +evaluate_schedule() : bool
-        +on_motion_detected()
-        +on_motion_stopped()
-        -register_commands()
-        -switch_to_photo_mode()
-        -switch_to_video_mode()
-        -find_active_motion_schedule() : ScheduleEntry*
-        -handle_tick_stop_logic()
-    }
-}
-
- package "Core Components" {
-    class VideoController {
-        -CameraController& m_camera
-        -SdController& m_sd
-        -TimeService& m_time
-        -LoggingService& m_log
-        -TimerHal& m_timer
-        -AviWriter m_avi_writer
-        -StreamService* m_stream_service
-        -MicService* m_mic_service
-        -MotionDetector* m_motion_detector
-        -m_capture_task_handle
-        +init(config)
-        +start_recording()
-        +stop_recording()
-        +capture_photo(path)
-        +state() : RecordingState
-        +set_stream_service(svc)
-        +set_mic_service(svc)
-        +set_motion_detector(det)
-        -capture_task_entry(param)
-        -on_frame_capture()
-        -frame_isr()
-    }
-
-    class CameraController {
-        -CameraHal& m_hal
-        -m_config
-        +init(config)
-        +capture_frame() : bool
-        +get_frame() : camera_fb_t*
-        +release_frame()
-    }
-
-    class MotionDetector {
-        -m_prev_frame[96*96]
-        -m_curr_frame[96*96]
-        -m_decode_buffer[640*480]
-        -m_config
-        +init(config, width, height) : bool
-        +process_frame(jpeg, len) : MotionResult
-        +reset()
-        -downscale_96x96(grayscale, src_w, src_h, dst)
-    }
-
-    class AviWriter {
-        +open(path)
-        +write_frame(data, len)
-        +write_audio_stream_header(rate, bits, ch)
-        +write_audio_chunk(data, len)
-        +build_index()
-        +close()
-    }
-
-    class AviIndex {
-        +add_entry(fourcc, size, offset)
-        +write_to_sd(file)
-        +reset()
-    }
-
-    class SdController {
-        +begin()
-        +end()
-        +open(path, mode) : File
-        +close(file)
-        +exists(path) : bool
-    }
-}
-
- package "Existing Services" {
-    class ConfigService {
-        +load(data, len)
-        +config() : ConfigData&
-        +mutable_config() : ConfigData&
-    }
-
-    class TimeService {
-        +now() : millis_t
-        +elapsed_ms(start) : millis_t
-        +set_unix_offset(unix_time, system_ms)
-        +unix_now() : uint32_t
-    }
-
-    class LoggingService {
-        +log(level, fmt, ...)
-    }
-
-    class LedStateMachine {
-        +tick() : bool
-    }
-}
-
- ' --- Relationships ---
-
- WifiService ..> WifiHal : uses
- WebServerService ..> WebServerHal : uses
- MicService ..> MicHal : uses
- MicService ..> SdController : uses
-
- SystemOrchestrator o-down-> VideoController
- SystemOrchestrator o-down-> CameraController
- SystemOrchestrator o-down-> CommandHandler
- SystemOrchestrator o-down-> ConfigService
- SystemOrchestrator o-down-> TimeService
- SystemOrchestrator o-down-> LoggingService
- SystemOrchestrator o-down-> MicService : optional
- SystemOrchestrator o-down-> StreamService : optional
- SystemOrchestrator o-down-> MotionDetector : optional
-
- VideoController *-down-> AviWriter
- VideoController ..> CameraController : uses
- VideoController ..> SdController : uses
- VideoController ..> TimeService : uses
- VideoController ..> LoggingService : uses
- VideoController ..> TimerHal : uses
- VideoController o-right-> StreamService : optional
- VideoController o-right-> MicService : optional
- VideoController o-right-> MotionDetector : optional
-
- CameraController ..> CameraHal : uses
-
- WebServerService ..> CommandHandler : references
-
- CommandHandler ..> LoggingService : uses
- WifiService ..> LoggingService : uses
- StreamService ..> StreamWriter : uses
- StreamService ..> LoggingService : uses
- MicService ..> LoggingService : uses
- SystemOrchestrator ..> LoggingService : uses
-
-@enduml
+    CommandHandler -.->|uses| LoggingService
+    WifiService -.->|uses| LoggingService
+    StreamService -.->|uses| StreamWriter
+    StreamService -.->|uses| LoggingService
+    MicService -.->|uses| LoggingService
+    SystemOrchestrator -.->|uses| LoggingService
 ```
 
 **Reading the diagram:**
-- **Filled diamonds** (◆) = composition (owned lifetime)
-- **Open diamonds** (◇) = aggregation (reference, external lifetime)
+- **Thick arrows** = composition (owned lifetime)
+- **Open circles at the source end** = aggregation (reference, external lifetime)
 - **Dashed arrows** = dependency (uses)
 - **Solid arrows with empty head** = association
-- **Dashed arrow with triangle** = realization (implements)
+- **Dashed arrows without labels** = realization (implements)
 - **Dotted arrows with labels** = optional collaborators
 
 **Key structural observations:**
