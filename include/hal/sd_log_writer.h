@@ -168,7 +168,9 @@ class SdLogWriter : public hal::LogBackend
          * @brief Delete old log files based on retention policy.
          *
          * Scans the log directory once and removes daily log files
-         * strictly older than (today - retention_days).
+         * strictly older than (today - retention_days). Files dated
+         * in 1970 derive from an unset wall clock and are never
+         * expired.
          */
         void delete_old_logs();
 

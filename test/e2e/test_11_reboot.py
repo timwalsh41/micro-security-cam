@@ -1,4 +1,5 @@
-"""E2E: reboot-dependent behavior (NVS persistence, cold-boot gating).
+"""E2E: reboot-dependent behavior (NVS persistence, cold-boot gating,
+boot-log retention).
 
 These tests reboot the device, which is only safe/possible once the
 firmware exposes a reboot endpoint (companion task msc-e2e-api). They
@@ -10,7 +11,7 @@ import time
 import pytest
 
 import camclient
-from conftest import _log_sizes, _wait_until
+from conftest import LOG_FILE_RE, _log_sizes, _wait_until
 
 # The device needs time to reconnect to WiFi after a reboot; a short
 # outage right after the first successful response is common.
@@ -184,3 +185,70 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
             "SD log writing never started after set_time: the "
             "firmware's SD log sink never writes to the card"
         )
+
+
+def test_sd_true_boot_log_survives_set_time(client, guard, reboot_available):
+    """With sd_enabled=true, boot-period lines land in the unset-clock
+    log file, and the retention pass that set_time triggers must not
+    expire that pre-clock log; the restore leaves NVS clean."""
+    original = client.config_get_value("logging.sd_enabled")
+    if not client.status().get("sd"):
+        pytest.skip("SD card unavailable; boot-log retention not testable")
+
+    retention_days = int(client.config_get_value("logging.retention_days"))
+    now = int(time.time())
+    cutoff_date = time.strftime("%Y%m%d",
+                                time.gmtime(now - retention_days * 86400))
+    stale = [name for name in _log_sizes(client)
+             if LOG_FILE_RE.match(name) and name[:8] < cutoff_date]
+    if stale:
+        pytest.skip(
+            f"the set_time retention pass would delete device logs older "
+            f"than {cutoff_date}: {stale}"
+        )
+
+    time.sleep(3)
+    before = _log_sizes(client)
+
+    guard.set_config("logging.sd_enabled", "true")
+    client.config_save("nvs")
+    try:
+        try:
+            client.reboot()
+        except camclient.CamClientError:
+            pass
+        _wait_for_reboot(client)
+
+        mode = client.config_get_value("logging.sd_enabled").lower()
+        if mode != "true":
+            pytest.skip(
+                f"logging.sd_enabled came back as {mode!r}: the card's "
+                "config file overlays NVS, so boot logging is not "
+                "controllable from this suite"
+            )
+
+        if not _wait_until(
+                lambda: _log_sizes(client).get("19700101.log", 0)
+                > before.get("19700101.log", 0), 30.0):
+            pytest.fail(
+                "boot-period log 19700101.log did not grow with "
+                "sd_enabled=true: boot lines never reached the card"
+            )
+
+        pre_set = _log_sizes(client)
+        guard.advance_time(int(time.time()))
+        today = time.strftime("%Y%m%d", time.gmtime())
+        rotated = _wait_until(
+            lambda: _log_sizes(client).get(f"{today}.log", 0)
+            > pre_set.get(f"{today}.log", 0), 45.0)
+        assert rotated, (
+            f"{today}.log never started after set_time: rotation and "
+            "retention did not run, boot-log survival is unproven"
+        )
+        assert "19700101.log" in _log_sizes(client), (
+            "the pre-set_time boot log 19700101.log was expired by "
+            "the retention pass triggered by set_time"
+        )
+    finally:
+        client.config_set_value("logging.sd_enabled", original)
+        client.config_save("nvs")

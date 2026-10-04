@@ -179,9 +179,12 @@ void SdLogWriter::delete_old_logs()
         {
             (void)size;
             (void)is_dir;
-            // Daily log files are named YYYYMMDD.log
+            // Daily log files are named YYYYMMDD.log; files dated in
+            // 1970 derive from an unset wall clock and are exempt
+            // from retention so a later set_time cannot expire them.
             if (strlen(entry) == 12 &&
                 strncmp(entry + 8, ".log", 4) == 0 &&
+                strncmp(entry, "1970", 4) != 0 &&
                 strncmp(entry, cutoff_date, 8) < 0)
             {
                 char old_path[32];
