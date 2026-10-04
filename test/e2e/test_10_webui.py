@@ -325,29 +325,32 @@ def test_ui_config_editor_loads_and_saves(client, guard, page):
     # The POST must carry the editor's exact content: a payload of the
     # literal text \"undefined\" would be silently ignored by the
     # device's INI parser while still reporting success.
-    with page.expect_request(
-        lambda req: req.method == "POST" and req.url.endswith("/update")
-    ) as request_info:
-        page.click("#btn-config-save")
-    form = urllib.parse.parse_qs(request_info.value.post_data or "")
-    sent = (form.get("config") or [""])[0]
-    assert sent == ini_text, "save request did not carry the editor content"
-    assert sent != "undefined", "save request carried the literal text undefined"
-    assert "[" in sent and "=" in sent
-    assert (form.get("dest") or [None])[0] == "nvs"
+    try:
+        with page.expect_request(
+            lambda req: req.method == "POST" and req.url.endswith("/update")
+        ) as request_info:
+            page.click("#btn-config-save")
+        form = urllib.parse.parse_qs(request_info.value.post_data or "")
+        sent = (form.get("config") or [""])[0]
+        assert sent == ini_text, "save request did not carry the editor content"
+        assert sent != "undefined", \
+            "save request carried the literal text undefined"
+        assert "[" in sent and "=" in sent
+        assert (form.get("dest") or [None])[0] == "nvs"
 
-    page.wait_for_function(
-        "document.getElementById('cfg-msg').textContent.length > 0",
-        timeout=UI_TIMEOUT_MS,
-    )
-    assert page.locator("#cfg-msg").text_content() == "saved (nvs)", (
-        f"config save reported: {page.locator('#cfg-msg').text_content()!r}"
-    )
-
-    # Re-overlay the session-start snapshot: restores the live config
-    # and the persisted (NVS) copy the save just rewrote.
-    restore = client.update(guard.m_config_ini)
-    assert restore.status == 200, "could not restore the session config"
+        page.wait_for_function(
+            "document.getElementById('cfg-msg').textContent.length > 0",
+            timeout=UI_TIMEOUT_MS,
+        )
+        assert page.locator("#cfg-msg").text_content() == "saved (nvs)", (
+            "config save reported: "
+            f"{page.locator('#cfg-msg').text_content()!r}"
+        )
+    finally:
+        # Re-overlay the session-start snapshot: restores the live config
+        # and the persisted (NVS) copy the save just rewrote.
+        restore = client.update(guard.m_config_ini)
+        assert restore.status == 200, "could not restore the session config"
 
 
 def test_ui_photos_counter_reflects_capture(client, guard, capture_ready, page):
