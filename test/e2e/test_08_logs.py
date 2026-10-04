@@ -11,7 +11,12 @@ import time
 import pytest
 
 import camclient
-from conftest import LOG_FILE_RE, _log_sizes, _wait_until
+from conftest import (
+    LOG_FILE_RE,
+    _log_sizes,
+    _require_log_sizes,
+    _wait_until,
+)
 
 # The suite advances device time in whole days for rotation/retention.
 DAY_S = 86400
@@ -19,7 +24,7 @@ DAY_S = 86400
 
 def _logs_listing(client):
     """Fetch the /logs listing, or None when it is unavailable."""
-    resp = client.get("/logs?start=0")
+    resp = client.logs_response()
     if resp.status != 200:
         return None
     return resp.json()
@@ -43,14 +48,16 @@ def sd_logging_ready(client, guard):
         pytest.skip(
             "logging.sd_enabled=false; SD logging disabled by configuration"
         )
-    if _log_sizes(client):
+    sizes = _require_log_sizes(client, "log coverage baseline")
+    if sizes:
         return
     guard.advance_time(int(time.time()))
     if not _wait_until(lambda: bool(_log_sizes(client)), 30.0):
-        pytest.fail(
-            "no SD log data appeared within 30s of set_time: the "
-            "firmware's SD log sink never writes to the card"
-        )
+        if not _require_log_sizes(client, "log coverage baseline"):
+            pytest.fail(
+                "no SD log data appeared within 30s of set_time: the "
+                "firmware's SD log sink never writes to the card"
+            )
 
 
 def _require_sd_logging(client, listing):

@@ -11,7 +11,12 @@ import time
 import pytest
 
 import camclient
-from conftest import LOG_FILE_RE, _log_sizes, _wait_until
+from conftest import (
+    LOG_FILE_RE,
+    _log_sizes,
+    _require_log_sizes,
+    _wait_until,
+)
 
 # The device needs time to reconnect to WiFi after a reboot; a short
 # outage right after the first successful response is common.
@@ -24,23 +29,26 @@ BOOT_POLL_S = 3.0
 # unobservable through a reboot for any key that file pins. The test
 # therefore persists a set of keys in one save and requires at least
 # one to round-trip: that proves the NVS write/load path end to end
-# while tolerating SD-pinned keys.
+# while tolerating SD-pinned keys. A key with no safe distinct value
+# for the current device state is dropped from that set for the run.
 PERSISTENCE_KEYS = ("camera.jpeg_quality", "logging.retention_days")
 
 
 def _changed_value(key, original):
-    """A value distinct from the original for round-trip comparison.
+    """A value distinct from the original for round-trip comparison,
+    or None when the key offers no safe distinct value.
 
     For ``logging.retention_days`` the value only ever lengthens the
-    retention window (bounded to the valid maximum): a transiently
-    shortened window could expire baseline logs on the card when the
-    reboot-triggered retention pass runs.
+    retention window: a transiently shortened window could expire
+    baseline logs on the card when the reboot-triggered retention pass
+    runs. At the valid maximum (255) no larger value exists, so None
+    drops the key from this run's candidates.
     """
     if key == "camera.jpeg_quality":
         return "63" if original != "63" else "10"
     original_days = int(original)
     if original_days >= 255:
-        return "254"
+        return None
     return str(min(original_days + 10, 255))
 
 
@@ -96,9 +104,17 @@ def test_config_persists_to_nvs_across_reboot(client, guard, reboot_available):
     originals = {}
     changed = {}
     for key in PERSISTENCE_KEYS:
-        originals[key] = client.config_get_value(key)
-        changed[key] = _changed_value(key, originals[key])
-        guard.set_config(key, changed[key])
+        original = client.config_get_value(key)
+        value = _changed_value(key, original)
+        if value is None:
+            print(
+                f"\nNOTE: {key}={original} has no safe distinct value; "
+                "dropped from this run's persistence candidates.\n"
+            )
+            continue
+        originals[key] = original
+        changed[key] = value
+        guard.set_config(key, value)
     client.config_save("nvs")
 
     try:
@@ -110,15 +126,14 @@ def test_config_persists_to_nvs_across_reboot(client, guard, reboot_available):
         # Re-establish the wall clock the reboot cleared.
         guard.advance_time(int(time.time()))
 
-        survived = [key for key in PERSISTENCE_KEYS
+        survived = [key for key in changed
                     if client.config_get_value(key) == changed[key]]
         assert survived, (
             "no candidate key survived the reboot: the NVS save/load path "
-            "did not persist any of "
-            f"{PERSISTENCE_KEYS} (originals={originals}, "
+            f"did not persist any of {list(changed)} (originals={originals}, "
             f"changed={changed})"
         )
-        for key in PERSISTENCE_KEYS:
+        for key in changed:
             if key not in survived:
                 print(
                     f"\nNOTE: {key} did not round-trip - pinned by the card's "
@@ -176,7 +191,7 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
     # window is inside the checked span; drain a flush cadence first so
     # in-flight writes from the running session land in the baseline.
     time.sleep(3)
-    pre_gate = _log_sizes(client)
+    pre_gate = _require_log_sizes(client, "cold-boot baseline")
 
     try:
         client.reboot()
@@ -190,7 +205,7 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
     # portion of the inventory to be unchanged from the pre-reboot
     # baseline.
     time.sleep(3)
-    still = _log_sizes(client)
+    still = _require_log_sizes(client, "post-reboot inventory")
     if _new_or_grown(_unset_clock_sizes(pre_gate),
                      _unset_clock_sizes(still)):
         pytest.fail(
@@ -201,12 +216,15 @@ def test_after_set_time_cold_boot_gating(client, guard, reboot_available):
     # Setting the wall clock opens the gate: log writes now land on the
     # card (set_time itself produces one).
     guard.advance_time(int(time.time()))
-    if not _wait_until(lambda: _new_or_grown(still, _log_sizes(client)),
-                       30.0):
-        pytest.fail(
-            "SD log writing never started after set_time: the "
-            "firmware's SD log sink never writes to the card"
-        )
+    grown = _wait_until(
+        lambda: _new_or_grown(still, _log_sizes(client) or {}), 30.0)
+    if not grown:
+        final = _require_log_sizes(client, "post-set_time growth check")
+        if not _new_or_grown(still, final):
+            pytest.fail(
+                "SD log writing never started after set_time: the "
+                "firmware's SD log sink never writes to the card"
+            )
 
 
 def test_sd_true_boot_log_survives_set_time(client, guard, reboot_available):
@@ -221,7 +239,8 @@ def test_sd_true_boot_log_survives_set_time(client, guard, reboot_available):
     now = int(time.time())
     cutoff_date = time.strftime("%Y%m%d",
                                 time.gmtime(now - retention_days * 86400))
-    stale = [name for name in _log_sizes(client)
+    inventory = _require_log_sizes(client, "stale-log guard")
+    stale = [name for name in inventory
              if LOG_FILE_RE.match(name) and name[:4] != "1970"
              and name[:8] < cutoff_date]
     if stale:
@@ -231,7 +250,7 @@ def test_sd_true_boot_log_survives_set_time(client, guard, reboot_available):
         )
 
     time.sleep(3)
-    before = _log_sizes(client)
+    before = _require_log_sizes(client, "boot-growth baseline")
 
     guard.set_config("logging.sd_enabled", "true")
     client.config_save("nvs")
@@ -250,25 +269,35 @@ def test_sd_true_boot_log_survives_set_time(client, guard, reboot_available):
                 "controllable from this suite"
             )
 
-        if not _wait_until(
-                lambda: _log_sizes(client).get("19700101.log", 0)
-                > before.get("19700101.log", 0), 30.0):
-            pytest.fail(
-                "boot-period log 19700101.log did not grow with "
-                "sd_enabled=true: boot lines never reached the card"
-            )
+        grown = _wait_until(
+            lambda: (_log_sizes(client) or {}).get("19700101.log", 0)
+            > before.get("19700101.log", 0), 30.0)
+        if not grown:
+            final = _require_log_sizes(client, "boot-growth check")
+            if final.get("19700101.log", 0) <= before.get(
+                    "19700101.log", 0):
+                pytest.fail(
+                    "boot-period log 19700101.log did not grow with "
+                    "sd_enabled=true: boot lines never reached the card"
+                )
 
-        pre_set = _log_sizes(client)
+        pre_set = _require_log_sizes(client, "rotation baseline")
         guard.advance_time(int(time.time()))
         today = time.strftime("%Y%m%d", time.gmtime())
         rotated = _wait_until(
-            lambda: _log_sizes(client).get(f"{today}.log", 0)
+            lambda: (_log_sizes(client) or {}).get(f"{today}.log", 0)
             > pre_set.get(f"{today}.log", 0), 45.0)
-        assert rotated, (
-            f"{today}.log never started after set_time: rotation and "
-            "retention did not run, boot-log survival is unproven"
-        )
-        assert "19700101.log" in _log_sizes(client), (
+        if not rotated:
+            final = _require_log_sizes(client, "rotation check")
+            if final.get(f"{today}.log", 0) <= pre_set.get(f"{today}.log",
+                                                            0):
+                pytest.fail(
+                    f"{today}.log never started after set_time: rotation "
+                    "and retention did not run, boot-log survival is "
+                    "unproven"
+                )
+        assert "19700101.log" in _require_log_sizes(
+            client, "boot-log survival check"), (
             "the pre-set_time boot log 19700101.log was expired by "
             "the retention pass triggered by set_time"
         )

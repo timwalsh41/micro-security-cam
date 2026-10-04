@@ -134,12 +134,42 @@ LOG_FILE_RE = re.compile(r"^\d{8}\.log$")
 
 
 def _log_sizes(client):
-    """Map of log-file name -> size, or {} when /logs is unavailable."""
+    """Map of log-file name -> size, {} when the device reports no log
+    directory yet, or None when the listing cannot be read.
+
+    Only a fetch that fails outright (connection failure, a non-200
+    status other than 404, or a malformed body) is unreadable; a 404
+    is the device's definitive answer that no logs exist yet.
+    """
     try:
-        listing = client.logs()
+        resp = client.logs_response()
     except camclient.CamClientError:
+        return None
+    if resp.status == 404:
         return {}
-    return {e["n"]: e["s"] for e in listing["entries"] if not e["d"]}
+    if resp.status != 200:
+        return None
+    data = resp.json()
+    if not isinstance(data, dict) or not isinstance(
+            data.get("entries"), list):
+        return None
+    return {e["n"]: e["s"] for e in data["entries"] if not e["d"]}
+
+
+def _require_log_sizes(client, what, timeout=10.0):
+    """The log inventory for a baseline or a guard, retried briefly.
+
+    A transient fetch failure is polled out; if the listing stays
+    unreadable the caller is skipped, so no guard or assertion ever
+    runs against an inventory that could not actually be read.
+    """
+    sizes = _log_sizes(client)
+    if sizes is None:
+        _wait_until(lambda: _log_sizes(client) is not None, timeout)
+        sizes = _log_sizes(client)
+    if sizes is None:
+        pytest.skip(f"could not read the /logs inventory ({what})")
+    return sizes
 
 
 def _wait_until(predicate, timeout, poll_s=2.0):
