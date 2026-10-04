@@ -2652,21 +2652,29 @@ Tests live under `test/` in environment-specific subfolders:
 ```
 test/
   native/                           ← Native unit tests (Unity framework)
+    test_avi_clip_session/          ← AVI clip session tests
     test_avi_writer/                ← AVI container format tests
     test_camera_controller/         ← Camera lifecycle tests
     test_command_handler/           ← Command dispatch framework
     test_config_service/            ← ConfigService loading & defaults
+    test_file_service/              ← FileService path validation & routes
     test_ini_parser/                ← INI parser including video config
     test_led_state_machine/         ← LED state machine tests
     test_log_level_parser/          ← LogLevel name mapping (aliases, default)
     test_logging_service/           ← Logging output tests
     test_mic_service/               ← MicService lifecycle, ring buffer, gain tests
+    test_multi_log_backend/         ← MultiLogBackend registration & fan-out tests
     test_request_arg_store/         ← Per-request query-parameter stable storage
     test_sd_controller/             ← SD write controller tests
+    test_sd_log_writer/             ← SD log sink filtering & retention tests
+    test_serial_command_transport/  ← Serial line parsing & command dispatch
+    test_stream_frame_channel/      ← Stream frame part buffering tests
     test_stream_service/            ← StreamService slot/delivery tests
     test_system_orchestrator/       ← System orchestrator commands
     test_time_service/              ← Time service tests
     test_video_controller/          ← Video recording orchestration
+    test_web_command_transport/     ← Web command route registration & dispatch
+    test_web_server_service/        ← WebServerService auth & index route tests
     test_wifi_service/              ← WiFi lifecycle tests
     test_time_formatter/            ← TimeFormatter UTC formatting
     test_path_utils/                ← PathUtils collision avoidance
@@ -2674,15 +2682,17 @@ test/
     test_timer_hal_impl/            ← TimerHalImpl periodic ISR behavior
     test_capture_scheduler_esp32/   ← CaptureSchedulerEsp32 task/timer lifecycle
     test_hardware_peripheral_manager/ ← HardwarePeripheralManagerImpl GPIO/LED/temperature
+    test_nvs_hal_impl/              ← NvsHalImpl persistence on real NVS flash
     test_sd_card_hal_impl/          ← Real SD card open-mode semantics
     test_video_controller_esp32/    ← End-to-end AVI clip recording
   mocks/
     native_mocks/                   ← Mock HAL classes + mock Arduino
     embedded_mocks/                 ← Mocks for ESP32 test env
     test_utils/                     ← Shared test utilities
+  e2e/                              ← pytest end-to-end suite against a live device (owner: README.md)
 ```
 
-Each test suite is a subfolder with a `test_` prefix containing one or more implementation files, but always a single `main()` function that gathers and runs all tests. Tests use the Unity framework.
+Each suite under `native/` and `hardware/` is a subfolder with a `test_` prefix containing one or more implementation files, but always a single `main()` function that gathers and runs all tests. Tests use the Unity framework.
 
 ### Running Tests
 
