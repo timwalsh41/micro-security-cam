@@ -77,7 +77,7 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 
 ### Class Diagrams
 
-The firmware is split into four class diagrams, one per architectural layer. Classes that a layer depends on but does not own (e.g. HAL interfaces used by services) appear in the dependent layer's diagram as reduced "external" stubs, marked with their home diagram. A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, and `main.cpp` is a trivial composition root that delegates to `CameraRunner`. `CameraRunner` (defined in `src/camera_runner.cpp`) owns all application objects as private members of its singleton and drives the setup/loop lifecycle, while `main.cpp` just calls `CameraRunner::init()` and `CameraRunner::loop()`. The `lib/` directory currently contains only a `README` and no production code.
+The firmware is split into four class diagrams, one per architectural layer. Classes that a layer depends on but does not own (e.g. HAL interfaces used by services) appear in the dependent layer's diagram as reduced "external" stubs, marked with their home diagram. A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, `log_level_parser.h` provides the free function `log_level::parse()` mapping a configured severity name to a `LogLevel` (used by the composition root when wiring a log sink from configuration), and `main.cpp` is a trivial composition root that delegates to `CameraRunner`. `CameraRunner` (defined in `src/camera_runner.cpp`) owns all application objects as private members of its singleton and drives the setup/loop lifecycle, while `main.cpp` just calls `CameraRunner::init()` and `CameraRunner::loop()`. The `lib/` directory currently contains only a `README` and no production code.
 
 #### 1. Hardware Abstraction Layer (`include/hal/`, `src/hal/`)
 
@@ -884,7 +884,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
-| `HardwarePeripheralManagerImpl` | FreeRTOS mutex for shared GPIO pin (LED/SD CS) arbitration; `temperatureRead()` for core temperature; delegates to `hal::digital_write()` and `hal::set_pin_as_output()` from `gpio_hal.h`. |
+| `HardwarePeripheralManagerImpl` | Two FreeRTOS mutexes: one for shared GPIO pin (LED/SD CS) arbitration, one serializing `temperatureRead()` across tasks (the sensor's read sequence is stateful and must not interleave); delegates to `hal::digital_write()` and `hal::set_pin_as_output()` from `gpio_hal.h`. |
 
 **Camera rotation** — `hal::CameraConfig` carries a `rotation` field (`0` or `180` only; any other value is clamped to `0` by `CameraController` before reaching the HAL). After a successful `esp_camera_init()`, `CameraHalImpl::init()` applies `rotation == 180` by writing the sensor hmirror + vflip registers via `esp_camera_sensor_get()`. Applying inside `init()` (rather than once at boot) re-applies rotation automatically on every camera re-init, since sensor flip state resets to defaults on each `esp_camera_init()` cycle. 90/270 degrees are not supported; they would require a software JPEG decode/rotate/re-encode path (see the `msc-image-rotation-feasibility` report §3.2).
 
@@ -2658,8 +2658,10 @@ test/
     test_config_service/            ← ConfigService loading & defaults
     test_ini_parser/                ← INI parser including video config
     test_led_state_machine/         ← LED state machine tests
+    test_log_level_parser/          ← LogLevel name mapping (aliases, default)
     test_logging_service/           ← Logging output tests
     test_mic_service/               ← MicService lifecycle, ring buffer, gain tests
+    test_request_arg_store/         ← Per-request query-parameter stable storage
     test_sd_controller/             ← SD write controller tests
     test_stream_service/            ← StreamService slot/delivery tests
     test_system_orchestrator/       ← System orchestrator commands
