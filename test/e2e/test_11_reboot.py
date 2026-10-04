@@ -29,10 +29,19 @@ PERSISTENCE_KEYS = ("camera.jpeg_quality", "logging.retention_days")
 
 
 def _changed_value(key, original):
-    """A value distinct from the original for round-trip comparison."""
+    """A value distinct from the original for round-trip comparison.
+
+    For ``logging.retention_days`` the value only ever lengthens the
+    retention window (bounded to the valid maximum): a transiently
+    shortened window could expire baseline logs on the card when the
+    reboot-triggered retention pass runs.
+    """
     if key == "camera.jpeg_quality":
         return "63" if original != "63" else "10"
-    return "10" if original != "10" else "5"
+    original_days = int(original)
+    if original_days >= 255:
+        return "254"
+    return str(min(original_days + 10, 255))
 
 
 def _reboot_available(client):
