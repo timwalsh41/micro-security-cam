@@ -900,12 +900,12 @@ Abstract interface for WiFi operations. Provides STA/AP mode selection, connecti
 | `begin_sta(ssid, password)` | Connect to a WiFi network as a station |
 | `begin_ap(ssid, password)` | Start an access point |
 | `status()` | Return connection status as a `WifiStatus` enum (`CONNECTED`, `DISCONNECTED`, etc.) |
-| `local_ip()` | Return the assigned IP address |
+| `local_ip()` | Return the assigned IP address. The returned pointer targets per-call member storage: an address set by `begin_ap()` is kept, otherwise the live STA address is formatted into a separate buffer on every call (the underlying `WiFi.localIP().toString()` temporary must never escape) |
 | `config_static(ip, gateway, subnet)` | Configure static IP addressing for STA before `begin_sta()`; returns `false` if addresses are invalid |
 | `disconnect()` | Disconnect from the network |
 | `is_connected()` | Return whether the device is connected |
 
-**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library. Uses `IPAddress::fromString()` for address parsing and `WiFi.config()` to apply the static configuration.
+**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library. Uses `IPAddress::fromString()` for address parsing and `WiFi.config()` to apply the static configuration. `local_ip()` copies the formatted address into stable member storage before returning it.
 
 **Mock**: `MockWifiHal` (`test/mocks/native_mocks/mock_wifi_hal.h`) provides configurable return values (`begin_sta_result`, `status_result` of type `WifiStatus`, `connected_result`, `ip_buffer`, `config_static_result`) and call tracking (`begin_sta_call_count`, `begin_ap_call_count`, `config_static_call_count`, etc.).
 
@@ -1618,6 +1618,7 @@ Top-level system coordinator and command router.
 - `hal::NvsHal &` — for config persistence to NVS.
 - `hal::RestartHal &` — for scheduling the deferred device restart behind the `REBOOT` command.
 - `HardwarePeripheralManager &` — for the core temperature reported in `GET_STATUS`.
+- `WifiService &` — for the local IP address reported in `GET_STATUS`.
 
 #### SD-Optional Boot and Degraded Mode
 
@@ -1666,7 +1667,7 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16,"uptime_ms":uint32,"version":string,"temperature_c":float,"width":uint16,"height":uint16,"stream_frames":uint32}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only), the device uptime in milliseconds from the millis clock, the build-identity version string from `version.h`, the core temperature in degrees Celsius (`HardwarePeripheralManager::read_temperature()`), the applied camera frame dimensions, and the cumulative delivered-frame counter the web UI samples to render the preview framerate. The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16,"uptime_ms":uint32,"version":string,"temperature_c":float,"width":uint16,"height":uint16,"stream_frames":uint32,"local_ip":string}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only), the device uptime in milliseconds from the millis clock, the build-identity version string from `version.h`, the core temperature in degrees Celsius (`HardwarePeripheralManager::read_temperature()`), the applied camera frame dimensions, the cumulative delivered-frame counter the web UI samples to render the preview framerate, and the device's local IPv4 address from `WifiService`. The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks), `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks, and no camera capture is performed). Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |

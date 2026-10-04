@@ -63,14 +63,18 @@ WifiStatus WifiHalImpl::status() const
 
 const char* WifiHalImpl::local_ip() const
 {
-    // If m_ip_buffer has been set to a non-default address (e.g. from
-    // begin_ap()), return the stored value.  Otherwise fall back to
-    // WiFi.localIP() for STA mode.
+    // An address configured by begin_ap() takes precedence. Otherwise
+    // format the live STA address into stable member storage:
+    // WiFi.localIP().toString() returns a temporary String whose
+    // buffer dies with it, so its c_str() must not escape this call.
     if (m_ip_buffer[0] != '\0' && strcmp(m_ip_buffer, "0.0.0.0") != 0)
     {
         return m_ip_buffer;
     }
-    return WiFi.localIP().toString().c_str();
+    String ip = WiFi.localIP().toString();
+    strncpy(m_sta_ip_buffer, ip.c_str(), sizeof(m_sta_ip_buffer) - 1);
+    m_sta_ip_buffer[sizeof(m_sta_ip_buffer) - 1] = '\0';
+    return m_sta_ip_buffer;
 }
 
 void WifiHalImpl::disconnect()

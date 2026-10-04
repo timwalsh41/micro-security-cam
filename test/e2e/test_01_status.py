@@ -1,4 +1,6 @@
 """E2E: /status invariants on real hardware."""
+import re
+
 import camclient
 
 # Core telemetry keys; additional keys (e.g. uptime) may be added by
@@ -18,6 +20,7 @@ STATUS_KEYS = {
     "width",
     "height",
     "stream_frames",
+    "local_ip",
 }
 
 
@@ -55,6 +58,20 @@ def test_status_version_matches_version_command(client):
         "status version must be a non-empty string"
     assert status["version"] == version_payload["version"], \
         "status version disagrees with the version endpoint"
+
+
+def test_status_local_ip_stable_across_calls(client):
+    """local_ip is a dotted-quad string that is identical across reads
+    (regression: the WiFi HAL once returned a pointer into a destroyed
+    temporary, so the value was garbage after the call)."""
+    first = client.status().get("local_ip")
+    second = client.status().get("local_ip")
+    assert isinstance(first, str), f"local_ip must be a string: {first!r}"
+    assert re.match(r"^\d{1,3}(\.\d{1,3}){3}$", first), \
+        f"local_ip is not a dotted quad: {first!r}"
+    assert first != "0.0.0.0", "device reports an unset local IP"
+    assert first == second, \
+        f"local_ip unstable across calls: {first!r} vs {second!r}"
 
 
 def test_status_connected_streams_matches_stream_list(client):

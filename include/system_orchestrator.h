@@ -9,6 +9,7 @@
 #include "ini_parser.h"
 #include "logging_service.h"
 #include "sd_controller.h"
+#include "wifi_service.h"
 #include "hal/hardware_peripheral_manager.h"
 #include "hal/nvs_hal.h"
 #include "hal/restart_hal.h"
@@ -50,6 +51,8 @@ class SystemOrchestrator
          * @param restart    Reference to RestartHal for deferred device restart.
          * @param hw_periph  Reference to HardwarePeripheralManager for core
          *                   temperature telemetry.
+         * @param wifi       Reference to WifiService for the local IP
+         *                   reported in GET_STATUS.
          */
         SystemOrchestrator(VideoController& video,
                            CameraController& camera,
@@ -62,7 +65,8 @@ class SystemOrchestrator
                            SdController& sd,
                            hal::NvsHal& nvs,
                            hal::RestartHal& restart,
-                           HardwarePeripheralManager& hw_periph);
+                           HardwarePeripheralManager& hw_periph,
+                           WifiService& wifi);
 
         /**
          * @brief Initializes the orchestrator.
@@ -107,6 +111,7 @@ class SystemOrchestrator
         hal::NvsHal& m_nvs;
         hal::RestartHal& m_restart;
         HardwarePeripheralManager& m_hw_periph;
+        WifiService& m_wifi;
 
         /** Latched SD availability snapshot from init(). */
         bool m_sd_available{false};

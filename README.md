@@ -316,7 +316,7 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/` | No | Embedded single-page web UI (status, controls, file browser, log viewer, config editor) |
-| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts, uptime in milliseconds, build version, core temperature, frame resolution, delivered-frame counter) |
+| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts, uptime in milliseconds, build version, core temperature, frame resolution, delivered-frame counter, local IP) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |

@@ -379,7 +379,8 @@ private:
         m_video_controller, m_camera_ctrl, m_command_handler,
         m_real_time, m_config_service, m_logger,
         m_stream_service, m_web_server_hal_impl,
-        m_sd_controller, m_nvs_hal_impl, m_restart_hal, m_hw_periph};
+        m_sd_controller, m_nvs_hal_impl, m_restart_hal, m_hw_periph,
+        m_wifi_service};
 
     // --- Global state variables ---
     millis_t m_last_log_heartbeat_time_ms = 0;
