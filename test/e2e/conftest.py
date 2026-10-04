@@ -133,27 +133,56 @@ PHOTO_PATH_RE = re.compile(
 LOG_FILE_RE = re.compile(r"^\d{8}\.log$")
 
 
-def _log_sizes(client):
-    """Map of log-file name -> size, {} when the device reports no log
-    directory yet, or None when the listing cannot be read.
+# Bound on following the /logs listing pagination: one page holds at
+# most 12 entries, and a healthy card holds at most one file per day
+# within the retention window, so this bound is only reached when the
+# listing cursor violates its contract.
+_LOG_LISTING_MAX_PAGES = 64
 
-    Only a fetch that fails outright (connection failure, a non-200
-    status other than 404, or a malformed body) is unreadable; a 404
-    is the device's definitive answer that no logs exist yet.
+
+def _log_sizes(client):
+    """Map of every log-file name on the card to its size, {} when the
+    device reports no log directory yet, or None when the listing
+    cannot be read.
+
+    The listing is paginated: the ``more``/``next`` cursor is followed
+    so guards and baselines see the full inventory rather than one
+    page. Only a fetch that fails outright (connection failure, a
+    non-200 status other than a first-page 404, a malformed body, a
+    cursor that fails to advance, or the page bound) is unreadable; a
+    404 on the first page is the device's definitive answer that no
+    logs exist yet.
     """
-    try:
-        resp = client.logs_response()
-    except camclient.CamClientError:
-        return None
-    if resp.status == 404:
-        return {}
-    if resp.status != 200:
-        return None
-    data = resp.json()
-    if not isinstance(data, dict) or not isinstance(
-            data.get("entries"), list):
-        return None
-    return {e["n"]: e["s"] for e in data["entries"] if not e["d"]}
+    sizes = {}
+    start = 0
+    for _ in range(_LOG_LISTING_MAX_PAGES):
+        try:
+            resp = client.logs_response(start)
+        except camclient.CamClientError:
+            return None
+        if resp.status == 404:
+            return {} if start == 0 else None
+        if resp.status != 200:
+            return None
+        data = resp.json()
+        if not isinstance(data, dict) or not isinstance(
+                data.get("entries"), list):
+            return None
+        for entry in data["entries"]:
+            if not isinstance(entry, dict) or not all(
+                    key in entry for key in ("n", "s", "d")):
+                return None
+            if not entry["d"]:
+                sizes[entry["n"]] = entry["s"]
+        if not isinstance(data.get("more"), bool):
+            return None
+        if not data["more"]:
+            return sizes
+        nxt = data.get("next")
+        if not isinstance(nxt, int) or nxt <= start:
+            return None
+        start = nxt
+    return None
 
 
 def _require_log_sizes(client, what, timeout=10.0):

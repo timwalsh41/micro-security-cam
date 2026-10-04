@@ -301,14 +301,17 @@ class CamClient:
             path += "?" + urllib.parse.urlencode(extra)
         return self.get_json(path, timeout=timeout)
 
-    def logs_response(self):
-        """GET /logs — raw CamResponse for status-aware callers.
+    def logs_response(self, start=0):
+        """GET /logs?start= — raw CamResponse for status-aware callers.
 
-        A 404 means the log directory does not exist yet, i.e. no log
-        files have ever been written; it is a definitive answer, not a
-        transport failure.
+        A 404 on the first page means the log directory does not exist
+        yet, i.e. no log files have ever been written; it is a
+        definitive answer, not a transport failure.
         """
-        return self.get("/logs")
+        path = "/logs"
+        if start:
+            path += f"?start={int(start)}"
+        return self.get(path)
 
     def logs(self, start=0):
         """GET /logs?start= — log directory listing JSON."""

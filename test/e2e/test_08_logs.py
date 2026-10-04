@@ -80,11 +80,12 @@ def _date_str(unix_ts):
 
 
 def _log_names(client):
-    """Names of the log files currently on the card."""
-    listing = _logs_listing(client)
-    if listing is None:
+    """Names of the log files currently on the card, or None when the
+    listing cannot be read."""
+    sizes = _log_sizes(client)
+    if sizes is None:
         return None
-    return [e["n"] for e in listing["entries"] if not e["d"]]
+    return list(sizes)
 
 
 def test_logs_listing_shape(client):
