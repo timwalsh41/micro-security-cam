@@ -4,4 +4,7 @@ version = "0.1.0"
 description = "Script utilities for use with ESP32 security camera"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "playwright>=1.63.0",
+    "pytest>=8.0",
+]

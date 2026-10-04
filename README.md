@@ -59,6 +59,74 @@ pio test -e native -f native/test_camera_controller
 pio test -e seeed_xiao_esp32s3_test
 ```
 
+### End-to-end regression suite
+
+`test/e2e/` is a pytest suite that exercises the running device over
+its real HTTP interface — coverage that complements the unit tests:
+integration behavior of the web transport, SD-backed flows, photo /
+recording / streaming on the actual camera, and download payload
+validation, which host tests cannot observe.
+
+The suite talks to the device with the same transport module as the
+CLI (`script/python/camclient.py`). Flash before running: build from
+the tip of your feature branch and flash manually, then run the suite
+against it.
+
+```bash
+# Whole suite against the device given by CAM_HOST/CAM_PASSWORD
+script/test-e2e.sh
+
+# Subset / dry run / verbose
+script/test-e2e.sh -k photo
+script/test-e2e.sh --collect-only
+script/test-e2e.sh -v
+```
+
+Configuration via environment:
+
+| Variable | Meaning | Default |
+|----------|---------|---------|
+| `CAM_HOST` | device IP (required) | unset |
+| `CAM_PASSWORD` | web password (required; empty value if none is configured) | unset |
+| `CAM_EXPECT_GIT` | optional git identity the flashed build must report (overrides the repo `main` tip) | unset |
+
+The web UI module (`test/e2e/test_10_webui.py`) drives the device UI
+with headless Chromium via Playwright. One-time setup:
+
+```bash
+uv run playwright install chromium
+```
+
+Without the browser binary that module skips with a clear reason and
+the rest of the suite still runs.
+
+Behavior notes:
+
+- Tests run strictly sequentially; each request has a bounded timeout
+  and the suite fails fast with a clear message when the device is
+  unreachable.
+- The suite snapshots device state at session start (wall clock,
+  recording/streaming state, config keys it changes, file/log
+  inventory) and restores it at teardown. The firmware exposes no
+  delete endpoint, so media/log files the suite creates are
+  inventoried and reported at the end rather than deleted.
+- Build identity: when the firmware exposes `cmd=version` (companion
+  change adding version/reboot endpoints), the suite compares it
+  against the repo's `main` tip (or `CAM_EXPECT_GIT` when set) and
+  fails loudly on a mismatch, naming both identities. Until the
+  endpoint is present, absence prints one warning and continues.
+- Reboot-dependent coverage (NVS persistence across reboot, the
+  `after_set_time` cold-boot gating) is implemented and skips itself
+  until the reboot endpoint is available, then activates without
+  further changes.
+- Known holes are skipped with explicit reasons rather than built
+  around: SD-absent degraded mode needs the card physically removed,
+  the no-password auth matrix would require disturbing the device's
+  configured password, and exercising `/update` with `dest=sd` would
+  rewrite `/config.ini` on the card.
+- Keep this suite updated as features are added, with coverage that
+  complements the unit tests rather than duplicating them.
+
 ## Configuration
 
 The firmware ships with sensible defaults compiled in. At startup, the defaults are overlaid setting-by-setting from NVS (non-volatile flash storage, if a config was saved there), and then from the INI-style config file (`/config.ini`) on the SD card if present — **precedence: defaults < NVS < SD file**; a setting mentioned in a later source overrides earlier ones, settings not mentioned keep their earlier value.
@@ -336,9 +404,7 @@ Nominal recording capabilities for the OV2640 camera on the ESP32S3 board, per d
 
 ## CLI Tool
 
-The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints.
-
-Edit the `HOST`, `PORT`, and `PASSWORD` variables at the top of the script to match your device configuration.
+The [`script/python/camera_cli.py`](script/python/camera_cli.py) script provides a command-line interface to the camera's web server via its HTTP endpoints. It shares its HTTP transport with the e2e suite ([`script/python/camclient.py`](script/python/camclient.py)). Connection settings come from the environment or flags only: pass `--ip` (or set `CAM_HOST`) for the device address and set `CAM_PASSWORD` for the web password — nothing is baked in. `version` and `reboot` fail soft with a clear message while the flashed firmware lacks those endpoints.
 
 ```bash
 # Get camera status (JSON)
@@ -360,6 +426,11 @@ uv run script/python/camera_cli.py config-save sd
 
 # Set camera clock to current system time
 uv run script/python/camera_cli.py set-time
+
+# Firmware build identity / reboot (requires the version/reboot
+# endpoints from the companion firmware change; fails soft until then)
+uv run script/python/camera_cli.py version
+uv run script/python/camera_cli.py reboot
 ```
 
 Requires Python 3.13+ with [`uv`](https://docs.astral.sh/uv/). No external dependencies.
