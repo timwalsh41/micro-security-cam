@@ -1,8 +1,8 @@
 """E2E: log listing, log tail, and date rotation/retention.
 
-These tests only run when the device actually writes logs to the SD
-card. A build with the SD log backend unwired never creates /logs, so
-the module skips with a clear reason instead of failing.
+These tests require an SD card and, once the wall clock is set, SD
+log data: a build whose log sink is unwired never creates /logs, so
+the module fails with a clear error instead of skipping silently.
 """
 import calendar
 import re
@@ -11,7 +11,7 @@ import time
 import pytest
 
 import camclient
-from conftest import LOG_FILE_RE
+from conftest import LOG_FILE_RE, _log_sizes, _wait_until
 
 # The suite advances device time in whole days for rotation/retention.
 DAY_S = 86400
@@ -23,25 +23,6 @@ def _logs_listing(client):
     if resp.status != 200:
         return None
     return resp.json()
-
-
-def _log_sizes(client):
-    """Map of log-file name -> size, or {} when /logs is unavailable."""
-    try:
-        listing = client.logs()
-    except camclient.CamClientError:
-        return {}
-    return {e["n"]: e["s"] for e in listing["entries"] if not e["d"]}
-
-
-def _wait_until(predicate, timeout, poll_s=2.0):
-    """Poll until predicate() holds; return its final value."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(poll_s)
-    return bool(predicate())
 
 
 @pytest.fixture(scope="module", autouse=True)

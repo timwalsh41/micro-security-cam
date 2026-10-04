@@ -132,6 +132,25 @@ PHOTO_PATH_RE = re.compile(
 )
 LOG_FILE_RE = re.compile(r"^\d{8}\.log$")
 
+
+def _log_sizes(client):
+    """Map of log-file name -> size, or {} when /logs is unavailable."""
+    try:
+        listing = client.logs()
+    except camclient.CamClientError:
+        return {}
+    return {e["n"]: e["s"] for e in listing["entries"] if not e["d"]}
+
+
+def _wait_until(predicate, timeout, poll_s=2.0):
+    """Poll until predicate() holds; return its final value."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(poll_s)
+    return bool(predicate())
+
 # Internal error code the firmware reports when the capture pipeline
 # cannot serve a request. A device in that state answers every capture
 # command (photo, start, stream_start) with code 255 and recovers only

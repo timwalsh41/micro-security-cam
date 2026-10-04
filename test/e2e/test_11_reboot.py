@@ -10,6 +10,7 @@ import time
 import pytest
 
 import camclient
+from conftest import _log_sizes, _wait_until
 
 # The device needs time to reconnect to WiFi after a reboot; a short
 # outage right after the first successful response is common.
@@ -91,50 +92,33 @@ def test_config_persists_to_nvs_across_reboot(client, guard, reboot_available):
     client.config_save("nvs")
 
     try:
-        client.reboot()
-    except camclient.CamClientError:
-        pass  # the connection may drop mid-request while rebooting
-    _wait_for_reboot(client)
-    # Re-establish the wall clock the reboot cleared.
-    guard.advance_time(int(time.time()))
+        try:
+            client.reboot()
+        except camclient.CamClientError:
+            pass  # the connection may drop mid-request while rebooting
+        _wait_for_reboot(client)
+        # Re-establish the wall clock the reboot cleared.
+        guard.advance_time(int(time.time()))
 
-    survived = [key for key in PERSISTENCE_KEYS
-                if client.config_get_value(key) == changed[key]]
-    assert survived, (
-        "no candidate key survived the reboot: the NVS save/load path "
-        "did not persist any of "
-        f"{PERSISTENCE_KEYS} (originals={originals}, "
-        f"changed={changed})"
-    )
-    for key in PERSISTENCE_KEYS:
-        if key not in survived:
-            print(
-                f"\nNOTE: {key} did not round-trip - pinned by the card's "
-                "config.ini, which overlays NVS at boot; NVS was proven "
-                f"via {survived}.\n"
-            )
-    for key, original in originals.items():
-        client.config_set_value(key, original)
-    client.config_save("nvs")
-
-
-def _log_sizes(client):
-    """Map of log-file name -> size, or {} when /logs is unavailable."""
-    try:
-        listing = client.logs()
-    except camclient.CamClientError:
-        return {}
-    return {e["n"]: e["s"] for e in listing["entries"] if not e["d"]}
-
-
-def _wait_until(predicate, timeout, poll_s=2.0):
-    """Poll until predicate() holds; return its final value."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(poll_s)
-    return bool(predicate())
+        survived = [key for key in PERSISTENCE_KEYS
+                    if client.config_get_value(key) == changed[key]]
+        assert survived, (
+            "no candidate key survived the reboot: the NVS save/load path "
+            "did not persist any of "
+            f"{PERSISTENCE_KEYS} (originals={originals}, "
+            f"changed={changed})"
+        )
+        for key in PERSISTENCE_KEYS:
+            if key not in survived:
+                print(
+                    f"\nNOTE: {key} did not round-trip - pinned by the card's "
+                    "config.ini, which overlays NVS at boot; NVS was proven "
+                    f"via {survived}.\n"
+                )
+    finally:
+        for key, original in originals.items():
+            client.config_set_value(key, original)
+        client.config_save("nvs")
 
 
 def _new_or_grown(before, after):
