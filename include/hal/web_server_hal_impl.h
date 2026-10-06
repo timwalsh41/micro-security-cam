@@ -2,6 +2,7 @@
 #define HAL_WEB_SERVER_HAL_IMPL_H
 
 #include "hal/web_server_hal.h"
+#include "hal/request_arg_store.h"
 
 #include <functional>
 #include <string>
@@ -27,8 +28,10 @@ namespace hal
  * @brief RequestRef implementation wrapping AsyncWebServerRequest.
  *
  * Created on the stack in the route callback and passed directly
- * to the handler. All string accessors copy to internal buffers
- * since AsyncWebServerRequest may return String temporaries.
+ * to the handler. All string accessors copy to internal storage
+ * since AsyncWebServerRequest may return String temporaries. Query
+ * parameters are stored per name (RequestArgStore), so a handler can
+ * hold one parameter's value while reading another.
  */
 class AsyncRequestRef : public RequestRef
 {
@@ -72,14 +75,15 @@ class AsyncRequestRef : public RequestRef
         AsyncWebServerRequest* m_request;
 
         static constexpr size_t URI_BUF_SIZE = 128;
-        static constexpr size_t ARG_BUF_SIZE = 128;
         static constexpr size_t HEADER_BUF_SIZE = 128;
 
         /** Room for a full serialized configuration (form payload cap). */
         static constexpr size_t FORM_BUF_SIZE = 1280;
 
         mutable char m_uri_buf[URI_BUF_SIZE]{};
-        mutable char m_arg_buf[ARG_BUF_SIZE]{};
+        /** Per-name query-parameter values; keeps every arg() pointer
+         *  valid while further parameters are read. */
+        mutable RequestArgStore m_arg_store;
         mutable char m_header_buf[HEADER_BUF_SIZE]{};
         mutable char m_auth_buf[HEADER_BUF_SIZE]{};
         mutable char m_form_buf[FORM_BUF_SIZE]{};

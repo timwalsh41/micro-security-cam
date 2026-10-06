@@ -1,9 +1,12 @@
 #include "camera_runner.h"
 #include "hal/time_hal.h"
+#include "log_level_parser.h"
 #include "platform_initializer.h"
 #include "hal/camera_hal_impl.h"
 #include "hal/serial_hal_impl.h"
 #include "hal/serial_log_backend.h"
+#include "hal/multi_log_backend.h"
+#include "hal/sd_log_writer.h"
 #include "hal/sd_card_hal_impl.h"
 #include "hal/wifi_hal_impl.h"
 #include "hal/web_server_hal_impl.h"
@@ -33,6 +36,7 @@
 #include "system_orchestrator.h"
 #include "stream_service.h"
 #include "version.h"
+#include <memory>
 
 using hal::millis_t;
 
@@ -50,6 +54,7 @@ namespace constants
     constexpr millis_t MAIN_LOOP_TIME_US = 250;
     constexpr millis_t LED_TICK_TIME_MS = 5;
     constexpr millis_t LOG_HEARTBEAT_TIME_MS = 30000;
+    constexpr millis_t SD_LOG_FLUSH_TIME_MS = 1000;
 }
 
 /**
@@ -78,6 +83,12 @@ public:
     void init()
     {
         m_platform_init.init();
+
+        // The serial sink attaches first so every log line from here
+        // on reaches the console; the SD sink attaches below once the
+        // logging configuration has loaded.
+        m_multi_log_backend.add_backend(&m_serial_log_backend,
+                                        hal::LogLevel::DEBUG);
 
         // Add delay for PlatformIO terminal to connect
         m_real_time.delay_ms(10000);
@@ -129,6 +140,29 @@ public:
         // Precedence: defaults < NVS < SD file.
         m_config_service.load_nvs(m_nvs_hal_impl);
         m_config_service.load_sd(m_sd_controller);
+
+        // --- Construct the SD log sink when card logging is enabled ---
+        // SdEnabledMode::TRUE attaches immediately; AFTER_SET_TIME
+        // attaches from loop() once the wall clock has been set;
+        // FALSE never constructs the sink.
+        const ConfigData::LoggingConfig& logging_config =
+            m_config_service.config().logging;
+        if (logging_config.sd_enabled != SdEnabledMode::FALSE &&
+            m_sd_controller.is_card_available())
+        {
+            m_sd_log_writer.reset(new SdLogWriter(
+                m_sd_controller, m_real_time,
+                log_level::parse(logging_config.sd_min_level),
+                logging_config.retention_days));
+            if (logging_config.sd_enabled == SdEnabledMode::TRUE)
+            {
+                attach_sd_log_sink();
+            }
+            else
+            {
+                m_sd_log_gated_on_time = true;
+            }
+        }
 
         // --- Initialize camera with config-driven settings ---
         CameraImageConfig cam_image_config;
@@ -227,11 +261,50 @@ public:
             m_last_log_heartbeat_time_ms -= m_last_log_heartbeat_time_ms % constants::LOG_HEARTBEAT_TIME_MS;
         }
 
+        // Open the after_set_time gate once the wall clock is set;
+        // the opening line is flushed immediately so /logs serves it
+        // without waiting for the periodic flush.
+        if (m_sd_log_gated_on_time && !m_sd_log_sink_attached &&
+            m_real_time.is_time_set())
+        {
+            m_sd_log_gated_on_time = false;
+            attach_sd_log_sink();
+            m_logger.info("RUNNER", "SD logging started "
+                         "(sd_enabled=after_set_time)");
+            m_multi_log_backend.tick();
+            m_last_log_flush_time_ms = m_real_time.now();
+        }
+
+        // Periodic flush/rotation tick for the buffered SD log sink.
+        if (m_sd_log_sink_attached &&
+            m_real_time.elapsed_ms(m_last_log_flush_time_ms,
+                                   m_real_time.now()) >=
+                constants::SD_LOG_FLUSH_TIME_MS)
+        {
+            m_multi_log_backend.tick();
+            m_last_log_flush_time_ms = m_real_time.now();
+        }
+
         m_real_time.delay_us(constants::MAIN_LOOP_TIME_US);
     }
 
 private:
     CameraRunnerImpl() = default;
+
+    /**
+     * @brief Attaches the SD log sink to the log fan-out (once).
+     */
+    void attach_sd_log_sink()
+    {
+        if (m_sd_log_writer == nullptr || m_sd_log_sink_attached)
+        {
+            return;
+        }
+        // The writer applies its own configured minimum level.
+        m_multi_log_backend.add_backend(m_sd_log_writer.get(),
+                                        hal::LogLevel::DEBUG);
+        m_sd_log_sink_attached = true;
+    }
 
     // --- Hardware Peripheral Manager (created internally) ---
     HardwarePeripheralManagerImpl m_hw_periph;
@@ -239,8 +312,9 @@ private:
     // --- HAL implementations ---
     RealTimeService m_real_time;
     hal::SerialHalImpl m_serial_hal{115200};
-    hal::SerialLogBackend m_log_backend{m_serial_hal};
-    LoggingService m_logger{m_log_backend, m_real_time};
+    hal::SerialLogBackend m_serial_log_backend{m_serial_hal};
+    MultiLogBackend m_multi_log_backend;
+    LoggingService m_logger{m_multi_log_backend, m_real_time};
     hal::SdCardHalImpl m_sd_hal{hal::SD_CS_PIN};
     hal::CameraHalImpl m_camera_hal;
     hal::TimerHalImpl m_timer_hal;
@@ -276,10 +350,17 @@ private:
         m_video_controller, m_camera_ctrl, m_command_handler,
         m_real_time, m_config_service, m_logger,
         m_stream_service, m_web_server_hal_impl,
-        m_sd_controller, m_nvs_hal_impl, m_restart_hal};
+        m_sd_controller, m_nvs_hal_impl, m_restart_hal, m_hw_periph,
+        m_wifi_service};
 
     // --- Global state variables ---
     millis_t m_last_log_heartbeat_time_ms = 0;
+    millis_t m_last_log_flush_time_ms = 0;
+
+    /** SD log sink; constructed during init() once config has loaded. */
+    std::unique_ptr<SdLogWriter> m_sd_log_writer;
+    bool m_sd_log_sink_attached{false};
+    bool m_sd_log_gated_on_time{false};
 };
 
 void CameraRunner::init()

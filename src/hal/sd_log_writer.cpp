@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,8 @@ SdLogWriter::SdLogWriter(SdController& sd_controller,
 
 void SdLogWriter::write(hal::LogLevel level, const char* line)
 {
+    std::lock_guard<std::mutex> lock(m_buffer_mutex);
+
     // Filter by minimum severity level
     if (level < m_min_level)
     {
@@ -63,6 +66,7 @@ void SdLogWriter::write(hal::LogLevel level, const char* line)
 
 void SdLogWriter::tick()
 {
+    std::lock_guard<std::mutex> lock(m_buffer_mutex);
     flush_buffer();
     check_rotate();
 }
@@ -175,9 +179,12 @@ void SdLogWriter::delete_old_logs()
         {
             (void)size;
             (void)is_dir;
-            // Daily log files are named YYYYMMDD.log
+            // Daily log files are named YYYYMMDD.log; files dated in
+            // 1970 derive from an unset wall clock and are exempt
+            // from retention so a later set_time cannot expire them.
             if (strlen(entry) == 12 &&
                 strncmp(entry + 8, ".log", 4) == 0 &&
+                strncmp(entry, "1970", 4) != 0 &&
                 strncmp(entry, cutoff_date, 8) < 0)
             {
                 char old_path[32];

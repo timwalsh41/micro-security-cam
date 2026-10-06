@@ -18,6 +18,7 @@ MultiLogBackend::MultiLogBackend()
 
 bool MultiLogBackend::add_backend(hal::LogBackend* backend, hal::LogLevel min_level)
 {
+    std::lock_guard<std::mutex> lock(m_registry_mutex);
     if (m_backend_count >= MAX_BACKENDS)
     {
         return false;
@@ -31,24 +32,49 @@ bool MultiLogBackend::add_backend(hal::LogBackend* backend, hal::LogLevel min_le
 
 void MultiLogBackend::write(hal::LogLevel level, const char* line)
 {
-    for (size_t i = 0; i < m_backend_count; ++i)
+    // Snapshot under the lock, fan out outside it: a backend added
+    // concurrently either misses this line or receives it, and no
+    // child backend's I/O runs while the registry lock is held.
+    std::array<hal::LogBackend*, MAX_BACKENDS> backends;
+    std::array<hal::LogLevel, MAX_BACKENDS> min_levels;
+    size_t count;
     {
-        if (level >= m_min_levels[i])
+        std::lock_guard<std::mutex> lock(m_registry_mutex);
+        backends = m_backends;
+        min_levels = m_min_levels;
+        count = m_backend_count;
+    }
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (level >= min_levels[i] && backends[i] != nullptr)
         {
-            m_backends[i]->write(level, line);
+            backends[i]->write(level, line);
         }
     }
 }
 
 void MultiLogBackend::tick()
 {
-    for (size_t i = 0; i < m_backend_count; ++i)
+    std::array<hal::LogBackend*, MAX_BACKENDS> backends;
+    size_t count;
     {
-        m_backends[i]->tick();
+        std::lock_guard<std::mutex> lock(m_registry_mutex);
+        backends = m_backends;
+        count = m_backend_count;
+    }
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (backends[i] != nullptr)
+        {
+            backends[i]->tick();
+        }
     }
 }
 
 size_t MultiLogBackend::backend_count() const
 {
+    std::lock_guard<std::mutex> lock(m_registry_mutex);
     return m_backend_count;
 }

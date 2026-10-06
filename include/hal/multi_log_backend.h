@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 /**
  * @file multi_log_backend.h
@@ -13,6 +14,12 @@
  * Supports up to MAX_BACKENDS child backends, each with its own
  * minimum severity level. This allows independent verbosity
  * control per sink (e.g., serial vs SD card).
+ *
+ * Thread safety: backend registration may race log writes from other
+ * task contexts (backends can be attached at runtime), so registry
+ * mutations and reads are mutex-protected. Fan-out and tick calls run
+ * against a snapshot taken under the lock, so a child backend's I/O
+ * (e.g. a buffered SD flush) never runs while the registry lock is held.
  */
 
 /**
@@ -86,6 +93,12 @@ class MultiLogBackend : public hal::LogBackend
          * @brief Number of registered backends.
          */
         size_t m_backend_count;
+
+        /**
+         * @brief Guards the backend registry against concurrent
+         *        registration from another task context.
+         */
+        mutable std::mutex m_registry_mutex;
 };
 
 #endif // MULTI_LOG_BACKEND_H

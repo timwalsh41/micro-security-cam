@@ -31,6 +31,14 @@ class WifiHalImpl : public WifiHal
     private:
         bool m_connected{false};
         char m_ip_buffer[16]{"0.0.0.0"};
+
+        /**
+         * @brief Stable storage for the formatted live STA address.
+         *
+         * local_ip() is const but must return storage that outlives
+         * the call, so the formatted address lands here.
+         */
+        mutable char m_sta_ip_buffer[16]{};
 };
 
 } // namespace hal

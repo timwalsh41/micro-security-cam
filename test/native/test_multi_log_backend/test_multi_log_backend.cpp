@@ -1,7 +1,9 @@
 #include <unity.h>
 #include "hal/multi_log_backend.h"
 #include "mock_log_backend.h"
+#include <atomic>
 #include <string>
+#include <thread>
 
 // ============================================================
 // Test fixtures
@@ -210,6 +212,44 @@ void test_add_nullptr_backend()
 }
 
 // ============================================================
+// Concurrency
+// ============================================================
+
+/**
+ * @brief A backend registered while another context is writing
+ *        receives every line written after registration completes,
+ *        and an already-registered backend sees every line.
+ */
+void test_concurrent_add_backend_while_writing()
+{
+    MultiLogBackend multi;
+    MockLogBackend early;
+    MockLogBackend late;
+    TEST_ASSERT_TRUE(multi.add_backend(&early, hal::LogLevel::DEBUG));
+
+    std::thread adder([&multi, &late]()
+    {
+        multi.add_backend(&late, hal::LogLevel::DEBUG);
+    });
+
+    const int lines = 5000;
+    for (int i = 0; i < lines; i++)
+    {
+        multi.write(hal::LogLevel::INFO, "line");
+    }
+    adder.join();
+    multi.write(hal::LogLevel::INFO, "marker");
+
+    // Only this thread writes, so the up-front backend saw everything.
+    TEST_ASSERT_EQUAL_INT(lines + 1, early.write_call_count);
+
+    // The racing backend saw a suffix of the lines and always the marker.
+    TEST_ASSERT_TRUE(late.write_call_count >= 1);
+    TEST_ASSERT_TRUE(late.write_call_count <= lines + 1);
+    TEST_ASSERT_EQUAL_STRING("marker", late.last_message.c_str());
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -250,6 +290,9 @@ int main()
     RUN_TEST(test_write_with_no_backends_is_noop);
     RUN_TEST(test_tick_with_no_backends_is_noop);
     RUN_TEST(test_add_nullptr_backend);
+
+    // Concurrency
+    RUN_TEST(test_concurrent_add_backend_while_writing);
 
     return UNITY_END();
 }

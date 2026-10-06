@@ -13,6 +13,7 @@
 
 HardwarePeripheralManagerImpl::HardwarePeripheralManagerImpl()
     : m_sd_active_mutex(xSemaphoreCreateMutex())
+    , m_temp_mutex(xSemaphoreCreateMutex())
 {
 }
 
@@ -53,7 +54,14 @@ void HardwarePeripheralManagerImpl::update_led(bool led_on)
 
 float HardwarePeripheralManagerImpl::read_temperature()
 {
-    return temperatureRead();
+    if (!m_temp_mutex)
+    {
+        return temperatureRead();
+    }
+    xSemaphoreTake(m_temp_mutex, portMAX_DELAY);
+    float temperature = temperatureRead();
+    xSemaphoreGive(m_temp_mutex);
+    return temperature;
 }
 
 void HardwarePeripheralManagerImpl::setup_shared_pin()

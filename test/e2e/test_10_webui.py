@@ -7,6 +7,7 @@ controls, file browser, log viewer, and the config editor.
 """
 import re
 import time
+import urllib.parse
 
 import pytest
 
@@ -61,7 +62,8 @@ def _goto_ui(page, client):
 
 
 def test_ui_page_loads_and_status_panel_populates(client, page):
-    """The page loads and the status panel renders live telemetry."""
+    """The page loads and the status panel renders live telemetry,
+    including the version string and core temperature."""
     _goto_ui(page, client)
     assert "Micro Security Cam" in page.title()
     badge = page.locator("#sd-badge").text_content()
@@ -70,6 +72,22 @@ def test_ui_page_loads_and_status_panel_populates(client, page):
     assert page.locator("#st-free").text_content() not in ("-", "")
     if client.status()["sd"]:
         assert badge == "SD ready"
+
+    # Version tile renders the build identity from the version endpoint.
+    page.wait_for_function(
+        "document.getElementById('st-version').textContent !== '-'"
+    )
+    assert page.locator("#st-version").text_content() == \
+        client.version()["version"]
+
+    # Core temperature tile renders "<number> \u00b0C".
+    page.wait_for_function(
+        "document.getElementById('st-temp').textContent !== '-'"
+    )
+    assert re.match(
+        r"^-?\d+\.\d+ \u00b0C$",
+        page.locator("#st-temp").text_content(),
+    ), f"unexpected temperature rendering: {page.locator('#st-temp').text_content()!r}"
 
 
 def test_ui_record_control_drives_device(client, guard, capture_ready, page):
@@ -127,10 +145,19 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
     try:
         page.click("#btn-stream-start")
         guard.m_started_streaming = True  # registered for teardown stop
-        page.wait_for_function(
-            "document.getElementById('st-stream').textContent === 'live'",
-            timeout=UI_TIMEOUT_MS,
-        )
+        try:
+            page.wait_for_function(
+                "document.getElementById('st-stream').textContent === 'live'",
+                timeout=UI_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError:
+            # A wedged pipeline answers cmd=stream_start with code 255,
+            # so 'live' never appears; probe over HTTP to separate that
+            # known device state from a genuine UI regression (which
+            # still fails as a timeout).
+            if probe_capture_wedge(client):
+                pytest.skip(_wedge_skip_reason())
+            raise
         try:
             # The MJPEG multipart stream must actually render: the browser
             # only sets naturalWidth once a frame has decoded.
@@ -138,11 +165,33 @@ def test_ui_stream_control_drives_device_and_renders_mjpeg(
                 "document.getElementById('preview-img').naturalWidth > 0",
                 timeout=20000,
             )
+
+            # Preview display: the frame resolution from /status.
+            status = client.status()
+            resolution = f"{status['width']}x{status['height']}"
+            page.wait_for_function(
+                "document.getElementById('preview-meta')"
+                f".textContent.startsWith({resolution!r})",
+                timeout=20000,
+            )
+            # ...and a measured framerate, sampled from the delivered-
+            # frame counter across two 5s status polls.
+            page.wait_for_function(
+                "/@ \\d+\\.\\d+ fps/.test("
+                "document.getElementById('preview-meta').textContent)",
+                timeout=25000,
+            )
         finally:
             page.click("#btn-stream-stop")
         page.wait_for_function(
             "document.getElementById('st-stream').textContent === 'off'",
             timeout=UI_TIMEOUT_MS,
+        )
+        # Stopping the preview drops the framerate reading.
+        page.wait_for_function(
+            r"!/@ \d+\.\d+ fps/.test("
+            "document.getElementById('preview-meta').textContent)",
+            timeout=20000,
         )
         guard.m_started_streaming = False
         assert page.locator("#preview-img").get_attribute("src") == ""
@@ -173,11 +222,19 @@ def test_ui_photo_control_reports_saved_path(client, guard, capture_ready, page)
 
     _goto_ui(page, client)
     page.click("#btn-photo")
-    page.wait_for_function(
-        "document.getElementById('ctrl-msg').textContent.startsWith"
-        "('photo: /')",
-        timeout=UI_TIMEOUT_MS,
-    )
+    try:
+        page.wait_for_function(
+            "document.getElementById('ctrl-msg').textContent.startsWith"
+            "('photo: /')",
+            timeout=UI_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        # A wedged pipeline answers cmd=photo with an error envelope the
+        # button renders as an error message; probe to separate that
+        # known device state from a genuine UI regression.
+        if probe_capture_wedge(client):
+            pytest.skip(_wedge_skip_reason())
+        raise
     msg = page.locator("#ctrl-msg").text_content()
     guard.track_created(msg.split("photo: ", 1)[1])
 
@@ -218,14 +275,24 @@ def test_ui_file_browser_lists_and_navigates(client, guard, page):
     )
 
 
-def test_ui_log_viewer_loads_entries(client, page):
-    """The log viewer lists log files and loads a file's tail."""
+def test_ui_log_viewer_loads_entries_or_reports_feedback(client, page):
+    """The log viewer lists log files and loads a file's tail; when the
+    listing is unavailable it renders explicit feedback instead of
+    staying silently blank."""
     resp = client.get("/logs?start=0")
     if resp.status != 200 or not resp.json()["total"]:
-        pytest.skip(
-            "no SD log files are being produced by this firmware build "
-            "(/logs is empty or absent), so log-viewer coverage cannot run"
+        # No SD logs to show: the viewer must surface why (error or
+        # empty-listing message), never nothing at all.
+        _goto_ui(page, client)
+        page.wait_for_function(
+            "document.querySelector('#log-list li') !== null",
+            timeout=UI_TIMEOUT_MS,
         )
+        text = page.locator("#log-list").inner_text()
+        assert text.strip(), "log viewer rendered no feedback at all"
+        assert ("log listing failed" in text) or ("no log files" in text), \
+            f"unexpected log viewer feedback: {text!r}"
+        return
 
     _goto_ui(page, client)
     page.wait_for_function(
@@ -242,7 +309,10 @@ def test_ui_log_viewer_loads_entries(client, page):
 
 
 def test_ui_config_editor_loads_and_saves(client, guard, page):
-    """The config editor loads the live INI and saves it unchanged."""
+    """The config editor loads the live INI and the save request carries
+    that real content (not the literal text \"undefined\"), and the
+    device accepts it; the session-start snapshot restores live and
+    persisted config afterwards."""
     _goto_ui(page, client)
     page.click("#btn-config-load")
     page.wait_for_function(
@@ -252,14 +322,35 @@ def test_ui_config_editor_loads_and_saves(client, guard, page):
     ini_text = page.locator("textarea#config").input_value()
     assert "[" in ini_text and "=" in ini_text, "config editor shows no INI"
 
-    page.click("#btn-config-save")
-    page.wait_for_function(
-        "document.getElementById('cfg-msg').textContent.length > 0",
-        timeout=UI_TIMEOUT_MS,
-    )
-    assert page.locator("#cfg-msg").text_content() == "saved (nvs)", (
-        f"config save reported: {page.locator('#cfg-msg').text_content()!r}"
-    )
+    # The POST must carry the editor's exact content: a payload of the
+    # literal text \"undefined\" would be silently ignored by the
+    # device's INI parser while still reporting success.
+    try:
+        with page.expect_request(
+            lambda req: req.method == "POST" and req.url.endswith("/update")
+        ) as request_info:
+            page.click("#btn-config-save")
+        form = urllib.parse.parse_qs(request_info.value.post_data or "")
+        sent = (form.get("config") or [""])[0]
+        assert sent == ini_text, "save request did not carry the editor content"
+        assert sent != "undefined", \
+            "save request carried the literal text undefined"
+        assert "[" in sent and "=" in sent
+        assert (form.get("dest") or [None])[0] == "nvs"
+
+        page.wait_for_function(
+            "document.getElementById('cfg-msg').textContent.length > 0",
+            timeout=UI_TIMEOUT_MS,
+        )
+        assert page.locator("#cfg-msg").text_content() == "saved (nvs)", (
+            "config save reported: "
+            f"{page.locator('#cfg-msg').text_content()!r}"
+        )
+    finally:
+        # Re-overlay the session-start snapshot: restores the live config
+        # and the persisted (NVS) copy the save just rewrote.
+        restore = client.update(guard.m_config_ini)
+        assert restore.status == 200, "could not restore the session config"
 
 
 def test_ui_photos_counter_reflects_capture(client, guard, capture_ready, page):

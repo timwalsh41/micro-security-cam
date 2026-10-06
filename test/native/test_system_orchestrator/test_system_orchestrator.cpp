@@ -15,6 +15,9 @@
 #include "mock_web_server_hal.h"
 #include "mock_nvs_hal.h"
 #include "mock_restart_hal.h"
+#include "mock_hardware_peripheral_manager.h"
+#include "mock_wifi_hal.h"
+#include "wifi_service.h"
 #include "time_formatter.h"
 #include "version.h"
 #include <cstring>
@@ -42,6 +45,9 @@ struct TestFixture
     StreamService stream_service;
     MockWebServerHal web_hal;
     MockRestartHal restart_hal;
+    MockHardwarePeripheralManager hw_periph;
+    MockWifiHal wifi_hal;
+    WifiService wifi_service;
     SystemOrchestrator orchestrator;
 
     /**
@@ -62,9 +68,10 @@ struct TestFixture
         , config(logger)
         , cmd_handler(logger)
         , stream_service(logger)
+        , wifi_service(wifi_hal, time, logger)
         , orchestrator(video, camera_ctrl, cmd_handler, time, config, logger,
                        stream_service, web_hal, sd_controller, nvs_hal,
-                       restart_hal)
+                       restart_hal, hw_periph, wifi_service)
     {
         camera_hal.init_result = hal::CameraInitResult::SUCCESS;
         camera_ctrl.init();
@@ -1505,6 +1512,110 @@ void test_get_status_includes_uptime_ms()
         reinterpret_cast<const char*>(response), "\"uptime_ms\":123456"));
 }
 
+/**
+ * @brief GET_STATUS reports the build-identity version string from
+ *        version.h (rendered by the web UI status panel).
+ */
+void test_get_status_includes_version()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "\"version\":\"%s-%s\"",
+             version::base_version_string, version::git_hash);
+    TEST_ASSERT_NOT_NULL(strstr(reinterpret_cast<const char*>(response),
+                                expected));
+}
+
+/**
+ * @brief GET_STATUS reports the core temperature read through the
+ *        hardware peripheral manager (rendered by the web UI).
+ */
+void test_get_status_reports_core_temperature()
+{
+    TestFixture f;
+    f.hw_periph.temperature_c = 54.5f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"temperature_c\":54.50"));
+}
+
+/**
+ * @brief GET_STATUS reports the applied camera frame dimensions
+ *        (rendered in the web UI stream preview).
+ */
+void test_get_status_reports_frame_dimensions()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "\"width\":%u,\"height\":%u",
+             static_cast<unsigned int>(f.camera_ctrl.get_params().width),
+             static_cast<unsigned int>(f.camera_ctrl.get_params().height));
+    TEST_ASSERT_NOT_NULL(strstr(reinterpret_cast<const char*>(response),
+                                expected));
+}
+
+/**
+ * @brief GET_STATUS reports the cumulative delivered-frame counter the
+ *        web UI samples to render the preview framerate.
+ */
+void test_get_status_includes_stream_frames()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"stream_frames\":0"));
+
+    const uint8_t frame[4] = {0xFF, 0xD8, 0xFF, 0xD9};
+    f.stream_service.deliver_frame(frame, sizeof(frame));
+
+    response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+    TEST_ASSERT_NOT_NULL(strstr(
+        reinterpret_cast<const char*>(response), "\"stream_frames\":1"));
+}
+
+/**
+ * @brief GET_STATUS reports the local IP from the WiFi service
+ *        (rendered by the web UI status panel).
+ */
+void test_get_status_includes_local_ip()
+{
+    TestFixture f;
+
+    uint8_t response[CommandHandler::MAX_RESPONSE_SIZE]{};
+    size_t response_len = 0;
+    dispatch_cmd(f.cmd_handler, CommandCode::GET_STATUS, nullptr, 0,
+                 response, &response_len);
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "\"local_ip\":\"%s\"",
+             f.wifi_hal.ip_buffer);
+    TEST_ASSERT_NOT_NULL(strstr(reinterpret_cast<const char*>(response),
+                                expected));
+}
+
 // ============================================================
 // POST /update (bulk config)
 // ============================================================
@@ -1698,6 +1809,13 @@ int main()
     RUN_TEST(test_get_status_reports_media_counts);
     RUN_TEST(test_get_status_free_bytes_beyond_32_bits);
     RUN_TEST(test_get_status_caches_sd_stats_within_ttl);
+
+    // Status panel display fields (version, temperature, preview)
+    RUN_TEST(test_get_status_includes_version);
+    RUN_TEST(test_get_status_reports_core_temperature);
+    RUN_TEST(test_get_status_reports_frame_dimensions);
+    RUN_TEST(test_get_status_includes_stream_frames);
+    RUN_TEST(test_get_status_includes_local_ip);
 
     // Version, reboot, and uptime
     RUN_TEST(test_get_version_returns_version_json);

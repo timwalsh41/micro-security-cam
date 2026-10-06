@@ -77,7 +77,7 @@ The ESP32-S3 is a dual-core device (PRO_CPU = core 0, APP_CPU = core 1). The fir
 
 ### Class Diagrams
 
-The firmware is split into four class diagrams, one per architectural layer. Classes that a layer depends on but does not own (e.g. HAL interfaces used by services) appear in the dependent layer's diagram as reduced "external" stubs, marked with their home diagram. A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, and `main.cpp` is a trivial composition root that delegates to `CameraRunner`. `CameraRunner` (defined in `src/camera_runner.cpp`) owns all application objects as private members of its singleton and drives the setup/loop lifecycle, while `main.cpp` just calls `CameraRunner::init()` and `CameraRunner::loop()`. The `lib/` directory currently contains only a `README` and no production code.
+The firmware is split into four class diagrams, one per architectural layer. Classes that a layer depends on but does not own (e.g. HAL interfaces used by services) appear in the dependent layer's diagram as reduced "external" stubs, marked with their home diagram. A few modules are intentionally **not** modeled as classes because they are not class-based: `hal/gpio_hal.h` and `hal/time_hal.h` expose free functions in namespace `hal` (`set_pin_as_output()`, `digital_write()`, `get_millis()`, `delay_ms()`/`delay_us()` plus the `millis_t` alias), `web_auth_util.h` provides the free function `check_basic_auth()` used by both `WebServerService` and `WebCommandTransport`, `log_level_parser.h` provides the free function `log_level::parse()` mapping a configured severity name to a `LogLevel` (used by the composition root when wiring a log sink from configuration), and `main.cpp` is a trivial composition root that delegates to `CameraRunner`. `CameraRunner` (defined in `src/camera_runner.cpp`) owns all application objects as private members of its singleton and drives the setup/loop lifecycle, while `main.cpp` just calls `CameraRunner::init()` and `CameraRunner::loop()`. The `lib/` directory currently contains only a `README` and no production code.
 
 #### 1. Hardware Abstraction Layer (`include/hal/`, `src/hal/`)
 
@@ -213,6 +213,12 @@ classDiagram
         }
         class AsyncRequestRef {
             -m_request : AsyncWebServerRequest*
+            -m_arg_store : RequestArgStore
+        }
+        class RequestArgStore {
+            -m_entries : unique_ptr<Entry>[]
+            +put(name, value) : const char*
+            +get(name) : const char*
         }
         class AsyncWebServerResponse {
             ESPAsyncWebServer base response
@@ -231,6 +237,7 @@ classDiagram
             -m_retention_days : uint8_t
             -m_buffer : char[4096]
             -m_buffer_pos : size_t
+            -m_buffer_mutex : std::mutex
             -m_current_date : char[9]
             +write(level, line)
             +tick()
@@ -241,6 +248,7 @@ classDiagram
             -m_backends : LogBackend*[4]
             -m_min_levels : LogLevel[4]
             -m_backend_count : size_t
+            -m_registry_mutex : std::mutex
             +add_backend(backend, min_level) : bool
             +write(level, line)
             +tick()
@@ -692,6 +700,8 @@ classDiagram
         -m_sd : SdController&
         -m_nvs : NvsHal&
         -m_restart : RestartHal&
+        -m_hw_periph : HardwarePeripheralManager&
+        -m_wifi : WifiService&
         -m_sd_available : bool
         +init()
         +tick()
@@ -721,6 +731,7 @@ classDiagram
         class WebServerHal <<interface>>
         class NvsHal <<interface>>
         class RestartHal <<interface>>
+        class HardwarePeripheralManager <<interface>>
     }
     namespace ExtSvc["External (see Diagram 2 - Services)"] {
         class IStreamService <<interface>>
@@ -729,6 +740,7 @@ classDiagram
         class SdController
         class StreamService
         class TimeService <<interface>>
+        class WifiService
     }
     namespace ExtUtil["External (see Diagram 4 - Utilities)"] {
         class ResolvedCameraParams
@@ -872,7 +884,7 @@ All concrete HAL implementations live in `src/hal/` and directly call Arduino/ES
 | `SerialHalImpl` | Arduino `HardwareSerial` (`Serial`) — wraps `available`, `read`, `write`, `flush` behind the `SerialHal` interface. Serial port is initialised in the constructor. |
 | `SerialLogBackend` | Injected `SerialHal&` — writes formatted log lines via the shared serial HAL. Serial port lifecycle managed externally by the composition root. |
 | `PlatformInitializer` | `esp_log_level_set()`, `esp_log_set_vprintf()` — ESP-IDF BSP-level init, not Arduino. Called once at the top of `setup()`. |
-| `HardwarePeripheralManagerImpl` | FreeRTOS mutex for shared GPIO pin (LED/SD CS) arbitration; `temperatureRead()` for core temperature; delegates to `hal::digital_write()` and `hal::set_pin_as_output()` from `gpio_hal.h`. |
+| `HardwarePeripheralManagerImpl` | Two FreeRTOS mutexes: one for shared GPIO pin (LED/SD CS) arbitration, one serializing `temperatureRead()` across tasks (the sensor's read sequence is stateful and must not interleave); delegates to `hal::digital_write()` and `hal::set_pin_as_output()` from `gpio_hal.h`. |
 
 **Camera rotation** — `hal::CameraConfig` carries a `rotation` field (`0` or `180` only; any other value is clamped to `0` by `CameraController` before reaching the HAL). After a successful `esp_camera_init()`, `CameraHalImpl::init()` applies `rotation == 180` by writing the sensor hmirror + vflip registers via `esp_camera_sensor_get()`. Applying inside `init()` (rather than once at boot) re-applies rotation automatically on every camera re-init, since sensor flip state resets to defaults on each `esp_camera_init()` cycle. 90/270 degrees are not supported; they would require a software JPEG decode/rotate/re-encode path (see the `msc-image-rotation-feasibility` report §3.2).
 
@@ -888,12 +900,12 @@ Abstract interface for WiFi operations. Provides STA/AP mode selection, connecti
 | `begin_sta(ssid, password)` | Connect to a WiFi network as a station |
 | `begin_ap(ssid, password)` | Start an access point |
 | `status()` | Return connection status as a `WifiStatus` enum (`CONNECTED`, `DISCONNECTED`, etc.) |
-| `local_ip()` | Return the assigned IP address |
+| `local_ip()` | Return the assigned IP address. The returned pointer targets per-call member storage: an address set by `begin_ap()` is kept, otherwise the live STA address is formatted into a separate buffer on every call (the underlying `WiFi.localIP().toString()` temporary must never escape) |
 | `config_static(ip, gateway, subnet)` | Configure static IP addressing for STA before `begin_sta()`; returns `false` if addresses are invalid |
 | `disconnect()` | Disconnect from the network |
 | `is_connected()` | Return whether the device is connected |
 
-**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library. Uses `IPAddress::fromString()` for address parsing and `WiFi.config()` to apply the static configuration.
+**ESP32 Implementation**: `WifiHalImpl` (`src/hal/wifi_hal_impl.cpp`) wraps the Arduino `WiFi` library. Uses `IPAddress::fromString()` for address parsing and `WiFi.config()` to apply the static configuration. `local_ip()` copies the formatted address into stable member storage before returning it.
 
 **Mock**: `MockWifiHal` (`test/mocks/native_mocks/mock_wifi_hal.h`) provides configurable return values (`begin_sta_result`, `status_result` of type `WifiStatus`, `connected_result`, `ip_buffer`, `config_static_result`) and call tracking (`begin_sta_call_count`, `begin_ap_call_count`, `config_static_call_count`, etc.).
 
@@ -917,7 +929,7 @@ Each request is represented by a per-request `RequestRef` object that provides a
 |--------|---------|
 | `uri()` | Get the request URI |
 | `method()` | Get the request HTTP method |
-| `arg(name)` | Get a query parameter value |
+| `arg(name)` | Get a query parameter value; successive calls return independent, stable values, so a handler can hold one parameter's value while reading another (key + value, dir + start) |
 | `form_value(name)` | Get a parsed POST form parameter value (application/x-www-form-urlencoded); implementations may use a larger buffer than `arg()` (the `AsyncRequestRef` form buffer holds a full serialized configuration, 1280 bytes) |
 | `form_value_truncated(name)` | Report whether the named POST form value exceeded the form buffer and was truncated in transit; callers must reject truncated values instead of applying cut-down content |
 | `header(name)` | Get a request header value |
@@ -927,7 +939,7 @@ Each request is represented by a per-request `RequestRef` object that provides a
 | `send_stream_response(channel, boundary, on_end)` | Attach a live multipart streaming response to the request: the transport writes the HTTP headers, pulls pre-formatted multipart parts from `channel` under framework flow control, and fires `on_end` when the response is destroyed (used by the `/stream` MJPEG endpoint) |
 | `send_data_response(content_type, total_len, filler)` | Attach a pull-driven response with known length: the transport sends headers with the content type and total length, then pulls body chunks from `filler(buf, max_len, offset)` under framework flow control until `total_len` bytes have been produced (the filler returns 0 on error or completion). Each filler invocation must be a short self-contained operation — used by the `/download` and `/log` endpoints to issue one bounded, CS-arbitrated SD read per chunk |
 
-**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Registrations made before the server exists are buffered and attached to the route table before `begin()`, so the server never serves a request with a partial route table. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler.
+**ESP32 Implementation**: `WebServerHalImpl` (`src/hal/web_server_hal_impl.cpp`) wraps `ESPAsyncWebServer` (`AsyncWebServer` library), instantiating the server via `new`. Registrations made before the server exists are buffered and attached to the route table before `begin()`, so the server never serves a request with a partial route table. Routes are registered with lambdas that construct a temporary `AsyncRequestRef` (wrapping `AsyncWebServerRequest*`) and forward it to the registered `std::function` handler. `AsyncRequestRef` stores query parameters per name in a `RequestArgStore` (`include/hal/request_arg_store.h`, platform-agnostic and covered by native tests), so every pointer returned by `arg()` stays valid while further parameters are read; `form_value()` keeps its own separate scratch buffer for full-configuration payloads.
 
 **Mock**: `MockWebServerHal` (`test/mocks/native_mocks/mock_web_server_hal.h`) captures route registrations with their `std::function` handlers and provides `simulate_request(uri, method)` to invoke handlers with a configurable `MockRequestRef`.
 
@@ -960,6 +972,7 @@ Mock HAL classes live in `test/mocks/native_mocks/` and provide configurable ret
 | `MockSerialHal` | `flush_call_count`, `output_buffer` (captured writes) | `input_buffer` for simulated serial input |
 | `MockMicHal` | `init_call_count`, `start_call_count`, `stop_call_count`, `deinit_call_count`, `read_samples_call_count` | `init_result`, `initialized_state`, `sample_data` (vector of PCM samples served sequentially by `read_samples()`), `samples_per_read` (chunk size per read; 0 = all at once), plus `fill_sample_data()` / `fill_incremental_sample_data()` helpers |
 | `MockWebServerHal` | `init_call_count`, `stop_call_count`, `registered_routes` | `init_result`; `MockRequestRef` carries configurable request state (`request_uri`, args, headers, auth) and captures `responses` plus attached streaming responses (`stream_responses` with channel and end callback; `end_stream_response(i)` simulates the transport ending a response) |
+| `MockHardwarePeripheralManager` | N/A | `temperature_c` returned by `read_temperature()`; pin/LED operations are no-ops |
 | Mock Arduino | N/A | Stub `String`, `HardwareSerial`, `millis()`, `delay()` for native compilation |
 
 ---
@@ -1083,6 +1096,7 @@ Slot bookkeeping is serialized by an internal slot mutex across task contexts: `
 | `deliver_frame(data, len)` | Formats a complete multipart JPEG part and pushes it into every active slot's channel (dropped for viewers still draining). |
 | `on_stream_ended(channel)` | Frees the slot whose streaming response ended. Invoked via the end callback fired when the transport destroys the response — on client disconnect or after the response completes. Idempotent. |
 | `active_slot_count()` | Returns the number of active viewers. |
+| `total_frames_delivered()` | Returns the cumulative number of frames distributed to the preview stream since boot (counted once per frame regardless of viewer count). The web UI samples it across status polls to render the preview framerate. |
 
 #### Ownership & Disconnect Handling
 
@@ -1122,7 +1136,7 @@ Abstract interface for log output destinations. The interface is level-aware: `w
 
 **Files**: `include/hal/multi_log_backend.h`, `src/hal/multi_log_backend.cpp`
 
-Composite `LogBackend` that fans out log lines to up to 4 child backends, each with its own minimum severity level. This enables independent verbosity control per sink (e.g., serial vs SD card). The `tick()` method propagates to all registered backends, allowing buffered backends to flush.
+Composite `LogBackend` that fans out log lines to up to 4 child backends, each with its own minimum severity level. This enables independent verbosity control per sink (e.g., serial vs SD card). The `tick()` method propagates to all registered backends, allowing buffered backends to flush. The registry is mutex-protected so a backend can be attached at runtime (the composition root opens the `after_set_time` SD-logging gate from the main loop) while other tasks log; `write()` and `tick()` fan out from a snapshot taken under the lock, so a child backend's I/O never runs while the registry lock is held.
 
 ### SdLogWriter
 
@@ -1134,7 +1148,8 @@ Buffered log writer for SD card storage. Implements `hal::LogBackend` to receive
 - **Line format**: Same as serial output: `[YYYY-MM-DD HH:MM:SS] [uptime] [subsystem] [LEVEL ] message`
 - **Buffering**: Log lines are buffered in a 4 KB internal buffer. The buffer is flushed to SD when full or on each `tick()` call from the main loop.
 - **Day rotation**: When the day changes (detected by comparing current UTC date with stored date), the buffer is flushed and a new log file is started.
-- **Retention**: Old log files are deleted based on `retention_days` config setting (default: 7 days). Deletion happens at day rollover.
+- **Retention**: Old log files are deleted based on `retention_days` config setting (default: 7 days). Deletion happens at day rollover. Files dated in 1970, which derive from an unset wall clock (boot period before `set_time`), are exempt from the retention pass and are never expired; clock-dated files are deleted per `retention_days` as before.
+- **Thread safety**: `write()` may be called from several task contexts while `tick()` flushes from the main loop; an internal mutex serializes the buffer and rotation state and is held across the buffered flush I/O. Nothing logs from inside an SD transaction, so this lock and the shared-pin CS mutex are always acquired in the same order.
 
 **Memory overhead**: ~4 KB DRAM for the write buffer, plus ~100 bytes for object state.
 
@@ -1490,7 +1505,7 @@ Fully testable on native via `MockSdCardHal` (file store with directories), `Moc
 
 **Files**: `include/web_ui_content.h`, `src/web_ui_content.cpp`
 
-The web UI is a single dependency-free page (HTML + CSS + vanilla JS in one document) embedded in the firmware as the default (`GET /` served by `WebServerService`). It covers the status panel (including SD free space and today's photo/video counts), recording/photo/preview controls, the live MJPEG preview, the file browser with per-directory listing, pagination (absolute `start` indices with the listing's `next` continuation index), and download links, the system log viewer (paginated the same way), and a config editor (load via `GET_CONFIG`, save via `POST /update` to NVS or SD). The preview issues `stream_start` before pointing an `<img src="/stream">` at the stream and `stream_stop` afterwards, honoring the 409 gate on `/stream`.
+The web UI is a single dependency-free page (HTML + CSS + vanilla JS in one document) embedded in the firmware as the default (`GET /` served by `WebServerService`). It covers the status panel (SD free space, today's photo/video counts, the build version, and the core temperature), recording/photo/preview controls, the live MJPEG preview with a resolution readout and a framerate measured from the status telemetry's delivered-frame counter, the file browser with per-directory listing, pagination (absolute `start` indices with the listing's `next` continuation index), and download links, the system log viewer (paginated the same way; listing failures render explicit feedback instead of a blank list), and a config editor (load via `GET_CONFIG`, save via `POST /update` to NVS or SD). The preview issues `stream_start` before pointing an `<img src="/stream">` at the stream and `stream_stop` afterwards, honoring the 409 gate on `/stream`.
 
 **SD `/data/` override hook (documented, not implemented)**: the planned path for serving UI assets from the card is a per-URL serving order of
 
@@ -1602,6 +1617,8 @@ Top-level system coordinator and command router.
 - `SdController &` — for latching SD availability and config persistence to the SD card.
 - `hal::NvsHal &` — for config persistence to NVS.
 - `hal::RestartHal &` — for scheduling the deferred device restart behind the `REBOOT` command.
+- `HardwarePeripheralManager &` — for the core temperature reported in `GET_STATUS`.
+- `WifiService &` — for the local IP address reported in `GET_STATUS`.
 
 #### SD-Optional Boot and Degraded Mode
 
@@ -1650,7 +1667,7 @@ Every command returns a `CommandResult` enum value:
 
 | Code | Command | Payload | Response Data | Effect |
 |------|---------|---------|---------------|--------|
-| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16,"uptime_ms":uint32}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only), and the device uptime in milliseconds from the millis clock. The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
+| `0x01` | `GET_STATUS` | None | JSON string: `{"recording":bool,"streaming":bool,"sd":bool,"frames":uint32,"file_size":uint32,"connected_streams":uint8,"sd_free_bytes":uint64,"photos":uint16,"videos":uint16,"uptime_ms":uint32,"version":string,"temperature_c":float,"width":uint16,"height":uint16,"stream_frames":uint32,"local_ip":string}` | Returns current recording and streaming subscription state, latched SD availability, frame count, accumulated file size, connected stream count, SD free space plus today's photo/video counts (the latter two are 0 in degraded mode; `sd_free_bytes` covers free space on the card as a full 64-bit value, and the photo/video counts cover today's date directory only), the device uptime in milliseconds from the millis clock, the build-identity version string from `version.h`, the core temperature in degrees Celsius (`HardwarePeripheralManager::read_temperature()`), the applied camera frame dimensions, the cumulative delivered-frame counter the web UI samples to render the preview framerate, and the device's local IPv4 address from `WifiService`. The SD storage stats are cached with a 60 s TTL: the first query after boot or TTL expiry runs one free-space query plus one date-directory scan as CS-arbitrated transactions in the dispatching task context; subsequent queries within the TTL serve the cached values with no SD I/O. No other side effects. |
 | `0x10` | `START_RECORDING` | None | None | Begins MJPEG video recording to SD. Reuses the running capture loop when streaming is active. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks), `INVALID_STATE` if already recording or if a previously stopped clip has not finished closing, `INTERNAL_ERROR` if recording fails to start. |
 | `0x11` | `STOP_RECORDING` | None | None | Stops the current recording session. Recording state clears immediately; when streaming mode remains active the clip is finalized by the next frame callback, otherwise the capture pipeline is torn down synchronously (bounded) and all connected viewers are closed. Idempotent no-op if not recording. |
 | `0x12` | `TAKE_PHOTO` | None | None | Captures a single JPEG frame from the camera, writes it to the SD card as a standalone JPEG file, and returns the file path. Returns `SD_UNAVAILABLE` when the SD card was unavailable at boot (this check takes precedence over state checks, and no camera capture is performed). Works while recording and/or streaming are active (the photo is an executor request served at an activation boundary). Returns `INTERNAL_ERROR` if capture or write fails. |
@@ -2391,7 +2408,7 @@ On the ESP32S3 Sense platform, GPIO 21 is shared between the LED (active LOW) an
 8. **WiFi init** — `WifiService::init()` connects to STA when an SSID is configured (with a timeout); with the blank default SSID it starts AP mode directly.
 9. **Web route registration** — `SystemOrchestrator::init()` registers all command handlers and the `/stream` route, `SerialCommandTransport` is added to the `CommandHandler`, and `WebCommandTransport::register_routes()` wires the `/status` and `/control` endpoints. `WebServerService::init()` then registers the `/` landing page route and starts the HTTP server. All routes attach to the route table before the server begins listening: `WebServerHalImpl` buffers registrations made before the server exists and attaches them before `begin()`.
 10. **Serial transport init** — `SerialCommandTransport::init(115200)` initialises the UART command interface. The transport is registered with `CommandHandler` via `add_transport()`.
-11. **SD logging init** — The `SerialLogBackend` is registered on the `MultiLogBackend` before SD init so pre-card boot messages are captured; once the SD card is available, the `SdLogWriter` is added to the `MultiLogBackend` as a second logging sink (skipped in degraded mode, leaving serial-only logging).
+11. **SD logging init** — The `SerialLogBackend` attaches to the `MultiLogBackend` first (at the top of `init()`), so boot messages reach the console. When `[logging] sd_enabled` is not `false` and the card is usable, the `SdLogWriter` is constructed after the config load: mode `true` attaches it to the `MultiLogBackend` immediately; mode `after_set_time` attaches it from `loop()` the first time `TimeService::is_time_set()` reports the wall clock set (then logs and flushes one line so `/logs` serves data immediately); mode `false` never constructs it. With no card the sink is never constructed, leaving serial-only logging.
 
 ### Main Loop
 
@@ -2400,9 +2417,11 @@ The `loop()` function runs on regular intervals to tick the major services to ha
 ```
 loop():
   1. Tick CommandHandler (polls command transports, dispatches commands)
-  2. Tick LedStateMachine → apply LED state via HardwarePeripheralManager
-  3. Tick WebServerHal (implicit via AsyncWebServer)
-  4. Tick MultiLogBackend → flushes buffered backends (SD log writes)
+  2. Tick SystemOrchestrator (schedule evaluation, mode transitions)
+  3. Tick LedStateMachine → apply LED state via HardwarePeripheralManager
+  4. Periodic heartbeat log (core temperature reading)
+  5. Open the after_set_time SD-logging gate once the wall clock is set;
+     every second, tick MultiLogBackend → flush/rotate the SD log sink
 ```
 
 ---
@@ -2633,19 +2652,29 @@ Tests live under `test/` in environment-specific subfolders:
 ```
 test/
   native/                           ← Native unit tests (Unity framework)
+    test_avi_clip_session/          ← AVI clip session tests
     test_avi_writer/                ← AVI container format tests
     test_camera_controller/         ← Camera lifecycle tests
     test_command_handler/           ← Command dispatch framework
     test_config_service/            ← ConfigService loading & defaults
+    test_file_service/              ← FileService path validation & routes
     test_ini_parser/                ← INI parser including video config
     test_led_state_machine/         ← LED state machine tests
+    test_log_level_parser/          ← LogLevel name mapping (aliases, default)
     test_logging_service/           ← Logging output tests
     test_mic_service/               ← MicService lifecycle, ring buffer, gain tests
+    test_multi_log_backend/         ← MultiLogBackend registration & fan-out tests
+    test_request_arg_store/         ← Per-request query-parameter stable storage
     test_sd_controller/             ← SD write controller tests
+    test_sd_log_writer/             ← SD log sink filtering & retention tests
+    test_serial_command_transport/  ← Serial line parsing & command dispatch
+    test_stream_frame_channel/      ← Stream frame part buffering tests
     test_stream_service/            ← StreamService slot/delivery tests
     test_system_orchestrator/       ← System orchestrator commands
     test_time_service/              ← Time service tests
     test_video_controller/          ← Video recording orchestration
+    test_web_command_transport/     ← Web command route registration & dispatch
+    test_web_server_service/        ← WebServerService auth & index route tests
     test_wifi_service/              ← WiFi lifecycle tests
     test_time_formatter/            ← TimeFormatter UTC formatting
     test_path_utils/                ← PathUtils collision avoidance
@@ -2653,15 +2682,17 @@ test/
     test_timer_hal_impl/            ← TimerHalImpl periodic ISR behavior
     test_capture_scheduler_esp32/   ← CaptureSchedulerEsp32 task/timer lifecycle
     test_hardware_peripheral_manager/ ← HardwarePeripheralManagerImpl GPIO/LED/temperature
+    test_nvs_hal_impl/              ← NvsHalImpl persistence on real NVS flash
     test_sd_card_hal_impl/          ← Real SD card open-mode semantics
     test_video_controller_esp32/    ← End-to-end AVI clip recording
   mocks/
     native_mocks/                   ← Mock HAL classes + mock Arduino
     embedded_mocks/                 ← Mocks for ESP32 test env
     test_utils/                     ← Shared test utilities
+  e2e/                              ← pytest end-to-end suite against a live device (owner: README.md)
 ```
 
-Each test suite is a subfolder with a `test_` prefix containing one or more implementation files, but always a single `main()` function that gathers and runs all tests. Tests use the Unity framework.
+Each suite under `native/` and `hardware/` is a subfolder with a `test_` prefix containing one or more implementation files, but always a single `main()` function that gathers and runs all tests. Tests use the Unity framework.
 
 ### Running Tests
 

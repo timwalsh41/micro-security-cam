@@ -4,6 +4,7 @@
 #include "logging_service.h"
 #include "stream_frame_channel.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -195,6 +196,18 @@ class StreamService : public IStreamService
          */
         uint8_t active_slot_count() const;
 
+        /**
+         * @brief Returns the cumulative number of frames distributed
+         *        to the preview stream since boot.
+         *
+         * Counts each delivered frame once regardless of how many
+         * viewers were connected; consumers derive a delivery rate by
+         * sampling the counter over an interval.
+         *
+         * @return Total frames delivered so far.
+         */
+        uint32_t total_frames_delivered() const;
+
     private:
         /** Best-effort multipart closing token. */
         static constexpr const char* CLOSING_BOUNDARY =
@@ -271,6 +284,12 @@ class StreamService : public IStreamService
          * under this mutex and operate on the copies outside it.
          */
         mutable std::mutex m_slot_mutex;
+
+        /**
+         * @brief Monotonic delivered-frame counter
+         *        (see total_frames_delivered()).
+         */
+        std::atomic<uint32_t> m_total_frames_delivered{0};
 
         /**
          * @brief Formats the fixed part header for a payload length.

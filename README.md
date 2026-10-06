@@ -116,9 +116,9 @@ Behavior notes:
   fails loudly on a mismatch, naming both identities. Until the
   endpoint is present, absence prints one warning and continues.
 - Reboot-dependent coverage (NVS persistence across reboot, the
-  `after_set_time` cold-boot gating) is implemented and skips itself
-  until the reboot endpoint is available, then activates without
-  further changes.
+  `after_set_time` cold-boot gating, boot-log retention across
+  `set_time`) is implemented and skips itself until the reboot
+  endpoint is available, then activates without further changes.
 - Known holes are skipped with explicit reasons rather than built
   around: SD-absent degraded mode needs the card physically removed,
   the no-password auth matrix would require disturbing the device's
@@ -251,7 +251,7 @@ The `sd_enabled` configuration option in the `[logging]` section controls when S
 - `false` — Completely disabled
 - `after_set_time` — Enabled only after the real-time clock has been set via the `set_time` command (default). This avoids writing meaningless timestamped log files before the device knows the current time.
 
-When `after_set_time` is active, the device logs a message indicating that SD logging is deferred until the time is set. Once `set_time` is called, SD logging begins automatically.
+When `after_set_time` is active, no SD logs are written until `set_time` sets the wall clock; the first loop pass after the clock is set attaches the SD log sink, logs that SD logging has started, and flushes that line immediately so `/logs` serves data right away.
 
 Late SD insertion is **not** detected at runtime. To recover from degraded mode, insert a card (if missing) and power-cycle the device.
 
@@ -316,7 +316,7 @@ When WiFi is configured, the camera provides a web interface for status and cont
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/` | No | Embedded single-page web UI (status, controls, file browser, log viewer, config editor) |
-| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts, uptime in milliseconds) |
+| GET | `/status` | Yes | JSON status (recording and streaming activity, SD availability, frame count, file size, SD free space, today's photo/video counts, uptime in milliseconds, build version, core temperature, frame resolution, delivered-frame counter, local IP) |
 | GET | `/control?cmd=start` | Yes | Start video recording |
 | GET | `/control?cmd=stop` | Yes | Stop video recording |
 | GET | `/control?cmd=photo` | Yes | Capture a still photo (also while recording or streaming) |

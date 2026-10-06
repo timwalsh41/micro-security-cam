@@ -14,6 +14,16 @@ def test_config_get_value_round_trip(client, guard):
     assert client.config_get_value(key) == changed
 
 
+def test_config_set_value_string_key_idempotent(client):
+    """Plain string keys accept a set (regression: the device used to
+    answer INVALID_ARGS for every key/value pair). Setting the current
+    value back is a round trip with no configuration change."""
+    key = "wifi.ssid"
+    original = client.config_get_value(key)
+    client.config_set_value(key, original)
+    assert client.config_get_value(key) == original
+
+
 def test_config_set_value_range_rejection(client, guard):
     """Out-of-range values are refused and leave the key unchanged."""
     key = "web.max_streams"

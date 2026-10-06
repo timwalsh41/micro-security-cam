@@ -5,8 +5,10 @@
 #include "sd_controller.h"
 #include "time_service.h"
 #include <Arduino.h>
+#include <atomic>
 #include <string>
 #include <cstring>
+#include <thread>
 
 // ============================================================
 // Test fixtures
@@ -326,6 +328,106 @@ void test_retention_maximum_does_not_delete_current_log()
 }
 
 // ============================================================
+// Concurrency
+// ============================================================
+
+/**
+ * @brief Concurrent write() callers racing the flushing tick() never
+ *        corrupt buffered lines: every line lands intact.
+ */
+void test_concurrent_writes_and_ticks_preserve_lines()
+{
+    SdLogWriterFixture f;
+    std::atomic<bool> writers_done{false};
+
+    std::thread ticker([&f, &writers_done]()
+    {
+        while (!writers_done.load())
+        {
+            f.writer.tick();
+            std::this_thread::yield();
+        }
+    });
+
+    auto writer_fn = [&f](int id)
+    {
+        char line[64];
+        for (int i = 0; i < 200; i++)
+        {
+            snprintf(line, sizeof(line), "thread%d line%03d payload",
+                     id, i);
+            f.writer.write(hal::LogLevel::INFO, line);
+        }
+    };
+
+    std::thread w1(writer_fn, 1);
+    std::thread w2(writer_fn, 2);
+    w1.join();
+    w2.join();
+    writers_done.store(true);
+    ticker.join();
+    f.writer.tick();
+
+    std::string content = f.get_log_content("/logs/19700101.log");
+    TEST_ASSERT_FALSE(content.empty());
+    for (int id = 1; id <= 2; id++)
+    {
+        for (int i = 0; i < 200; i++)
+        {
+            char line[64];
+            snprintf(line, sizeof(line), "thread%d line%03d payload",
+                     id, i);
+            TEST_ASSERT_NOT_NULL(strstr(content.c_str(), line));
+        }
+    }
+}
+
+// ============================================================
+// Unset-clock boot logs
+// ============================================================
+
+/**
+ * @brief A set-time rotation runs retention on expired clock-dated
+ *        files but never expires the unset-clock (1970) boot log.
+ */
+void test_set_time_retention_preserves_unset_clock_log()
+{
+    const uint8_t content_bytes[] = {'b', 'o', 'o', 't'};
+    sd_hal.seed_file("/logs/19700101.log",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+    sd_hal.seed_file("/logs/20000101.log",
+                     std::vector<uint8_t>(content_bytes,
+                                          content_bytes + sizeof(content_bytes)));
+
+    SdLogWriterFixture f(hal::LogLevel::INFO, 7);
+
+    // Boot period: the wall clock is unset, so boot lines stay in
+    // the epoch-derived 1970 file.
+    f.writer.write(hal::LogLevel::INFO, "boot line");
+    f.writer.tick();
+    TEST_ASSERT_EQUAL_STRING("/logs/19700101.log",
+                             f.writer.current_log_path());
+
+    // set_time: 2026-10-10T00:00:00Z, retention cutoff 20261003.
+    real_time.set_unix_offset(1791590400u, 0);
+
+    f.writer.write(hal::LogLevel::INFO, "after set time");
+    f.writer.tick();
+
+    TEST_ASSERT_EQUAL_STRING("/logs/20261010.log",
+                             f.writer.current_log_path());
+    // Retention still applies to clock-dated files...
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/20000101.log") ==
+                     sd_hal.files.end());
+    // ...but the unset-clock boot log survives the rotation.
+    TEST_ASSERT_TRUE(sd_hal.files.find("/logs/19700101.log") !=
+                     sd_hal.files.end());
+    std::string boot = f.get_log_content("/logs/19700101.log");
+    TEST_ASSERT_TRUE(boot.find("boot line") != std::string::npos);
+}
+
+// ============================================================
 // Test runner
 // ============================================================
 
@@ -396,6 +498,12 @@ int main()
     // Retention cleanup
     RUN_TEST(test_retention_deletes_expired_logs);
     RUN_TEST(test_retention_maximum_does_not_delete_current_log);
+
+    // Concurrency
+    RUN_TEST(test_concurrent_writes_and_ticks_preserve_lines);
+
+    // Unset-clock boot logs (runs last: it sets the shared clock)
+    RUN_TEST(test_set_time_retention_preserves_unset_clock_log);
 
     return UNITY_END();
 }

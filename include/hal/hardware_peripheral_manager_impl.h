@@ -55,6 +55,9 @@ public:
     /**
      * @brief Reads the ESP32 core temperature.
      *
+     * Serialized against concurrent callers: the sensor's read
+     * sequence is stateful and must not interleave across tasks.
+     *
      * @return Temperature in degrees Celsius.
      */
     float read_temperature() override;
@@ -67,6 +70,9 @@ public:
 private:
     /** FreeRTOS mutex protecting the shared GPIO pin (LED/SD CS). */
     SemaphoreHandle_t m_sd_active_mutex{nullptr};
+
+    /** FreeRTOS mutex serializing core temperature reads across tasks. */
+    SemaphoreHandle_t m_temp_mutex{nullptr};
 };
 
 #endif // HAL_HARDWARE_PERIPHERAL_MANAGER_IMPL_H
