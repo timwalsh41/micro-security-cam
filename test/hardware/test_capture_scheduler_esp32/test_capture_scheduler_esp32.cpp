@@ -30,6 +30,39 @@ static void on_frame_callback()
 }
 
 // ============================================================
+// Join-timeout branch (wedge recovery)
+// ============================================================
+
+/** Duration the slow callback blocks, past the 1000 ms join window. */
+static constexpr uint32_t SLOW_BLOCK_MS = 1300;
+
+/** Binary semaphore the slow callback blocks on (created per-test). */
+static SemaphoreHandle_t g_slow_sem{nullptr};
+
+/** Number of times the slow frame callback has been entered. */
+static std::atomic<uint32_t> g_slow_callback_count{0};
+
+/** Set true once the slow callback has returned (task may still exit). */
+static std::atomic<bool> g_slow_callback_done{false};
+
+/**
+ * @brief Frame callback that blocks past the stop() join timeout.
+ *
+ * Blocks on a semaphore take for SLOW_BLOCK_MS. A task blocked on a
+ * semaphore is NOT woken by stop()'s xTaskNotifyGive (task notifications
+ * and semaphore events are independent RTOS mechanisms), so the capture
+ * task stays alive past the 1000 ms bounded join — deterministically
+ * forcing the timeout branch that the on-device wedge hits.
+ */
+static void on_slow_frame_callback()
+{
+    g_slow_callback_count.fetch_add(1, std::memory_order_relaxed);
+    g_slow_callback_done.store(false, std::memory_order_relaxed);
+    xSemaphoreTake(g_slow_sem, pdMS_TO_TICKS(SLOW_BLOCK_MS));
+    g_slow_callback_done.store(true, std::memory_order_relaxed);
+}
+
+// ============================================================
 // Timer mock (failure injection)
 // ============================================================
 
@@ -148,6 +181,67 @@ void test_stop_runs_final_callback_and_joins()
 }
 
 // ============================================================
+// Join-timeout recovery (wedge contract)
+// ============================================================
+
+/**
+ * @brief start() succeeds after a stop() whose join timed out.
+ *
+ * A frame callback that blocks past the 1000 ms join window
+ * (STOP_JOIN_TIMEOUT_MS) forces stop()'s bounded xSemaphoreTake to
+ * expire while the capture task is still alive — the timeout branch
+ * exercised by the on-device wedge. stop() clears m_task on timeout,
+ * so the start() guard no longer refuses and a fresh start() 
+ * succeeds; without the clear, m_task is retained and start()
+ * returns false, causing a wedge.
+ *
+ * The slow callback is given time to return and the stale task to
+ * self-exit (m_stop_requested is still true) before the restart, so the
+ * fresh start() never races a live double-task.
+ */
+void test_start_succeeds_after_join_timeout()
+{
+    hal::TimerHalImpl timer;
+    CaptureSchedulerEsp32 scheduler(timer);
+
+    g_slow_sem = xSemaphoreCreateBinary();
+    TEST_ASSERT_NOT_NULL(g_slow_sem);
+
+    g_slow_callback_count.store(0, std::memory_order_relaxed);
+    g_slow_callback_done.store(false, std::memory_order_relaxed);
+
+    TEST_ASSERT_TRUE(scheduler.start(50, on_slow_frame_callback));
+    // Let the 50 ms timer fire and the task enter the blocking callback.
+    vTaskDelay(pdMS_TO_TICKS(120));
+    TEST_ASSERT_EQUAL_UINT32(1, g_slow_callback_count.load(std::memory_order_relaxed));
+
+    scheduler.stop();
+    // The task was still inside the slow callback when stop() returned,
+    // proving the join timed out (timeout branch), not a clean exit.
+    TEST_ASSERT_FALSE(g_slow_callback_done.load(std::memory_order_relaxed));
+
+    // Wait for the stale task's callback to return and the task to
+    // self-delete (stop_requested is still true here) before restarting.
+    uint32_t waited = 0;
+    while (!g_slow_callback_done.load(std::memory_order_relaxed) && waited < 2000)
+    {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        waited += 20;
+    }
+    TEST_ASSERT_TRUE(g_slow_callback_done.load(std::memory_order_relaxed));
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Core wedge-recovery assertion: m_task was cleared on timeout, so
+    // start() is not refused and the pipeline is usable again.
+    g_callback_count.store(0, std::memory_order_relaxed);
+    TEST_ASSERT_TRUE(scheduler.start(50, on_frame_callback));
+    scheduler.stop();
+
+    vSemaphoreDelete(g_slow_sem);
+    g_slow_sem = nullptr;
+}
+
+// ============================================================
 // Double-start protection
 // ============================================================
 
@@ -257,6 +351,7 @@ int runUnityTests()
     UNITY_BEGIN();
     RUN_TEST(test_callbacks_fire_at_interval);
     RUN_TEST(test_stop_runs_final_callback_and_joins);
+    RUN_TEST(test_start_succeeds_after_join_timeout);
     RUN_TEST(test_double_start_rejected);
     RUN_TEST(test_restart_after_stop);
     RUN_TEST(test_start_fails_when_timer_init_fails);

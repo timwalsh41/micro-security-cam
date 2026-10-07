@@ -58,10 +58,12 @@ class CaptureSchedulerEsp32 : public ICaptureScheduler
          * @brief Stops the hardware timer and joins the capture task.
          *
          * The capture task runs one final callback (so the consumer can
-         * process pending clip closure), then deletes itself. This
-         * method blocks until the task has exited or the join timeout
-         * elapses; on timeout the task handle is retained so a later
-         * start() fails instead of leaking a second task.
+         * process pending clip closure), gives the exit semaphore, then
+         * deletes itself. This method blocks until the task has exited or
+         * the join timeout elapses. On timeout the task has already
+         * self-deleted (the join missed the semaphore give due to a
+         * drain-race), so m_task is cleared without vTaskDelete to avoid
+         * targeting freed TCB memory; a future start() then succeeds.
          */
         void stop() override;
 
