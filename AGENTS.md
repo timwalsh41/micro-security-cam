@@ -1,8 +1,6 @@
 # Overview
 
-- This repo is a still photo camera based on an off the shelf Seeed XIAO ESP32S3 Sense with included camera and SD card
-- The objective of the project is to create a simple demo showing off these capabilities, while creating some reusable software modules that can be leveraged for more complex systems base on this board
-- We use the Arduino framework and libraries for development
+This repo is a tiny security camera currently based on an off the shelf Seeed XIAO ESP32S3 Sense dev board with included camera and SD card
 
 # Environment
 
@@ -10,31 +8,29 @@
     - Refer to `platformio.ini` for details on the environment setup and included libraries
 - To use the PlatformIO CLI (`platformio`/`pio` commands), you'll need to source the environment with the command `source ~/.platformio/penv/bin/activate`
     - To invoke `pio` commands, no need to change directory, just run as a compound command, e.g. `source ~/.platformio/penv/bin/activate && pio test -e native`
-    - Do not execute tool calls with `requestAllowNetwork=true` by default - in the environment settings are whitelisted domains that will be required for PlatformIO command calls, if we hit a blocked domain we'll add it to the whitelist; only use `requestAllowNetwork=true` if truly needed
-- Use terminal commands to read files outside of the project folder
-- `platformio.ini` pins `platform = espressif32 @ 7.0.1` (the proven-good official stack); do not unpin or override it - a silently substituted platform previously produced camera-init failures at boot with the device unreachable over HTTP
+    - `platformio.ini` pins `platform = espressif32 @ 7.0.1` (the proven-good official stack); do not unpin or override it - a silently substituted platform previously produced camera-init failures at boot with the device unreachable over HTTP
 - We define three PlatformIO environments:
     - `seeed_xiao_esp32s3` for the embedded target; this environment is used to build the application binary
-    - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run certain unit tests
-    - `native` for the host dev machine; this is used for running certain unit tests
-    - New unit tests should be segregated in the appropriate subfolder under `test/` so that they run in the appropriate environment given the `test_filter` setting for each environment in `platformio.ini`
+    - `seeed_xiao_esp32s3_test` for the embedded target; this environment is used to build and run unit tests on the embedded target; these tests exercise functionality tied to the hardware itself or the FreeRTOS operating system primitives
+    - `native` for the host dev machine; this is used for running unit tests on modules that are independent of the hardware and FreeRTOS primitives
+    - New unit tests should be located in the appropriate subfolder under `test/` so that they run in the proper environment given the `test_filter` setting for each environment in `platformio.ini`
 - Unit testing
-    - Leverage the unity framework
-    - Unit tests should be segregated into subfolders under the appropriate test folder (`native` or `hardware`), and named with a `test_` prefix
-        - Each subfolder represents a single test suite, typically a single implementation file with a set of tests defined and then gathered within one `main()` function
+    - Leverage the Unity framework
+    - Unit tests each get their own subfolder named with the prefix `test_` within the `native` or `hardware` folder
+    - Each subfolder represents a single test suite, typically a single implementation file with a set of tests defined and then gathered within one `main()` function
         - If there is reason to do so, the tests could be broken out across multiple implementation files, but still need to be gathered and executed in a single `main()`
-    - To run a specific test suite, use the `-f` option and specify the path to the test suite relative to the `test/` folder, e.g. `pio test -e native -f native/test_sd_write_controller`
+    - To run a specific test suite, use the `-f` option and specify the path to the test suite relative to the `test/` folder, e.g. `pio test -e native -f native/test_camera_controller`
 - Use `uv` for Python package management and script execution
 
 # Development guidelines
 
-- When making technical decisions, don’t give much something interesting that you may weight to development cost
+- When making technical decisions, don’t give much weight to development cost
 - When doing bug fixes always start by reproducing the bug in an end to end test setting as closely aligned to real user workflow as possible
-- **Stop and wait for explicit approval** before implementing changes requested via  plan execution prompts or similar structured workflows. Request approval to proceed and wait for the user's affirmative response.
+- **Stop and wait for explicit approval** before implementing changes requested via plan execution prompts or similar structured workflows. Request approval to proceed and wait for the user's affirmative response.
 - C++11 standard
 - Include unit test coverage for all new code
     - Logical/control level components should be tested in the `native` environment
-    - Components that interface directly with hardware should be tested in the `seeed_xiao_esp32s3_test` environment
+    - Components that interface directly with hardware or FreeRTOS primitives should be tested in the `seeed_xiao_esp32s3_test` environment
     - Mocks and other utilities shared across test suites should be placed in the appropriate subfolder in `lib/`
 - Use namespaces liberally to group like functionality
 - Follow the single responsibility principle when designing classes
@@ -80,7 +76,7 @@
 
 # Documentation
 
-- `SYSTEM_DESIGN.md` is our main architectural documentation that describes the software component design and composition; keep this up to date as changes are made impacting the design
+- `SYSTEM_DESIGN.md` is our main architectural documentation that describes the software component design and composition; keep this up to date as changes are made that impact the design
     - Be concise but comprehensive when editing this file - review it in its entirety to ensure no redundant information is added
     - This is a record of the design architecture, NOT a record of the implementation history - do not refer to how a feature or implementation has changed, or what plan or project phase features were introduced or modifed, just document the current state
     - Do not call out the number of tests per module, this is a number that may vary over time, does not add useful information to the user understanding at this level of abstraction, and is prone to get out of date.
@@ -98,18 +94,19 @@
 
 # End-to-end suite
 
-- `test/e2e/` (pytest, run via `script/test-e2e.sh`) is the real-hardware regression suite. Update it as features are added: coverage must stay complementary to the unit test coverage, not duplicate it.
-- The suite shares the camera HTTP transport with the CLI (`script/python/camclient.py`); keep that module the single transport definition when endpoints change.
+- `test/e2e/` (pytest, run via `script/test-e2e.sh`) is the real-hardware regression suite. Update it as features are added: coverage must stay complementary to the unit test coverage, not duplicate it
+- The suite shares the camera HTTP transport with the CLI (`script/python/camclient.py`); keep that module the single transport definition when endpoints change
 
 # Artifact content rules
 
-- No role-based or project-nickname language (no "captain" or nautical phrasing) in any committed content: repo source, markdown, PR titles/descriptions/comments, and commit messages use neutral phrasing only.
-- No private infrastructure details (device IPs, device credentials) in any committed content or PR artifact. Connection settings come from the environment (`CAM_HOST`, `CAM_PASSWORD`) or the `--ip` flag only.
-- PR titles, bodies, comments, and commit messages are audited against these rules before reporting a PR ready; if the validation pipeline rewrites them, re-verify they stayed clean.
+- No private infrastructure details (device IPs, device credentials) in any committed content or PR artifact - connection settings come from the environment (`CAM_HOST`, `CAM_PASSWORD`) or the `--ip` flag only
+- PR titles, bodies, comments, and commit messages must be audited against these rules before reporting a PR ready; if the validation pipeline rewrites them, re-verify they stayed clean
 
 ## Maintaining this file
 
-Keep this file for knowledge useful to almost every future agent session in this project.
-Do not repeat what the codebase already shows; point to the authoritative file or command instead.
-Prefer rewriting or pruning existing entries over appending new ones.
-When updating this file, preserve this bar for all agents and keep entries concise.
+- Keep this file for knowledge useful to almost every future agent session in this project
+- Do not repeat what the codebase already shows; point to the authoritative file or command instead
+- Prefer rewriting or pruning existing entries over appending new ones
+- When updating this file, preserve this bar for all agents and keep entries concise
+- Do not end bullet or numbered-list items with a period, whether they’re fragments or complete sentences
+    - Use periods in standalone prose paragraphs as usual
