@@ -99,9 +99,18 @@ void CaptureSchedulerEsp32::stop()
             // Task has exited; allow a future start()
             m_task.store(nullptr, std::memory_order_relaxed);
         }
-        // On timeout the task handle is retained so start() refuses to
-        // create a second task; the consumer's fail-safe is that the
-        // next frame callback still closes its clip.
+        else
+        {
+            // Task did not signal exit within the window. stop()'s drain
+            // above can consume the task's exit-semaphore give (drain-race)
+            // right as the task self-deletes via vTaskDelete(NULL), so the
+            // join may time out after the task has already reaped itself.
+            // Clearing the handle is therefore sufficient: a vTaskDelete(task)
+            // would target freed TCB memory (IllegalInstruction panic),
+            // while clearing m_task unblocks a future start() instead of
+            // wedging the pipeline.
+            m_task.store(nullptr, std::memory_order_relaxed);
+        }
     }
     else
     {
